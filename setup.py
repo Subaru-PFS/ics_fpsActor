@@ -10,6 +10,7 @@ import os
 
 setup(name="ics_fpsActor",
       description= "Toy SDSS-3 actor.",
+      packages=["ics.fpsActor"],
       package_dir={'': 'python'},
      )
 
