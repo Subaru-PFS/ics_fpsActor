@@ -8,7 +8,8 @@ except ImportError:
 
 import os
 
-setup(
-    description = "Toy SDSS-3 actor.",
-)
+setup(name="ics_fpsActor",
+      description= "Toy SDSS-3 actor.",
+      package_dir={'': 'python'},
+     )
 
