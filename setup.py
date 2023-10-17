@@ -1,10 +1,14 @@
 import distutils
 from distutils.core import setup, Extension
 
-import sdss3tools
+try:
+    from sdss3tools import setup
+except ImportError:
+    from setuptools import setup
+
 import os
 
-sdss3tools.setup(
+setup(
     description = "Toy SDSS-3 actor.",
-    )
+)
 
