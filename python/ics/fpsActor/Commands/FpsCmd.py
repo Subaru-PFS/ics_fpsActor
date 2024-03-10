@@ -329,7 +329,11 @@ class FpsCmd(object):
         self.cc.pfi.reset(resetMask)
         time.sleep(1)
         res = self.cc.pfi.diag()
-        cmd.finish(f'text="diag = {res}"')
+        cmd.info(f'text="diag = {res}"')
+        self.loadModel()
+        cmd.info(f'text="Reload the XML file and connect to FPGA"')
+
+        cmd.finish(f'text="XML = {self.xml}"')
 
     def power(self, cmd):
         """Send the FPGA POWer command with a sector mask. """
@@ -369,7 +373,12 @@ class FpsCmd(object):
         self.cc.pfi.reset()
         time.sleep(1)
         res = self.cc.pfi.diag()
-        cmd.finish(f'text="diag = {res}"')
+        cmd.info(f'text="diag = {res}"')
+        
+        self.loadModel()
+        cmd.info(f'text="Reload the XML file and connect to FPGA"')
+
+        cmd.finish(f'text="XML = {self.xml}"')
 
     def powerOff(self, cmd):
         """Do what is required to power off all PFI sectors """
