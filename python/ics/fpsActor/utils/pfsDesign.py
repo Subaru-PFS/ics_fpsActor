@@ -5,7 +5,7 @@ import pandas as pd
 import pfs.utils.pfsDesignUtils as pfsDesignUtils
 from pfs.datamodel import TargetType, PfsDesign, FiberStatus
 from pfs.utils.fiberids import FiberIds
-from pfs.utils.pfsDesignUtils import fakeRa, fakeDec
+from pfs.utils.pfsDesignUtils import fakeRa, fakeDec, fakeRaDecFromPfiNominal
 
 pfsDesignDir = '/data/pfsDesign'
 from pfs.utils import butler
@@ -55,8 +55,7 @@ def createHomeDesign(calibModel, goodIdx, maskFile):
 
     # faking ra and dec.
     pfiNominal = sgfm.sort_values('fiberId')[['x', 'y']].to_numpy()
-    ra = fakeRa + 1e-3 * pfiNominal[:, 0]
-    dec = fakeDec + 1e-3 * pfiNominal[:, 1]
+    ra, dec = fakeRaDecFromPfiNominal(pfiNominal)
 
     # Set fiberStatus.
     sgfm['fiberStatus'] = FiberStatus.GOOD
@@ -95,8 +94,7 @@ def createBlackDotDesign(calibModel, goodIdx, maskFile):
 
     # faking ra and dec.
     pfiNominal = sgfm.sort_values('fiberId')[['x', 'y']].to_numpy()
-    ra = fakeRa + 1e-3 * pfiNominal[:, 0]
-    dec = fakeDec + 1e-3 * pfiNominal[:, 1]
+    ra, dec = fakeRaDecFromPfiNominal(pfiNominal)
 
     # Set fiberStatus.
     sgfm['fiberStatus'] = FiberStatus.GOOD
