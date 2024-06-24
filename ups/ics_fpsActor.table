@@ -1,7 +1,6 @@
 setupRequired(ics_actorkeys)
 setupRequired(tron_actorcore)
 setupRequired(ics_cobraCharmer)
-setupRequired(ics_mcsActor)
 setupRequired(spt_operational_database)
 setupRequired(datamodel)
 
