@@ -39,6 +39,7 @@ def writeDesign(pfsDesign):
 def createHomeDesign(calibModel, goodIdx, maskFile):
     """Create home design from current calibModel, ra and dec are faked."""
     gfm = pd.DataFrame(FiberIds().data)
+    
     sgfm = gfm.set_index('scienceFiberId').loc[np.arange(2394) + 1].reset_index().sort_values('cobraId')
     sgfm['x'] = np.real(calibModel.centers)
     sgfm['y'] = np.imag(calibModel.centers)

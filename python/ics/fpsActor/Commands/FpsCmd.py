@@ -822,14 +822,17 @@ class FpsCmd(object):
 
         # create or load design.
         if designId:
+            cmd.inform(f'text="Reading Design = {designId}"')
             pfsDesign = pfsDesignUtils.readDesign(designId)
             cobraIndex = pfsDesignUtils.homeMaskFromDesign(pfsDesign)
             goodIdx = self.cc.goodIdx[np.isin(self.cc.goodIdx, cobraIndex)]
         else:
+            cmd.inform(f'text="maskFile = {maskFile}"')
             # loading mask file and moving only cobra with bitMask==1
             goodIdx = self.loadGoodIdx(maskFile)
             pfsDesign = pfsDesignUtils.createHomeDesign(self.cc.calibModel, goodIdx, maskFile=False)
 
+        cmd.inform(f'text="Getting all avaliable cobra arms."')
         goodCobra = self.cc.allCobras[goodIdx]
 
         # Only grab a visit if we need one for the PFSC and pfsConfig files
@@ -1209,8 +1212,16 @@ class FpsCmd(object):
             df = pd.read_csv(maskFile, index_col=0)
             doMoveCobraIds = df[df.bitMask.astype('bool')].cobraId.to_numpy()
             return doMoveCobraIds - 1
+        
+        #self.logger.info(f"loadGoodIdx maskfile = {maskFile}")
 
-        doMove = self.cc.goodIdx if maskFile is None else loadMaskFile()
+        #doMove = self.cc.goodIdx if maskFile is None else loadMaskFile()
+        #doMove = self.cc.goodIdx if maskFile is None else self.logger.info(f"loadGoodIdx maskfile = {maskFile}")
+        if maskFile is None:
+            doMove = self.cc.goodIdx
+        else:
+            doMove = loadMaskFile()
+
         return self.cc.goodIdx[np.isin(self.cc.goodIdx, doMove)]
 
     def moveToPfsDesign(self, cmd):
@@ -1300,9 +1311,15 @@ class FpsCmd(object):
         cobraTargetTable.makeTargetTable(moves, self.cc, goodIdx)
         cobraTargetTable.writeTargetTable()
 
+        
+        
+        # Getting a new directory for this operation by running PFI connection using cobraCoach.
+        # This operation will update dataDir for both PFI and camera.  So that we can keep information correctly. 
+        self.cc.connect(False)
+        
         # Saving information for book keeping.
-        cmd.inform(f'text="Saving the list of targets to numpy file."')
-        np.save(dataPath / 'targets', targets)
+        np.save(f'{self.cc.runManager.dataDir}/targets', targets)
+        cmd.inform(f'text="Saving targets list to file {self.cc.runManager.dataDir}/targets.npy."')
 
         # adjust theta angles that is too closed to the CCW hard stops
         thetaMarginCCW = 0.1
@@ -1344,7 +1361,7 @@ class FpsCmd(object):
             cmd.inform(f'text="Cobra goHome is set to be {goHome}"')
             dataPath, atThetas, atPhis, moves[0, :, :2] = \
                 eng.moveThetaPhi(cIds, thetasVia, phisVia, relative=False, local=True, tolerance=tolerance,
-                                 tries=2, homed=goHome, newDir=True, thetaFast=True, phiFast=True,
+                                 tries=2, homed=goHome, newDir=False, thetaFast=True, phiFast=True,
                                  threshold=2.0, thetaMargin=np.deg2rad(thetaMarginDeg))
 
 
@@ -1356,12 +1373,13 @@ class FpsCmd(object):
                                  homed=False,
                                  newDir=False, thetaFast=False, phiFast=False, threshold=2.0,
                                  thetaMargin=np.deg2rad(thetaMarginDeg))
+            
         else:
             cIds = goodIdx
             dataPath, atThetas, atPhis, moves = eng.moveThetaPhi(cIds, thetas,
                                                                  phis, relative=False, local=True, tolerance=tolerance,
                                                                  tries=iteration, homed=goHome,
-                                                                 newDir=True, thetaFast=False, phiFast=False,
+                                                                 newDir=False, thetaFast=False, phiFast=False,
                                                                  threshold=2.0,
                                                                  thetaMargin=np.deg2rad(thetaMarginDeg))
         self.atThetas = atThetas
