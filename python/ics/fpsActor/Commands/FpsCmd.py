@@ -1371,7 +1371,7 @@ class FpsCmd(object):
                 eng.moveThetaPhi(cIds, thetas, phis, relative=False, local=True, tolerance=tolerance,
                                  tries=iteration - 2,
                                  homed=False,
-                                 newDir=False, thetaFast=False, phiFast=False, threshold=2.0,
+                                 newDir=False, thetaFast=False, phiFast=True, threshold=2.0,
                                  thetaMargin=np.deg2rad(thetaMarginDeg))
             
         else:
