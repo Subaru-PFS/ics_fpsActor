@@ -1354,7 +1354,8 @@ class FpsCmd(object):
 
             _useScaling, _maxSegments, _maxTotalSteps = self.cc.useScaling, self.cc.maxSegments, self.cc.maxTotalSteps
             self.cc.useScaling, self.cc.maxSegments, self.cc.maxTotalSteps = False, _maxSegments * 2, _maxTotalSteps * 2
-            
+            cmd.inform(f'text="useScaling={self.cc.useScaling}, maxSegments={self.cc.maxSegments}, maxTotalSteps={self.cc.maxTotalSteps}"')
+
             if shortExp is True:
                 cmd.inform(f'text="Using 0.8 second exposure time for first three iteration."')
                 self.cc.expTime = 0.8
@@ -1371,6 +1372,8 @@ class FpsCmd(object):
 
             self.cc.expTime = expTime
             self.cc.useScaling, self.cc.maxSegments, self.cc.maxTotalSteps = _useScaling, _maxSegments, _maxTotalSteps
+            cmd.inform(f'text="useScaling={self.cc.useScaling}, maxSegments={self.cc.maxSegments}, maxTotalSteps={self.cc.maxTotalSteps}"')
+            
             dataPath, atThetas, atPhis, moves[0, :, 2:] = \
                 eng.moveThetaPhi(cIds, thetas, phis, relative=False, local=True, tolerance=tolerance,
                                  tries=iteration - 2,
