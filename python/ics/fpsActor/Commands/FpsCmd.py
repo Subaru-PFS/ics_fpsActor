@@ -1290,7 +1290,11 @@ class FpsCmd(object):
         self.cc.trajectoryMode = False
         thetaHome = ((self.cc.calibModel.tht1 - self.cc.calibModel.tht0 + np.pi) % (np.pi * 2) + np.pi)
 
-
+        # Check if we have atThetas and atPhis. If not, we cannot proceed.
+        if hasattr(self, 'atThetas') is False:
+            cmd.fail('text="We are asking to move to a deisgn without cobra information.  Home them first."')
+            return
+        
         if goHome:
             cmd.inform(f'text="Setting ThetaAngle = Home and phiAngle = 0."')
             self.cc.setCurrentAngles(self.cc.allCobras, thetaAngles=thetaHome, phiAngles=0)
