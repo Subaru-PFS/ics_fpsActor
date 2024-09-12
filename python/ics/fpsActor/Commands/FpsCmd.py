@@ -1228,6 +1228,16 @@ class FpsCmd(object):
         """ Move cobras to a PFS design. """
         thetaMarginDeg = 5.0
         
+        """
+        Initialize the cobra control parameters. When moving to a design, these parameters need to be set.
+        If the convergence sequence is not completed, the parameters may continue to increase.
+        Therefore, it is necessary to reset the parameters.
+        """
+        self.cc.useScaling = False
+        self.cc.maxSegments = 10
+        self.cc.maxTotalSteps = 2000
+
+
         start = time.time()
         cmdKeys = cmd.cmd.keywords
 
@@ -1290,10 +1300,6 @@ class FpsCmd(object):
         self.cc.trajectoryMode = False
         thetaHome = ((self.cc.calibModel.tht1 - self.cc.calibModel.tht0 + np.pi) % (np.pi * 2) + np.pi)
 
-        # Check if we have atThetas and atPhis. If not, we cannot proceed.
-        if hasattr(self, 'atThetas') is False:
-            cmd.fail('text="We are asking to move to a deisgn without cobra information.  Home them first."')
-            return
         
         if goHome:
             cmd.inform(f'text="Setting ThetaAngle = Home and phiAngle = 0."')
@@ -1302,6 +1308,11 @@ class FpsCmd(object):
             cobraTargetTable = najaVenator.CobraTargetTable(visit, iteration, self.cc.calibModel, designId, goHome=True)
 
         else:
+            # Check if we have atThetas and atPhis. If not, we cannot proceed.
+            if hasattr(self, 'atThetas') is False:
+                cmd.fail('text="We are asking to move to a deisgn without cobra information.  Please use goHome option."')
+                return
+            
             cmd.inform(f'text="Number of cobras = {len(goodIdx)} Number of angles = {len(self.atThetas[goodIdx])}."')
             cmd.inform(f'text="Setting ThetaAngle = {self.atThetas[goodIdx]} and phiAngle = {self.atPhis[goodIdx]}."')
             self.cc.setCurrentAngles(self.cc.allCobras[goodIdx], 
