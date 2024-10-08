@@ -10,6 +10,7 @@ from ics.fpsActor.utils.pfsDesign import readDesign
 from opdb import opdb
 from pfs.datamodel import PfsConfig, FiberStatus, TargetType
 from pfs.utils.fiberids import FiberIds
+from scipy.interpolate import griddata
 
 __all__ = ["pfsConfigFromDesign", "makeVanillaPfsConfig", "makeTargetsArray", "tweakTargetPosition",
            "updatePfiCenter", "writePfsConfig", "ingestPfsConfig"]
@@ -97,18 +98,22 @@ def updatePfiCenter(pfsConfig, calibModel, cmd=None):
 
     # Retrieve dataset
     lastIteration = fetchFinalConvergence(pfsConfig.visit)
+
     # Setting missing matches to NaNs.
     noMatch = lastIteration.spot_id == -1
     lastIteration.loc[noMatch, 'pfi_center_x_mm'] = np.NaN
     lastIteration.loc[noMatch, 'pfi_center_y_mm'] = np.NaN
+
     # Fill final position with NaNs.
     pfiCenter = np.empty(pfsConfig.pfiNominal.shape, dtype=pfsConfig.pfiNominal.dtype)
     pfiCenter[:] = np.NaN
+
     # Construct the index.
     fiberId = FiberIds().cobraIdToFiberId(lastIteration.cobra_id.to_numpy())
     lastIteration['fiberId'] = fiberId
     fiberIndex = pd.DataFrame(dict(fiberId=pfsConfig.fiberId, tindex=np.arange(len(pfsConfig.fiberId))))
     fiberIndex = fiberIndex.set_index('fiberId').loc[fiberId].tindex.to_numpy()
+
     # Set final cobra position.
     pfiCenter[fiberIndex, 0] = lastIteration.pfi_center_x_mm.to_numpy()
     pfiCenter[fiberIndex, 1] = lastIteration.pfi_center_y_mm.to_numpy()
@@ -116,11 +121,36 @@ def updatePfiCenter(pfsConfig, calibModel, cmd=None):
 
     # Set BROKENFIBER, BROKENCOBRA, BLOCKED fiberStatus.
     pfsConfig = pfsDesignUtils.setFiberStatus(pfsConfig, calibModel=calibModel)
-    # Set BLACKDOT fiberStatus.
+
     lastIteration['fiberStatus'] = pfsConfig.fiberStatus[fiberIndex]
+    lastIteration['targetType'] = pfsConfig.targetType[fiberIndex]
+    lastIteration['ra'] = pfsConfig.ra[fiberIndex]
+    lastIteration['dec'] = pfsConfig.dec[fiberIndex]
+    lastIteration['pfi_nominal_x_mm'] = pfsConfig.pfiNominal[fiberIndex, 0]
+    lastIteration['pfi_nominal_y_mm'] = pfsConfig.pfiNominal[fiberIndex, 1]
+
+    # Set BLACKDOT fiberStatus.
     FIBER_GOOD_MASK = lastIteration.fiberStatus.to_numpy() == FiberStatus.GOOD
     lastIteration.loc[FIBER_GOOD_MASK & noMatch, 'fiberStatus'] = FiberStatus.BLACKSPOT
     pfsConfig.fiberStatus[fiberIndex] = lastIteration.fiberStatus.to_numpy()
+
+    # Setting ra,dec for UNASSIGNED target.
+    hadTarget = lastIteration.targetType.isin([TargetType.SCIENCE, TargetType.SKY, TargetType.FLUXSTD])
+    unassignedTarget = lastIteration.targetType == TargetType.UNASSIGNED
+
+    try:
+        radec = griddata(lastIteration.loc[hadTarget][['pfi_nominal_x_mm', 'pfi_nominal_y_mm']].to_numpy(),
+                         lastIteration.loc[hadTarget][['ra', 'dec']].to_numpy(),
+                         lastIteration.loc[unassignedTarget][['pfi_center_x_mm', 'pfi_center_y_mm']].to_numpy(),
+                         method='cubic')
+    except ValueError:
+        radec = lastIteration.loc[unassignedTarget][['ra', 'dec']].to_numpy()  # return the same values.
+
+    lastIteration.loc[unassignedTarget, 'ra'] = radec[:, 0]
+    lastIteration.loc[unassignedTarget, 'dec'] = radec[:, 1]
+
+    pfsConfig.ra[fiberIndex] = lastIteration.ra.to_numpy()
+    pfsConfig.dec[fiberIndex] = lastIteration.dec.to_numpy()
 
     if cmd:
         cmd.inform('text="pfsConfig updated successfully."')
