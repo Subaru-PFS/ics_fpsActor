@@ -26,6 +26,7 @@ from pfs.utils import butler
 from ics.cobraCharmer.cobraCoach import calculation
 from ics.cobraCharmer.cobraCoach  import cobraCoach
 from ics.cobraCharmer.cobraCoach  import engineer as eng
+from pfs.datamodel import FiberStatus
 
 reload(vis)
 
@@ -1406,8 +1407,9 @@ class FpsCmd(object):
         # Saving moves array
         np.save(dataPath / 'moves', moves)
 
-        # update pfiCenter.
-        maxIteration = pfsConfigUtils.updatePfiCenter(pfsConfig, self.cc.calibModel, cmd=cmd)
+        # update pfiCenter, cobra which are not matched will be set to NOTCONVERGED.
+        maxIteration = pfsConfigUtils.updatePfiCenter(pfsConfig, self.cc.calibModel, cmd=cmd,
+                                                      noMatchStatus=FiberStatus.NOTCONVERGED)
         cmd.inform(f'text="maxIteration from cobra_match : {int(maxIteration)}"')
 
         # write pfsConfig to disk.

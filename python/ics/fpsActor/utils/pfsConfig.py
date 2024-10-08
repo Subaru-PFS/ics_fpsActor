@@ -76,7 +76,7 @@ def tweakTargetPosition(pfsConfig, cmd=None):
     return pfsConfig
 
 
-def updatePfiCenter(pfsConfig, calibModel, cmd=None):
+def updatePfiCenter(pfsConfig, calibModel, cmd=None, noMatchStatus=FiberStatus.BLACKSPOT):
     """Update final cobra positions after converging to pfsDesign."""
 
     def fetchFinalConvergence(visitId):
@@ -129,9 +129,9 @@ def updatePfiCenter(pfsConfig, calibModel, cmd=None):
     lastIteration['pfi_nominal_x_mm'] = pfsConfig.pfiNominal[fiberIndex, 0]
     lastIteration['pfi_nominal_y_mm'] = pfsConfig.pfiNominal[fiberIndex, 1]
 
-    # Set BLACKDOT fiberStatus.
+    # Set fiberStatus for the not matched cobras, BLACKSPOT or NOTCONVERGED.
     FIBER_GOOD_MASK = lastIteration.fiberStatus.to_numpy() == FiberStatus.GOOD
-    lastIteration.loc[FIBER_GOOD_MASK & noMatch, 'fiberStatus'] = FiberStatus.BLACKSPOT
+    lastIteration.loc[FIBER_GOOD_MASK & noMatch, 'fiberStatus'] = noMatchStatus
     pfsConfig.fiberStatus[fiberIndex] = lastIteration.fiberStatus.to_numpy()
 
     # Setting ra,dec for UNASSIGNED target.
