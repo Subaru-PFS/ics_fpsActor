@@ -16,6 +16,73 @@ __all__ = ["pfsConfigFromDesign", "makeVanillaPfsConfig", "makeTargetsArray", "t
            "updatePfiCenter", "writePfsConfig", "ingestPfsConfig"]
 
 
+def indexFromCobraIdToFiberId(arrayWithCobraId, arrayWithFiberId):
+    """
+    Map an array of cobraId values to their corresponding indices in an array of fiberId values.
+
+    Parameters
+    ----------
+    arrayWithCobraId : array-like
+        Array of cobraId values to be mapped.
+    arrayWithFiberId : array-like
+        Array of fiberId values to find the index for each cobraId's corresponding fiberId.
+
+    Returns
+    -------
+    np.ndarray
+        Array of indices indicating the position of each cobraId's corresponding fiberId in `arrayWithFiberId`.
+    """
+    # Convert cobraId values to their corresponding fiberId values
+    fiberId = FiberIds().cobraIdToFiberId(arrayWithCobraId)
+
+    # Create a mapping of fiberId to index using a pandas DataFrame
+    index = pd.DataFrame(dict(fiberId=arrayWithFiberId, tindex=np.arange(len(arrayWithFiberId))))
+    # Set the fiberId as index and retrieve indices corresponding to the given fiberId values
+    index = index.set_index('fiberId').loc[fiberId].tindex.to_numpy()
+    return index
+
+
+def checkTargetsAreInRange(pfsConfig, calibModel):
+    """
+    Check if targets in the pfsDesign / pfsConfig are within the range of their corresponding cobra arms.
+
+    Parameters
+    ----------
+    pfsConfig : PfsConfig
+        The PFS configuration object containing target and position information.
+    calibModel : CalibrationModel
+        The calibration model object containing cobra properties and statuses.
+
+    Returns
+    -------
+    np.ndarray
+        Array of cobra IDs whose targets are out of range.
+    """
+    cobraIds = np.arange(2394) + 1
+    xCenters = np.array(calibModel.centers.real).astype('float32')
+    yCenters = np.array(calibModel.centers.imag).astype('float32')
+    armLengths = np.array(calibModel.L1 + calibModel.L2).astype('float32')
+
+    # Construct the index using cobraId and fiberId
+    fiberIndex = indexFromCobraIdToFiberId(cobraIds, pfsConfig.fiberId)
+
+    # Ensure pfsConfig attributes have a consistent byte order
+    pfiNominal = pfsConfig.pfiNominal[fiberIndex]
+
+    # Calculate the distance of targets from their respective cobra centers
+    targetDistanceFromCenter = np.hypot(pfiNominal[:, 0] - xCenters,
+                                        pfiNominal[:, 1] - yCenters)
+
+    # Define masks for target selection and out-of-range cobras
+    WITH_TARGET_MASK = np.isin(pfsConfig.targetType[fiberIndex],
+                               [TargetType.SCIENCE, TargetType.SKY, TargetType.FLUXSTD])
+    OUT_OF_RANGE_MASK = targetDistanceFromCenter > armLengths
+
+    # Select and return cobra IDs that are out of range
+    outOfRange = WITH_TARGET_MASK & OUT_OF_RANGE_MASK
+    return cobraIds[outOfRange]
+
+
 def pfsConfigFromDesign(pfsDesign, visit0):
     """Just make a PfsConfig file identical to PfsDesign."""
     return PfsConfig.fromPfsDesign(pfsDesign=pfsDesign, visit=visit0, pfiCenter=pfsDesign.pfiNominal)
@@ -109,10 +176,7 @@ def updatePfiCenter(pfsConfig, calibModel, cmd=None):
     pfiCenter[:] = np.NaN
 
     # Construct the index.
-    fiberId = FiberIds().cobraIdToFiberId(lastIteration.cobra_id.to_numpy())
-    lastIteration['fiberId'] = fiberId
-    fiberIndex = pd.DataFrame(dict(fiberId=pfsConfig.fiberId, tindex=np.arange(len(pfsConfig.fiberId))))
-    fiberIndex = fiberIndex.set_index('fiberId').loc[fiberId].tindex.to_numpy()
+    fiberIndex = indexFromCobraIdToFiberId(lastIteration.cobra_id.to_numpy(), pfsConfig.fiberId)
 
     # Set final cobra position.
     pfiCenter[fiberIndex, 0] = lastIteration.pfi_center_x_mm.to_numpy()
