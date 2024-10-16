@@ -76,7 +76,8 @@ def tweakTargetPosition(pfsConfig, cmd=None):
     return pfsConfig
 
 
-def updatePfiCenter(pfsConfig, calibModel, cmd=None):
+def updatePfiCenter(pfsConfig, calibModel, cmd=None, noMatchStatus=FiberStatus.BLACKSPOT,
+                    notConvergedDistanceThreshold=None):
     """Update final cobra positions after converging to pfsDesign."""
 
     def fetchFinalConvergence(visitId):
@@ -100,9 +101,9 @@ def updatePfiCenter(pfsConfig, calibModel, cmd=None):
     lastIteration = fetchFinalConvergence(pfsConfig.visit)
 
     # Setting missing matches to NaNs.
-    noMatch = lastIteration.spot_id == -1
-    lastIteration.loc[noMatch, 'pfi_center_x_mm'] = np.NaN
-    lastIteration.loc[noMatch, 'pfi_center_y_mm'] = np.NaN
+    NO_MATCH_MASK = lastIteration.spot_id == -1
+    lastIteration.loc[NO_MATCH_MASK, 'pfi_center_x_mm'] = np.NaN
+    lastIteration.loc[NO_MATCH_MASK, 'pfi_center_y_mm'] = np.NaN
 
     # Fill final position with NaNs.
     pfiCenter = np.empty(pfsConfig.pfiNominal.shape, dtype=pfsConfig.pfiNominal.dtype)
@@ -119,36 +120,47 @@ def updatePfiCenter(pfsConfig, calibModel, cmd=None):
     pfiCenter[fiberIndex, 1] = lastIteration.pfi_center_y_mm.to_numpy()
     pfsConfig.pfiCenter = pfiCenter
 
+    # Calculate distance to target.
+    distanceToTarget = np.hypot(pfsConfig.pfiNominal[:, 0] - pfsConfig.pfiCenter[:, 0],
+                                pfsConfig.pfiNominal[:, 1] - pfsConfig.pfiCenter[:, 1])
+
     # Set BROKENFIBER, BROKENCOBRA, BLOCKED fiberStatus.
     pfsConfig = pfsDesignUtils.setFiberStatus(pfsConfig, calibModel=calibModel)
 
+    # Populating the dataframe for convenience.
     lastIteration['fiberStatus'] = pfsConfig.fiberStatus[fiberIndex]
     lastIteration['targetType'] = pfsConfig.targetType[fiberIndex]
     lastIteration['ra'] = pfsConfig.ra[fiberIndex]
     lastIteration['dec'] = pfsConfig.dec[fiberIndex]
-    lastIteration['pfi_nominal_x_mm'] = pfsConfig.pfiNominal[fiberIndex, 0]
-    lastIteration['pfi_nominal_y_mm'] = pfsConfig.pfiNominal[fiberIndex, 1]
+    lastIteration[['pfi_nominal_x_mm', 'pfi_nominal_y_mm']] = pfsConfig.pfiNominal[fiberIndex]
+    lastIteration['distanceToTarget'] = distanceToTarget[fiberIndex]
 
-    # Set BLACKDOT fiberStatus.
+    # Making fiberStatus, targetType masks.
     FIBER_GOOD_MASK = lastIteration.fiberStatus.to_numpy() == FiberStatus.GOOD
-    lastIteration.loc[FIBER_GOOD_MASK & noMatch, 'fiberStatus'] = FiberStatus.BLACKSPOT
+    WITH_TARGET_MASK = lastIteration.targetType.isin([TargetType.SCIENCE, TargetType.SKY, TargetType.FLUXSTD])
+    UNASSIGNED_TARGET_MASK = lastIteration.targetType == TargetType.UNASSIGNED
+
+    # Set fiberStatus for the not matched cobras, BLACKSPOT or NOTCONVERGED.
+    lastIteration.loc[FIBER_GOOD_MASK & NO_MATCH_MASK, 'fiberStatus'] = noMatchStatus
+
+    # setting NOTCONVERGED fiberStatus for cobra above distance threshold.
+    if notConvergedDistanceThreshold:
+        aboveThreshold = lastIteration.distanceToTarget.to_numpy() > notConvergedDistanceThreshold
+        cobraMask = aboveThreshold & WITH_TARGET_MASK & FIBER_GOOD_MASK & ~NO_MATCH_MASK
+        lastIteration.loc[cobraMask, 'fiberStatus'] = FiberStatus.NOTCONVERGED
+
     pfsConfig.fiberStatus[fiberIndex] = lastIteration.fiberStatus.to_numpy()
 
     # Setting ra,dec for UNASSIGNED target.
-    hadTarget = lastIteration.targetType.isin([TargetType.SCIENCE, TargetType.SKY, TargetType.FLUXSTD])
-    unassignedTarget = lastIteration.targetType == TargetType.UNASSIGNED
-
     try:
-        radec = griddata(lastIteration.loc[hadTarget][['pfi_nominal_x_mm', 'pfi_nominal_y_mm']].to_numpy(),
-                         lastIteration.loc[hadTarget][['ra', 'dec']].to_numpy(),
-                         lastIteration.loc[unassignedTarget][['pfi_center_x_mm', 'pfi_center_y_mm']].to_numpy(),
+        radec = griddata(lastIteration.loc[WITH_TARGET_MASK][['pfi_nominal_x_mm', 'pfi_nominal_y_mm']].to_numpy(),
+                         lastIteration.loc[WITH_TARGET_MASK][['ra', 'dec']].to_numpy(),
+                         lastIteration.loc[UNASSIGNED_TARGET_MASK][['pfi_center_x_mm', 'pfi_center_y_mm']].to_numpy(),
                          method='cubic')
     except ValueError:
-        radec = lastIteration.loc[unassignedTarget][['ra', 'dec']].to_numpy()  # return the same values.
+        radec = lastIteration.loc[UNASSIGNED_TARGET_MASK][['ra', 'dec']].to_numpy()  # return the same values.
 
-    lastIteration.loc[unassignedTarget, 'ra'] = radec[:, 0]
-    lastIteration.loc[unassignedTarget, 'dec'] = radec[:, 1]
-
+    lastIteration.loc[UNASSIGNED_TARGET_MASK, ['ra', 'dec']] = radec
     pfsConfig.ra[fiberIndex] = lastIteration.ra.to_numpy()
     pfsConfig.dec[fiberIndex] = lastIteration.dec.to_numpy()
 
