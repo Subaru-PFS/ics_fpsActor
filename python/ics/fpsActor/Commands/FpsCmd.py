@@ -1228,7 +1228,7 @@ class FpsCmd(object):
     def moveToPfsDesign(self, cmd):
         """ Move cobras to a PFS design. """
         thetaMarginDeg = 5.0
-        
+
         """
         Initialize the cobra control parameters. When moving to a design, these parameters need to be set.
         If the convergence sequence is not completed, the parameters may continue to increase.
@@ -1238,7 +1238,6 @@ class FpsCmd(object):
         self.cc.maxSegments = 10
         self.cc.maxTotalSteps = 2000
 
-
         start = time.time()
         cmdKeys = cmd.cmd.keywords
 
@@ -1247,6 +1246,12 @@ class FpsCmd(object):
         maskFile = cmdKeys['maskFile'].values[0] if 'maskFile' in cmdKeys else None
         iteration = cmdKeys['iteration'].values[0] if 'iteration' in cmdKeys else 12
         tolerance = cmdKeys['tolerance'].values[0] if 'tolerance' in cmdKeys else 0.01
+        try:
+            notConvergedDistanceThreshold = self.actor.actorConfig['pfsConfig']['notConvergedDistanceThreshold']
+            # Just in case, we use large tolerance.
+            notConvergedDistanceThreshold = max(notConvergedDistanceThreshold, 5*tolerance)
+        except KeyError:
+            notConvergedDistanceThreshold = None
 
         shortExp = 'shortExpOff' not in cmdKeys
         twoSteps = 'twoStepsOff' not in cmdKeys
@@ -1409,7 +1414,8 @@ class FpsCmd(object):
 
         # update pfiCenter, cobra which are not matched will be set to NOTCONVERGED.
         maxIteration = pfsConfigUtils.updatePfiCenter(pfsConfig, self.cc.calibModel, cmd=cmd,
-                                                      noMatchStatus=FiberStatus.NOTCONVERGED)
+                                                      noMatchStatus=FiberStatus.NOTCONVERGED,
+                                                      notConvergedDistanceThreshold=notConvergedDistanceThreshold)
         cmd.inform(f'text="maxIteration from cobra_match : {int(maxIteration)}"')
 
         # write pfsConfig to disk.
