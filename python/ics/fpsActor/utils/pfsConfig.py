@@ -6,25 +6,17 @@ import pfs.utils.coordinates.updateTargetPosition as updateTargetPosition
 import pfs.utils.ingestPfsDesign as ingestPfsDesign
 import pfs.utils.pfsConfigUtils as pfsConfigUtils
 import pfs.utils.pfsDesignUtils as pfsDesignUtils
-from ics.fpsActor.utils.pfsDesign import readDesign
 from opdb import opdb
 from pfs.datamodel import PfsConfig, FiberStatus, TargetType
 from pfs.utils.fiberids import FiberIds
 from scipy.interpolate import griddata
 
-__all__ = ["pfsConfigFromDesign", "makeVanillaPfsConfig", "makeTargetsArray", "tweakTargetPosition",
+__all__ = ["pfsConfigFromDesign", "makeTargetsArray", "tweakTargetPosition",
            "updatePfiCenter", "writePfsConfig", "ingestPfsConfig"]
 
 
-def pfsConfigFromDesign(pfsDesign, visit0):
+def pfsConfigFromDesign(pfsDesign, visit0, header=None, maskFile=None):
     """Just make a PfsConfig file identical to PfsDesign."""
-    return PfsConfig.fromPfsDesign(pfsDesign=pfsDesign, visit=visit0, pfiCenter=pfsDesign.pfiNominal)
-
-
-def makeVanillaPfsConfig(pfsDesignId, visit0, maskFile=None):
-    """Load pfsDesign and return a PfsConfig file identical to PfsDesign."""
-    pfsDesign = readDesign(pfsDesignId)
-
     if maskFile:
         # retrieving masked cobras/fibers.
         maskFile = pd.read_csv(maskFile, index_col=0)
@@ -34,7 +26,7 @@ def makeVanillaPfsConfig(pfsDesignId, visit0, maskFile=None):
         noTargetMask = np.logical_and(noEng, np.isin(pfsDesign.fiberId, noTarget.fiberId))
         pfsDesign.targetType[noTargetMask] = TargetType.UNASSIGNED
 
-    return pfsConfigFromDesign(pfsDesign, visit0)
+        return PfsConfig.fromPfsDesign(pfsDesign, visit0, pfsDesign.pfiNominal, header=header)
 
 
 def makeTargetsArray(pfsConfig):
