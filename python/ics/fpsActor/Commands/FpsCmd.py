@@ -717,8 +717,8 @@ class FpsCmd(object):
             runDir, bad = eng.makePhiMotorMaps(
                 newXml, steps=steps, totalSteps=totalSteps, repeat=repeat, fast=False)
 
-            self.xml = pathlib.Path(f'{runDir}/output/{newXml}')
-            self.cc.pfi.loadModel([self.xml])
+            #self.xml = pathlib.Path(f'{runDir}/output/{newXml}')
+            #self.cc.pfi.loadModel([self.xml])
 
             if slowOnly is False:
                 self.logger.info(f'Running PHI Fast motor map.')
