@@ -27,6 +27,7 @@ from ics.cobraCharmer.cobraCoach import calculation
 from ics.cobraCharmer.cobraCoach  import cobraCoach
 from ics.cobraCharmer.cobraCoach  import engineer as eng
 from pfs.datamodel import FiberStatus
+import ics.utils.sps.fits as fits
 
 reload(vis)
 
@@ -785,14 +786,15 @@ class FpsCmd(object):
         cmdKeys = cmd.cmd.keywords
 
         designId = cmdKeys['designId'].values[0]
-
         visit = self.actor.visitor.setOrGetVisit(cmd)
+
+        # Loading pfsDesign file
         pfsDesign = pfsDesignUtils.readDesign(designId)
 
-        # making base pfsConfig.
-        pfsConfig = pfsConfigUtils.pfsConfigFromDesign(pfsDesign, visit0=visit)
+        # making base pfsConfig from design file, fetching additional keys from gen2.
+        cards = fits.getPfsConfigCards(self.actor, cmd, visit, expType='acquisition')
+        pfsConfig = pfsConfigUtils.pfsConfigFromDesign(pfsDesign, visit, header=cards)
         cmd.inform(f'pfsConfig=0x{pfsDesign.pfsDesignId:016x},{visit},inProgress')
-        start = time.time()
 
         maxIteration = pfsConfigUtils.updatePfiCenter(pfsConfig, self.cc.calibModel, cmd=cmd)
 
@@ -802,7 +804,7 @@ class FpsCmd(object):
         pfsConfigUtils.ingestPfsConfig(pfsConfig,
                                        allocated_at='now',
                                        converg_num_iter=maxIteration,
-                                       converg_elapsed_time=round(time.time() - start, 3),
+                                       converg_elapsed_time=0,
                                        cmd=cmd)
 
         cmd.finish(f'pfsConfig=0x{pfsConfig.pfsDesignId:016x},{visit},Done')
@@ -862,8 +864,9 @@ class FpsCmd(object):
 
         # Only generate pfsConfigs if we take an image which needs them.
         if not noMCSexposure:
-            # making base pfsConfig.
-            pfsConfig = pfsConfigUtils.pfsConfigFromDesign(pfsDesign, visit0=visit)
+            # making base pfsConfig from design file, fetching additional keys from gen2.
+            cards = fits.getPfsConfigCards(self.actor, cmd, visit, expType='acquisition')
+            pfsConfig = pfsConfigUtils.pfsConfigFromDesign(pfsDesign, visit, header=cards)
             cmd.inform(f'pfsConfig=0x{pfsDesign.pfsDesignId:016x},{visit},inProgress')
 
             maxIteration = pfsConfigUtils.updatePfiCenter(pfsConfig, self.cc.calibModel, cmd=cmd)
@@ -1266,8 +1269,12 @@ class FpsCmd(object):
         # import pdb; pdb.set_trace()
         visit = self.actor.visitor.setOrGetVisit(cmd)
 
-        # making base pfsConfig.
-        pfsConfig = pfsConfigUtils.makeVanillaPfsConfig(designId, visit0=visit, maskFile=maskFile)
+        # Loading pfsDesign file.
+        pfsDesign = pfsDesignUtils.readDesign(designId)
+
+        # making base pfsConfig from design file, fetching additional keys from gen2.
+        cards = fits.getPfsConfigCards(self.actor, cmd, visit, expType='acquisition')
+        pfsConfig = pfsConfigUtils.pfsConfigFromDesign(pfsDesign, visit, header=cards, maskFile=maskFile)
         cmd.inform(f'pfsConfig=0x{designId:016x},{visit},Preparing')
 
         if doTweak:
