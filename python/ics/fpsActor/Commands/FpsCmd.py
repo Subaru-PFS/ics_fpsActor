@@ -792,8 +792,7 @@ class FpsCmd(object):
         pfsDesign = pfsDesignUtils.readDesign(designId)
 
         # making base pfsConfig from design file, fetching additional keys from gen2.
-        cards = fits.getPfsConfigCards(self.actor, cmd, visit, expType='acquisition')
-        pfsConfig = pfsConfigUtils.pfsConfigFromDesign(pfsDesign, visit, header=cards)
+        pfsConfig = self.getPfsConfig(cmd, visit=visit, pfsDesign=pfsDesign)
         cmd.inform(f'pfsConfig=0x{pfsDesign.pfsDesignId:016x},{visit},inProgress')
 
         maxIteration = pfsConfigUtils.updatePfiCenter(pfsConfig, self.cc.calibModel, cmd=cmd)
@@ -865,8 +864,7 @@ class FpsCmd(object):
         # Only generate pfsConfigs if we take an image which needs them.
         if not noMCSexposure:
             # making base pfsConfig from design file, fetching additional keys from gen2.
-            cards = fits.getPfsConfigCards(self.actor, cmd, visit, expType='acquisition')
-            pfsConfig = pfsConfigUtils.pfsConfigFromDesign(pfsDesign, visit, header=cards)
+            pfsConfig = self.getPfsConfig(cmd, visit=visit, pfsDesign=pfsDesign)
             cmd.inform(f'pfsConfig=0x{pfsDesign.pfsDesignId:016x},{visit},inProgress')
 
             maxIteration = pfsConfigUtils.updatePfiCenter(pfsConfig, self.cc.calibModel, cmd=cmd)
@@ -1228,6 +1226,11 @@ class FpsCmd(object):
 
         return self.cc.goodIdx[np.isin(self.cc.goodIdx, doMove)]
 
+    def getPfsConfig(self, cmd, visit, pfsDesign, maskFile=None):
+        """Get pfsConfig from pfsDesign, adding additional gen2 keys."""
+        cards = fits.getPfsConfigCards(self.actor, cmd, visit, expType='acquisition')
+        return pfsConfigUtils.pfsConfigFromDesign(pfsDesign, visit, header=cards, maskFile=maskFile)
+
     def moveToPfsDesign(self, cmd):
         """ Move cobras to a PFS design. """
         thetaMarginDeg = 5.0
@@ -1273,8 +1276,7 @@ class FpsCmd(object):
         pfsDesign = pfsDesignUtils.readDesign(designId)
 
         # making base pfsConfig from design file, fetching additional keys from gen2.
-        cards = fits.getPfsConfigCards(self.actor, cmd, visit, expType='acquisition')
-        pfsConfig = pfsConfigUtils.pfsConfigFromDesign(pfsDesign, visit, header=cards, maskFile=maskFile)
+        pfsConfig = self.getPfsConfig(cmd, visit=visit, pfsDesign=pfsDesign, maskFile=maskFile)
         cmd.inform(f'pfsConfig=0x{designId:016x},{visit},Preparing')
 
         if doTweak:
