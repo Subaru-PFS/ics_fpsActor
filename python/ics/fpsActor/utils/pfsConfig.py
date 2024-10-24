@@ -26,7 +26,7 @@ def pfsConfigFromDesign(pfsDesign, visit0, header=None, maskFile=None):
         noTargetMask = np.logical_and(noEng, np.isin(pfsDesign.fiberId, noTarget.fiberId))
         pfsDesign.targetType[noTargetMask] = TargetType.UNASSIGNED
 
-        return PfsConfig.fromPfsDesign(pfsDesign, visit0, pfsDesign.pfiNominal, header=header)
+    return PfsConfig.fromPfsDesign(pfsDesign, visit0, pfsDesign.pfiNominal, header=header)
 
 
 def makeTargetsArray(pfsConfig):
