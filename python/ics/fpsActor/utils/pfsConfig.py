@@ -171,7 +171,7 @@ def finalize(pfsConfig, calibModel, cmd=None, noMatchStatus=FiberStatus.BLACKSPO
 
     if any(~np.isnan(radec.ravel())):
         nRa, nDec = np.sum(~np.isnan(radec), axis=0)
-        logger.info(f'{pfsConfig.filename} successfully recovered ra{nRa} dec{nDec} for UNASSIGNED target...')
+        logger.info(f'{pfsConfig.filename} successfully recovered nRa({nRa}) nDec({nDec}) for UNASSIGNED target...')
 
     if cmd:
         cmd.inform('text="pfsConfig updated successfully."')
