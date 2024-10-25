@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime as datetime
 
 import numpy as np
@@ -12,7 +13,7 @@ from pfs.utils.fiberids import FiberIds
 from scipy.interpolate import griddata
 
 __all__ = ["pfsConfigFromDesign", "makeTargetsArray", "tweakTargetPosition",
-           "updatePfiCenter", "writePfsConfig", "ingestPfsConfig"]
+           "finalize", "writePfsConfig", "ingestPfsConfig"]
 
 
 def pfsConfigFromDesign(pfsDesign, visit0, header=None, maskFile=None):
@@ -68,9 +69,8 @@ def tweakTargetPosition(pfsConfig, cmd=None):
     return pfsConfig
 
 
-def updatePfiCenter(pfsConfig, calibModel, cmd=None, noMatchStatus=FiberStatus.BLACKSPOT,
-                    notConvergedDistanceThreshold=None):
-    """Update final cobra positions after converging to pfsDesign."""
+def finalize(pfsConfig, calibModel, cmd=None, noMatchStatus=FiberStatus.BLACKSPOT, notConvergedDistanceThreshold=None):
+    """Finalize pfsConfig after converging, updating pfiCenter, fiberStatus, ra, dec"""
 
     def fetchFinalConvergence(visitId):
         """Retrieve final cobra position in mm.
@@ -89,8 +89,15 @@ def updatePfiCenter(pfsConfig, calibModel, cmd=None, noMatchStatus=FiberStatus.B
         lastIteration = db.fetch_query(sql)
         return lastIteration
 
+    logger = logging.getLogger('pfsConfig')
+
     # Retrieve dataset
     lastIteration = fetchFinalConvergence(pfsConfig.visit)
+
+    if not len(lastIteration):
+        if cmd:
+            cmd.warn(f'text="could not find cobra_match data for {pfsConfig.filename}"')
+        return 0
 
     # Setting missing matches to NaNs.
     NO_MATCH_MASK = lastIteration.spot_id == -1
@@ -111,6 +118,7 @@ def updatePfiCenter(pfsConfig, calibModel, cmd=None, noMatchStatus=FiberStatus.B
     pfiCenter[fiberIndex, 0] = lastIteration.pfi_center_x_mm.to_numpy()
     pfiCenter[fiberIndex, 1] = lastIteration.pfi_center_y_mm.to_numpy()
     pfsConfig.pfiCenter = pfiCenter
+    logger.info(f'{pfsConfig.filename} pfiCenter updated successfully...')
 
     # Calculate distance to target.
     distanceToTarget = np.hypot(pfsConfig.pfiNominal[:, 0] - pfsConfig.pfiCenter[:, 0],
@@ -142,6 +150,7 @@ def updatePfiCenter(pfsConfig, calibModel, cmd=None, noMatchStatus=FiberStatus.B
         lastIteration.loc[cobraMask, 'fiberStatus'] = FiberStatus.NOTCONVERGED
 
     pfsConfig.fiberStatus[fiberIndex] = lastIteration.fiberStatus.to_numpy()
+    logger.info(f'{pfsConfig.filename} fiberStatus updated successfully...')
 
     # Setting ra,dec for UNASSIGNED target.
     try:
@@ -159,6 +168,10 @@ def updatePfiCenter(pfsConfig, calibModel, cmd=None, noMatchStatus=FiberStatus.B
     lastIteration.loc[UNASSIGNED_TARGET_MASK, ['ra', 'dec']] = radec
     pfsConfig.ra[fiberIndex] = lastIteration.ra.to_numpy()
     pfsConfig.dec[fiberIndex] = lastIteration.dec.to_numpy()
+
+    if any(~np.isnan(radec.ravel())):
+        nRa, nDec = np.sum(~np.isnan(radec), axis=0)
+        logger.info(f'{pfsConfig.filename} successfully recovered ra{nRa} dec{nDec} for UNASSIGNED target...')
 
     if cmd:
         cmd.inform('text="pfsConfig updated successfully."')

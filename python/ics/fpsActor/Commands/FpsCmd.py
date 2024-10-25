@@ -795,7 +795,7 @@ class FpsCmd(object):
         pfsConfig = self.getPfsConfig(cmd, visit=visit, pfsDesign=pfsDesign)
         cmd.inform(f'pfsConfig=0x{pfsDesign.pfsDesignId:016x},{visit},inProgress')
 
-        maxIteration = pfsConfigUtils.updatePfiCenter(pfsConfig, self.cc.calibModel, cmd=cmd)
+        maxIteration = pfsConfigUtils.finalize(pfsConfig, self.cc.calibModel, cmd=cmd)
 
         # write pfsConfig to disk.
         pfsConfigUtils.writePfsConfig(pfsConfig, cmd=cmd)
@@ -867,7 +867,7 @@ class FpsCmd(object):
             pfsConfig = self.getPfsConfig(cmd, visit=visit, pfsDesign=pfsDesign)
             cmd.inform(f'pfsConfig=0x{pfsDesign.pfsDesignId:016x},{visit},inProgress')
 
-            maxIteration = pfsConfigUtils.updatePfiCenter(pfsConfig, self.cc.calibModel, cmd=cmd)
+            maxIteration = pfsConfigUtils.finalize(pfsConfig, self.cc.calibModel, cmd=cmd)
 
             # write pfsConfig to disk.
             pfsConfigUtils.writePfsConfig(pfsConfig, cmd=cmd)
@@ -1422,7 +1422,7 @@ class FpsCmd(object):
         np.save(dataPath / 'moves', moves)
 
         # update pfiCenter, cobra which are not matched will be set to NOTCONVERGED.
-        maxIteration = pfsConfigUtils.updatePfiCenter(pfsConfig, self.cc.calibModel, cmd=cmd,
+        maxIteration = pfsConfigUtils.finalize(pfsConfig, self.cc.calibModel, cmd=cmd,
                                                       noMatchStatus=FiberStatus.NOTCONVERGED,
                                                       notConvergedDistanceThreshold=notConvergedDistanceThreshold)
         cmd.inform(f'text="maxIteration from cobra_match : {int(maxIteration)}"')
