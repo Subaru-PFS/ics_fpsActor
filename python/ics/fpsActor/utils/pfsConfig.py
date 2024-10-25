@@ -145,12 +145,16 @@ def updatePfiCenter(pfsConfig, calibModel, cmd=None, noMatchStatus=FiberStatus.B
 
     # Setting ra,dec for UNASSIGNED target.
     try:
-        radec = griddata(lastIteration.loc[WITH_TARGET_MASK][['pfi_nominal_x_mm', 'pfi_nominal_y_mm']].to_numpy(),
-                         lastIteration.loc[WITH_TARGET_MASK][['ra', 'dec']].to_numpy(),
-                         lastIteration.loc[UNASSIGNED_TARGET_MASK][['pfi_center_x_mm', 'pfi_center_y_mm']].to_numpy(),
+        radec = griddata(np.vstack((lastIteration.pfi_nominal_x_mm.to_numpy()[WITH_TARGET_MASK],
+                                    lastIteration.pfi_nominal_y_mm.to_numpy()[WITH_TARGET_MASK])).transpose(),
+                         np.vstack((lastIteration.ra.to_numpy()[WITH_TARGET_MASK],
+                                    lastIteration.dec.to_numpy()[WITH_TARGET_MASK])).transpose(),
+                         np.vstack((lastIteration.pfi_center_x_mm.to_numpy()[UNASSIGNED_TARGET_MASK],
+                                    lastIteration.pfi_center_y_mm.to_numpy()[UNASSIGNED_TARGET_MASK])).transpose(),
                          method='cubic')
     except ValueError:
-        radec = lastIteration.loc[UNASSIGNED_TARGET_MASK][['ra', 'dec']].to_numpy()  # return the same values.
+        radec = np.vstack((lastIteration.ra.to_numpy()[UNASSIGNED_TARGET_MASK],
+                           lastIteration.dec.to_numpy()[UNASSIGNED_TARGET_MASK])).transpose()
 
     lastIteration.loc[UNASSIGNED_TARGET_MASK, ['ra', 'dec']] = radec
     pfsConfig.ra[fiberIndex] = lastIteration.ra.to_numpy()
