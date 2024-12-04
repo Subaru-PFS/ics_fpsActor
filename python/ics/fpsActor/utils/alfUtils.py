@@ -1,7 +1,9 @@
 import glob
 import math
 import os
+import time
 from datetime import timedelta
+from multiprocessing import Pool
 
 import numpy as np
 import pandas as pd
@@ -399,7 +401,7 @@ def makeHideCobraMaskFile(cobraMatch, iteration, outputDir):
     return maskFile, maskFilepath
 
 
-def calcSpeed(cobraData, scalingDf, nIterForScaling):
+def calcSpeed(cobraData, scalingDf):
     """
     Calculate the angular speed of a cobra.
 
@@ -415,40 +417,114 @@ def calcSpeed(cobraData, scalingDf, nIterForScaling):
     float
         Median angular speed of the cobra.
     """
-    phiX, phiY = findPhiCenter(cobraData)
+
+    def robustFindPhiCenter(cobraData, dfi2):
+        robustPhi = []
+
+        for iteration in range(-1, dfi2.iteration.max() + 1):
+            cobraData = cobraData.copy()
+
+            if iteration != -1:
+                iterVal = dfi2[dfi2.iteration == iteration].squeeze()
+                cobraData['xPosition'] = iterVal.pfi_center_x_mm
+                cobraData['yPosition'] = iterVal.pfi_center_y_mm
+
+                try:
+                    robustPhi.append(findPhiCenter(cobraData))
+                except:
+                    robustPhi.append((np.nan, np.nan))
+
+        robustPhi = np.array(robustPhi)
+        return np.nanmedian(robustPhi, axis=0)
+
+    def calcAngularSpeed(dx, dy):
+        angles = np.arctan2(dy, dx)  # Angles in radians
+        speed = np.diff(angles)
+
+        return np.median(speed)
 
     dfi2 = scalingDf[scalingDf.cobra_id == cobraData.cobraId].sort_values('iteration')
     dfi2.loc[dfi2.spot_id == -1, 'pfi_center_x_mm'] = np.nan
     dfi2.loc[dfi2.spot_id == -1, 'pfi_center_y_mm'] = np.nan
 
+    phiX, phiY = robustFindPhiCenter(cobraData, dfi2)
+
     xMm = np.concatenate([[cobraData.xPosition], dfi2.pfi_center_x_mm.to_numpy()])
     yMm = np.concatenate([[cobraData.yPosition], dfi2.pfi_center_y_mm.to_numpy()])
 
-    useX = xMm[:nIterForScaling + 1]
-    useY = yMm[:nIterForScaling + 1]
+    iEnd = len(xMm) // 2 + 1
+    useX1, useX2 = xMm[:iEnd], xMm[iEnd - 1:]
+    useY1, useY2 = yMm[:iEnd], yMm[iEnd - 1:]
 
-    indice, = np.where(np.isnan(useX))
-    firstHidden = len(useX) if not indice.size else np.min(indice)
+    speed1 = calcAngularSpeed(useX1 - phiX, useY1 - phiY)
+    speed2 = calcAngularSpeed(useX2 - phiX, useY2 - phiY)
 
-    if firstHidden == 1:
-        inter = np.array(
-            circleIntersections(phiX, phiY, cobraData.L2, cobraData.xDot, cobraData.yDot, cobraData.rDot / 2))
-        xi, yi = inter[np.argmin(np.hypot(xMm[0] - inter[:, 0], yMm[0] - inter[:, 1]))]
-        useX[1] = xi
-        useY[1] = yi
+    interPhiDot = np.array(
+        circleIntersections(phiX, phiY, cobraData.L2, cobraData.xDot, cobraData.yDot, cobraData.rDot / 2))
 
-        firstHidden += 1
+    if interPhiDot.size:
+        interX, interY = interPhiDot[np.argmin(np.hypot(interPhiDot[:, 0] - useX2[-1], interPhiDot[:, 1] - useY2[-1]))]
+        distance = np.arctan2(interY - phiY, interX - phiX)  # Angles in radians
+    else:
+        distance = np.nan
 
-    useX = useX[:firstHidden]
-    useY = useY[:firstHidden]
-
-    angles = np.arctan2(useY - phiY, useX - phiX)  # Angles in radians
-    speed = np.diff(angles)
-
-    return np.median(speed)
+    return speed1, speed2, distance
 
 
-def makeScaling(convergenceDf, scalingDf, nIterForScaling, outputDir, maxScaling=5, minScaling=0.1):
+def process_cobra(args):
+    """
+    Worker function to process a single cobraId group.
+    """
+    cobraId, cobraData, scalingDf = args
+    cobraData = cobraData.squeeze()
+
+    try:
+        speed1, speed2, distance = calcSpeed(cobraData, scalingDf)
+    except:
+        speed1, speed2, distance = np.nan, np.nan, np.nan
+
+    return cobraId, speed1, speed2, distance
+
+
+def parallel_speed_calculation(convergenceDf, scalingDf, num_cores=2):
+    """
+    Perform parallel computation of speeds and scalings for cobras.
+
+    Parameters:
+    convergenceDf : DataFrame
+        Dataframe containing convergence information.
+    scalingDf : DataFrame
+        Dataframe containing scaling information.
+    num_cores : int
+        Number of cores to use for multiprocessing.
+
+    Returns:
+    DataFrame
+        Dataframe with calculated speeds and scalings.
+    """
+    # Filter valid cobras
+    convergenceDf = convergenceDf[convergenceDf.COBRA_OK_MASK]
+
+    results = [process_cobra((cobraId, group, scalingDf)) for cobraId, group in convergenceDf.groupby('cobraId')]
+
+    # Prepare arguments for multiprocessing
+    # cobra_groups = [(cobraId, group, scalingDf) for cobraId, group in convergenceDf.groupby('cobraId')]
+
+    # Use multiprocessing to process cobras in parallel
+    #with Pool(processes=num_cores) as pool:
+    #    results = pool.map(process_cobra, cobra_groups)
+
+    # Convert results to a DataFrame
+    speeds = pd.DataFrame(results, columns=['cobraId', 'speed1', 'speed2', 'distance'])
+
+    # Calculate scaling factors
+    speeds['scaling1'] = speeds.speed1.median() / speeds.speed1.to_numpy()
+    speeds['scaling2'] = speeds.speed2.median() / speeds.speed2.to_numpy()
+
+    return speeds
+
+
+def makeScaling(nearConvergenceId, visit, outputDir, maxScaling=5, minScaling=0.1, numCores=2):
     """
     Generate scaling factors for cobra speeds and save to a scaling file.
 
@@ -470,34 +546,30 @@ def makeScaling(convergenceDf, scalingDf, nIterForScaling, outputDir, maxScaling
     str
         File path of the generated scaling file.
     """
-    speeds = []
-    convergenceDf = convergenceDf[convergenceDf.COBRA_OK_MASK]
+    # calculate the scaling
+    convergenceDf = loadConvergenceDf(nearConvergenceId)
+    scalingDf = getCobraMatchData(visit)
 
-    for cobraId, cobraData in convergenceDf.groupby('cobraId'):
-        cobraData = cobraData.squeeze()
+    speeds = parallel_speed_calculation(convergenceDf, scalingDf, num_cores=numCores)
 
-        try:
-            speed = calcSpeed(cobraData, scalingDf, nIterForScaling)
-        except:
-            speed = np.nan
+    # Calculate scaling factors
+    speeds['scaling1'] = speeds.speed1.median() / speeds.speed1.to_numpy()
+    speeds['scaling2'] = speeds.speed2.median() / speeds.speed2.to_numpy()
 
-        speeds.append((cobraId, speed))
+    for column in ['scaling1', 'scaling2']:
+        speeds.loc[np.isnan(speeds.scaling2), column] = 1
+        speeds.loc[speeds.scaling2 < 0, column] = 1
+        speeds.loc[speeds.scaling2 > 10, column] = 1
 
-    speeds = pd.DataFrame(speeds, columns=['cobraId', 'speed'])
+        speeds.loc[speeds[column] > maxScaling, column] = maxScaling
+        speeds.loc[speeds[column] < minScaling, column] = minScaling
 
-    speeds['scaling'] = speeds.speed.median() / speeds.speed.to_numpy()
+    final = pd.DataFrame(dict(cobraId=np.arange(1, 2395)))
 
-    speeds.loc[np.isnan(speeds.scaling), 'scaling'] = 1
-    speeds.loc[speeds.scaling < 0, 'scaling'] = 1
-    speeds.loc[speeds.scaling > 10, 'scaling'] = 1
-    speeds.loc[speeds.scaling > maxScaling, 'scaling'] = maxScaling
-    speeds.loc[speeds.scaling < minScaling, 'scaling'] = minScaling
-
-    final = pd.DataFrame(dict(cobraId=sgfm.cobraId.to_numpy()))
-    final['speed'] = np.nan
-    final['scaling'] = 1
-    final.loc[speeds.cobraId.to_numpy() - 1, 'speed'] = speeds.speed.to_numpy()
-    final.loc[speeds.cobraId.to_numpy() - 1, 'scaling'] = speeds.scaling.to_numpy()
+    for column in speeds.columns:
+        defaultVal = 1 if 'scaling' in column else np.nan
+        final[column] = defaultVal
+        final.loc[speeds.cobraId.to_numpy() - 1, column] = speeds[column].to_numpy()
 
     filepath = os.path.join(outputDir, 'scaling.csv')
     final.to_csv(filepath)

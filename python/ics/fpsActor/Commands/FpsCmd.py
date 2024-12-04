@@ -619,7 +619,14 @@ class FpsCmd(object):
         theta = False if phi else theta
         # loading mask file and moving only cobra with bitMask==1
         goodIdx = self.loadGoodIdx(maskFile)
-        scaling =  np.ones(len(self.cc.allCobras)) if not applyScaling else pd.read_csv(applyScaling, index_col=0).sort_values('cobraId').scaling.to_numpy()
+
+        if applyScaling:
+            scalingDf = pd.read_csv(applyScaling, index_col=0).sort_values('cobraId')
+            column = 'scaling1' if stepsize>0 else 'scaling2'
+            scaling = scalingDf[column].to_numpy()
+        else:
+            scaling = np.ones(len(self.cc.allCobras))
+
 
         # cobraList = np.array([1240,2051,2262,2278,2380,2393])-1
         cobras = self.cc.allCobras[goodIdx]
@@ -1456,10 +1463,12 @@ class FpsCmd(object):
     def hideCobras(self, cmd):
         """"""
         visit = self.actor.visitor.setOrGetVisit(cmd)
+        iteration = 0
 
         rootDir = '/data/fps/hideCobras'
         outputDir = os.path.join(rootDir, f'v{visit:06d}')
-        os.mkdir(outputDir)
+        if not os.path.isdir(outputDir):
+            os.mkdir(outputDir)
 
         nearConvergenceId = alfUtils.getLatestNearDotConvergenceId()
 
@@ -1468,38 +1477,53 @@ class FpsCmd(object):
 
         cobraMatch = alfUtils.getCobraMatchData(nearConvergenceId)
         cobraMatch = cobraMatch[cobraMatch.iteration == cobraMatch.iteration.max()]
+        maskFile, maskFilepath = alfUtils.makeHideCobraMaskFile(cobraMatch, iteration, outputDir)
 
-        iteration = 0
-        maskFile, maskFilepath = alfUtils.makeHideCobraMaskFile(cobraMatch, 0, outputDir)
+        nIterForScaling = 5 # How many steps used to calculate the scaling.
+        stepSizeForScaling = 40  # what constant step size is used to calculate the scaling
 
-        nIterForScaling, nIterFindDot = 5, 10
+        nIterFindDot = 6  # How many iteration to go the edge of the dot.
+        usePercentile = 98 # what percentile do you use to calculate the maximum distance to the dot.
+        distanceToDotTolerance = 1.3 # what tolerance to apply when calculate the maximum distance to the dot.
 
-        for nIter in range(nIterForScaling):
-            frameNum = self.actor.visitor.getNextFrameNum()
-            cmd.inform(f'text="iteration {iteration} moving {len(maskFile[maskFile.bitMask == 1])} cobras"')
+        for direction in [1,-1]:
+            stepsize = direction * stepSizeForScaling
 
-            self.cobraMoveSteps(maskFile=maskFilepath, stepsize=-25, phi=True)
-            ret = self.actor.cmdr.call(actor='mcs',
-                                       cmdStr=f'expose object expTime=4.8 frameId={frameNum} doCentroid doFibreId',
-                                       forUserCmd=cmd, timeLim=30)
+            for nIter in range(nIterForScaling):
+                frameNum = self.actor.visitor.getNextFrameNum()
+                cmd.inform(f'text="iteration {iteration} moving {len(maskFile[maskFile.bitMask == 1])} cobras {stepsize} steps"')
 
-            if ret.didFail:
-                raise RuntimeError("mcs expose failed")
+                self.cobraMoveSteps(maskFile=maskFilepath, stepsize=stepsize, phi=True)
+                ret = self.actor.cmdr.call(actor='mcs',
+                                          cmdStr=f'expose object expTime=4.8 frameId={frameNum} doCentroid doFibreId',
+                                          forUserCmd=cmd, timeLim=30)
 
-            cobraMatch = alfUtils.getCobraMatchData(visit, iteration=iteration)
-            maskFile, maskFilepath = alfUtils.makeHideCobraMaskFile(cobraMatch, iteration + 1, outputDir)
-            iteration +=1
+                if ret.didFail:
+                   raise RuntimeError("mcs expose failed")
+
+                cobraMatch = alfUtils.getCobraMatchData(visit, iteration=iteration)
+                maskFile, maskFilepath = alfUtils.makeHideCobraMaskFile(cobraMatch, iteration + 1, outputDir)
+                iteration +=1
 
         # calculate the scaling
-        convergenceDf = alfUtils.loadConvergenceDf(nearConvergenceId)
-        scalingDf = alfUtils.getCobraMatchData(visit)
-        scalingFilepath = alfUtils.makeScaling(convergenceDf, scalingDf, nIterForScaling, outputDir=outputDir)
+        cmd.inform(f'text="computing scaling..."')
+        scalingFilepath = alfUtils.makeScaling(nearConvergenceId, visit, outputDir=outputDir)
+        cmd.inform(f'scalingFilepath={scalingFilepath}')
+
+        speeds = pd.read_csv(scalingFilepath, index_col=0)
+        maxAngle = distanceToDotTolerance * np.nanpercentile(speeds.distance, usePercentile)
+        maxSteps = maxAngle * stepSizeForScaling / np.nanmedian(speeds.speed2)
+        stepsize = round(int(maxSteps / nIterFindDot ))
 
         for nIter in range(nIterFindDot):
-            frameNum = self.actor.visitor.getNextFrameNum()
             cmd.inform(f'text="iteration {iteration} moving {len(maskFile[maskFile.bitMask == 1])} cobras"')
+            self.cobraMoveSteps(maskFile=maskFilepath, stepsize=stepsize, phi=True, applyScaling=scalingFilepath)
 
-            self.cobraMoveSteps(maskFile=maskFilepath, stepsize=-100, phi=True, applyScaling=scalingFilepath)
+            if nIter==nIterFindDot-1:
+                continue
+
+            frameNum = self.actor.visitor.getNextFrameNum()
+
             ret = self.actor.cmdr.call(actor='mcs',
                                        cmdStr=f'expose object expTime=4.8 frameId={frameNum} doCentroid doFibreId',
                                        forUserCmd=cmd, timeLim=30)
