@@ -10,6 +10,7 @@ import pfs.utils.pfsDesignUtils as pfsDesignUtils
 from opdb import opdb
 from pfs.datamodel import PfsConfig, FiberStatus, TargetType
 from pfs.utils.fiberids import FiberIds
+from pfs.utils.versions import getVersion
 from scipy.interpolate import griddata
 
 __all__ = ["pfsConfigFromDesign", "makeTargetsArray", "tweakTargetPosition",
@@ -61,10 +62,11 @@ def tweakTargetPosition(pfsConfig, cmd=None):
 
     ra_now, dec_now, pfi_now_x, pfi_now_y = updateTargetPosition.update_target_position(radec, pa, cent, pm, par,
                                                                                         obstime)
+    # Get pfs_utils version.
+    pfsUtilsVer = getVersion('pfs_utils')
     # setting the new positions.
-    pfsConfig.ra = ra_now
-    pfsConfig.dec = dec_now
-    pfsConfig.pfiNominal = np.vstack((pfi_now_x, pfi_now_y)).transpose()
+    pfsConfig.updateTargetPosition(ra=ra_now, dec=dec_now, pfiNominal=np.vstack((pfi_now_x, pfi_now_y)).transpose(),
+                                   obstime=obstime, pfsUtilsVer=pfsUtilsVer)
 
     return pfsConfig
 
