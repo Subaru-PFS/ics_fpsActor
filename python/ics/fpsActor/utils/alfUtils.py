@@ -567,6 +567,8 @@ def makeScaling(nearConvergenceId, visit, outputDir, maxScaling=5, minScaling=0.
     final = pd.DataFrame(dict(cobraId=np.arange(1, 2395)))
 
     for column in speeds.columns:
+        if column=='cobraId':
+            continue
         defaultVal = 1 if 'scaling' in column else np.nan
         final[column] = defaultVal
         final.loc[speeds.cobraId.to_numpy() - 1, column] = speeds[column].to_numpy()
