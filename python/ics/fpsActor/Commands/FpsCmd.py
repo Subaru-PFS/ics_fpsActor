@@ -103,7 +103,7 @@ class FpsCmd(object):
             ('loadDotScales', '[<filename>]', self.loadDotScales),
             ('updateDotLoop', '<filename> [<stepsPerMove>] [@noMove]', self.updateDotLoop),
             ('testDotMove', '[<stepsPerMove>]', self.testDotMove),
-            ('hideCobras', '[<visit>]', self.hideCobras)
+            ('hideCobras', '[<visit>] [<nIterForScaling>] [<stepSizeForScaling>] [<nIterFindDot>]', self.hideCobras)
         ]
 
         # Define typed command arguments for the above commands.
@@ -146,6 +146,9 @@ class FpsCmd(object):
                                         keys.Key("stepsPerMove", types.Int(), default=-50,
                                                  help="number of steps per move"),
                                         keys.Key("applyScaling", types.String(), help="scaling filename for cobra"),
+                                        keys.Key("nIterForScaling", types.Int(), help="How many steps used to calculate the scaling."),
+                                        keys.Key("stepSizeForScaling", types.Int(), help="# what constant step size is used to calculate the scaling"),
+                                        keys.Key("nIterFindDot", types.Int(), help=" # How many iteration to go the edge of the dot."),
                                         )
 
         self.logger = logging.getLogger('fps')
@@ -1468,6 +1471,7 @@ class FpsCmd(object):
 
     def hideCobras(self, cmd):
         """"""
+        cmdKeys = cmd.cmd.keywords
         visit = self.actor.visitor.setOrGetVisit(cmd)
         iteration = 0
 
@@ -1485,12 +1489,14 @@ class FpsCmd(object):
         cobraMatch = cobraMatch[cobraMatch.iteration == cobraMatch.iteration.max()]
         maskFile, maskFilepath = alfUtils.makeHideCobraMaskFile(cobraMatch, iteration, outputDir)
 
-        nIterForScaling = 5 # How many steps used to calculate the scaling.
-        stepSizeForScaling = 40  # what constant step size is used to calculate the scaling
-
-        nIterFindDot = 6  # How many iteration to go the edge of the dot.
+        # How many steps used to calculate the scaling.
+        nIterForScaling = cmdKeys['nIterForScaling'] if 'nIterForScaling' in cmdKeys else 3
+        # what constant step size is used to calculate the scaling
+        stepSizeForScaling = cmdKeys['stepSizeForScaling'] if 'stepSizeForScaling' in cmdKeys else 60
+        # How many iteration to go the edge of the dot.
+        nIterFindDot = cmdKeys['nIterFindDot'] if 'nIterFindDot' in cmdKeys else 20
         usePercentile = 98 # what percentile do you use to calculate the maximum distance to the dot.
-        distanceToDotTolerance = 1.3 # what tolerance to apply when calculate the maximum distance to the dot.
+        distanceToDotTolerance = 1.25 # what tolerance to apply when calculate the maximum distance to the dot.
 
         for direction in [1,-1]:
             stepsize = direction * stepSizeForScaling
@@ -1525,8 +1531,8 @@ class FpsCmd(object):
             cmd.inform(f'text="iteration {iteration} moving {len(maskFile[maskFile.bitMask == 1])} cobras"')
             self.cobraMoveSteps(maskFile=maskFilepath, stepsize=stepsize, phi=True, applyScaling=scalingFilepath)
 
-            if nIter==nIterFindDot-1:
-                continue
+            #if nIter==nIterFindDot-1:
+            #    continue
 
             frameNum = self.actor.visitor.getNextFrameNum()
 
