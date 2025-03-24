@@ -564,7 +564,13 @@ class FpsCmd(object):
         for i in range(cnt):
             frameSeq = self.actor.visitor.frameSeq
             cmd.inform(f'text="taking frame {visit}.{frameSeq} ({i + 1}/{cnt}) and measuring centroids."')
-            pos = self.cc.exposeAndExtractPositions(exptime=expTime)
+            try:
+                pos = self.cc.exposeAndExtractPositions(exptime=expTime)
+            except RuntimeError:
+                if not cmd.isAlive(): # failure already reported in cobraCoach.
+                    return
+                raise
+
             cmd.inform(f'text="found {len(pos)} spots in {visit}.{frameSeq} "')
 
         if doFinish:
