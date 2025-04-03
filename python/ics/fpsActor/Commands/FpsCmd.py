@@ -1603,7 +1603,7 @@ class FpsCmd(object):
         convergenceDf = alfUtils.loadConvergenceDf(nearConvergenceId)
         fixedScalingDf = alfUtils.getCobraMatchData(visit)
 
-        driver = HotRoachDriver(convergenceDf, fixedScalingDf, fixedSteps=useStepSizeForScaling)
+        driver = HotRoachDriver(convergenceDf, fixedScalingDf, fixedSteps=useStepSizeForScaling*-1)
         driver.bootstrap()
 
         for nIter in range(nIterFindDot):

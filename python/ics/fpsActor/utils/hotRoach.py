@@ -222,6 +222,8 @@ class SingleRoach(object):
             raise RuntimeError("Kalman prediction yields zero angle change; cannot scale.")
 
         useKalmanStep = anglePerIteration / anglePerKalmanStep
+        useKalmanStep *= -1
+
         realSteps = int(round(self.driver.fixedSteps * useKalmanStep))
 
         self.predicted.append(self.tracker.predict(steps=useKalmanStep))
