@@ -40,6 +40,18 @@ class KalmanAngleTracker3D:
         self.P = F @ self.P @ F.T + Q
         return self.x.flatten()
 
+    def predict_external(self, steps=1.0):
+        """
+        Computes the predicted state after a given number of steps without
+        modifying the internal state of the filter.
+        """
+        dt = steps
+        F = np.array([[1, dt, 0.5 * dt ** 2],
+                      [0, 1, dt],
+                      [0, 0, 1]])
+        predicted_state = F @ self.x
+        return predicted_state.flatten()
+
     def update(self, measuredAngle):
         z = np.array([[measuredAngle]])  # Measurement
         y = z - self.H @ self.x  # Innovation
