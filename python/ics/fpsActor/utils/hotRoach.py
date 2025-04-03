@@ -8,9 +8,12 @@ from ics.fpsActor.utils.kalmanTracker import KalmanAngleTracker3D
 
 class Flag(enum.IntFlag):
     BROKEN = 1 << 0
-    UNKNOWN_MCS_POSITION = 1 << 1
+    HIDDEN = 1 << 1
     MISBEHAVING = 1 << 2
-    NOT_CROSSING_DOT = 1 << 3
+    PHI_UNKNOWN = 1 << 3
+    NOT_CROSSING_DOT = 1 << 4
+    BLOCKED = 1 << 5
+    REVERSED = 1 << 6
 
 
 class SingleRoach(object):
@@ -36,6 +39,7 @@ class SingleRoach(object):
         self.phiCenterX, self.phiCenterY = None, None
         self.tracker = None
         self.radialRms = np.nan
+        self.initialVelocity = np.nan
 
         self.angles = []
         self.predicted = []
@@ -56,20 +60,40 @@ class SingleRoach(object):
         return '|'.join([f.name for f in Flag if self.statusFlag & f.value])
 
     @property
-    def useCobra(self):
-        return self.statusFlag in [0, Flag.NOT_CROSSING_DOT]
+    def dotAngle(self):
+        return self.calculateAngle(self.xDot, self.yDot)
 
-    def setStatusFlag(self, radialRmsThreshold):
+    @property
+    def stepScale(self):
+        return abs(self.driver.fixedSteps / self.initialVelocity)
+
+    def calculateAngle(self, xMm, yMm):
+        dx = xMm - self.phiCenterX
+        dy = yMm - self.phiCenterY
+
+        return np.arctan2(dy, dx)
+
+    @property
+    def doTrackCobra(self):
+        return self.statusFlag in [0]
+
+    def setStatusFlag(self, radialRmsThreshold, stepScaleThreshold):
         if not self.COBRA_OK_MASK:
             self.statusFlag |= Flag.BROKEN
             return
 
-        if np.isnan(self.radialRms):
-            self.statusFlag |= Flag.UNKNOWN_MCS_POSITION
+        if any(np.isnan([self.phiCenterX, self.phiCenterY])):
+            self.statusFlag |= Flag.PHI_UNKNOWN
             return
 
-        if self.radialRms > radialRmsThreshold:
+        if np.isnan(self.radialRms) or self.radialRms > radialRmsThreshold:
             self.statusFlag |= Flag.MISBEHAVING
+
+        if self.stepScale > stepScaleThreshold:
+            self.statusFlag |= Flag.BLOCKED
+
+        if self.initialVelocity > 0:
+            self.statusFlag |= Flag.REVERSED
 
         interPhiDot = circleIntersections(self.phiCenterX, self.phiCenterY, self.L2, self.xDot, self.yDot, self.rDot)
 
@@ -103,15 +127,19 @@ class SingleRoach(object):
             return
 
         self.updatePhiCenter(self.fixedScalingDf)
-        self.angles.extend([self.calculateAngle(iterRow) for j, iterRow in self.fixedScalingDf.iterrows()])
+
+        for j, iterRow in self.fixedScalingDf.iterrows():
+            self.addAngle(iterRow)
+
         self.radialRms = self.calculateRadialRms()
+        self.initialVelocity = self.calculateInitialVelocity()
 
     def setupTracker(self):
-        if not self.useCobra:
+        if not self.doTrackCobra:
             return
 
         self.tracker = KalmanAngleTracker3D(initialAngle=self.angles[0],
-                                            initialVelocity=np.mean(np.diff(self.angles)),
+                                            initialVelocity=self.initialVelocity,
                                             initialAcceleration=0,
                                             q_angle=self.driver.params[0],
                                             q_velocity=self.driver.params[1],
@@ -120,16 +148,26 @@ class SingleRoach(object):
 
         for i in range(len(self.angles) - 1):
             self.predicted.append(self.tracker.predict(steps=1))
-            self.tracker.update(self.angles[i + 1])
+            self.updateTracker(self.angles[i + 1])
 
-    def calculateAngle(self, iterRow):
+    def addAngle(self, iterRow):
         if iterRow.spot_id == -1:
-            return np.nan
+            angle = np.nan
+        else:
+            angle = self.calculateAngle(iterRow.pfi_center_x_mm, iterRow.pfi_center_y_mm)
 
-        dx = iterRow.pfi_center_x_mm - self.phiCenterX
-        dy = iterRow.pfi_center_y_mm - self.phiCenterY
+        self.angles.append(angle)
 
-        return np.arctan2(dy, dx)
+    def addIteration(self, iterRow):
+        self.addAngle(iterRow)
+        self.updateTracker(self.angles[-1])
+
+    def updateTracker(self, angle):
+        if np.isnan(angle):
+            self.statusFlag |= Flag.HIDDEN
+            return
+
+        self.tracker.update(angle)
 
     def projectAngle(self, angle):
         dx = self.L2 * np.cos(angle)
@@ -164,26 +202,31 @@ class SingleRoach(object):
 
         return radial_rms
 
-    def calcSteps(self, remainingIteration):
-        dx = self.xDot - self.phiCenterX
-        dy = self.yDot - self.phiCenterY
+    def calculateInitialVelocity(self):
+        if not self.COBRA_OK_MASK:
+            return
 
-        dotAngle = np.arctan2(dy, dx)
+        return np.nanmean(np.diff(self.angles))
 
-        angularDistance = dotAngle - self.angles[-1]
+    def tuneSteps(self, remainingIteration):
+        angularDistance = self.dotAngle - self.angles[-1]
+        anglePerIteration = angularDistance / remainingIteration
 
-        angleSteps = angularDistance / remainingIteration
+        if np.isnan(anglePerIteration):
+            raise RuntimeError(self.cobraId)
 
-        if np.isnan(angleSteps):
-            return 0
+        predicted = self.tracker.predict_external(steps=1)[0]
+        anglePerKalmanStep = self.angles[-1] - predicted
 
-        predicted = self.tracker.predict(steps=1)[0]
-        predictedStep = self.angles[-1] - predicted
+        if anglePerKalmanStep == 0:
+            raise RuntimeError("Kalman prediction yields zero angle change; cannot scale.")
 
-        return int(round(self.driver.fixedSteps * angleSteps / predictedStep))
+        useKalmanStep = anglePerIteration / anglePerKalmanStep
+        realSteps = int(round(self.driver.fixedSteps * useKalmanStep))
 
-    def addAngle(self, iterRow):
-        self.angles.append(self.calculateAngle(iterRow))
+        self.predicted.append(self.tracker.predict(steps=useKalmanStep))
+
+        return realSteps
 
 
 class HotRoachDriver(object):
@@ -201,10 +244,11 @@ class HotRoachDriver(object):
             self.roaches[cobraId] = SingleRoach(self, cobraId)
             self.roaches[cobraId].bootstrap()
 
-        threshold = self.calculateRmsThreshold()
+        radialRmsThreshold = self.calculateRmsThreshold()
+        stepScaleThreshold = self.calculateStepScaleThreshold()
 
         for cobraId, roach in self.roaches.items():
-            roach.setStatusFlag(radialRmsThreshold=threshold)
+            roach.setStatusFlag(radialRmsThreshold=radialRmsThreshold, stepScaleThreshold=stepScaleThreshold)
             roach.setupTracker()
 
     def calculateRmsThreshold(self, nSigma=10):
@@ -213,20 +257,32 @@ class HotRoachDriver(object):
         threshold = np.nanmedian(radialRms) + nSigma * rms
         return threshold
 
+    def calculateStepScaleThreshold(self, nSigma=50):
+        stepScales = np.array([roach.stepScale for roach in self.roaches.values()])
+        rms = robustRms(stepScales)
+        threshold = np.nanmedian(stepScales) + nSigma * rms
+        return threshold
+
     def makeScalingDf(self, remainingIteration):
         res = []
+
         for cobraId, roach in self.roaches.items():
-            bitMask = int(roach.useCobra)
-            steps = roach.calcSteps(remainingIteration) if bitMask == 1 else 0
-            bitMask = 0 if steps == 0 else bitMask
+            if roach.doTrackCobra:
+                steps = roach.tuneSteps(remainingIteration)
+            elif roach.statusFlag & Flag.HIDDEN or roach.statusFlag & Flag.BROKEN:
+                steps = 0
+            else:
+                steps = -60  # just to get data
+
+            bitMask = int(steps != 0)
 
             res.append((cobraId, bitMask, steps))
 
         return pd.DataFrame(res, columns=['cobraId', 'bitMask', 'steps'])
 
-    def addAngle(self, cobraMatch):
+    def newIteration(self, cobraMatch):
         for cobraId, roach in self.roaches.items():
-            if not roach.useCobra:
+            if not roach.doTrackCobra:
                 continue
 
-            roach.addAngle(cobraMatch[cobraMatch.cobra_id == roach.cobraId])
+            roach.addIteration(cobraMatch[cobraMatch.cobra_id == roach.cobraId])
