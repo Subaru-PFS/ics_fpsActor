@@ -1630,7 +1630,7 @@ class FpsCmd(object):
                 raise RuntimeError("mcs expose failed")
 
             cobraMatch = alfUtils.getCobraMatchData(visit, iteration=iteration)
-            driver.addAngle(cobraMatch)
+            driver.newIteration(cobraMatch)
 
             iteration += 1
 
