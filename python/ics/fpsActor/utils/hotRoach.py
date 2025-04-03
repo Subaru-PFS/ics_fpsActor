@@ -285,4 +285,4 @@ class HotRoachDriver(object):
             if not roach.doTrackCobra:
                 continue
 
-            roach.addIteration(cobraMatch[cobraMatch.cobra_id == roach.cobraId])
+            roach.addIteration(cobraMatch[cobraMatch.cobra_id == roach.cobraId].squeeze())
