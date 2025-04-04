@@ -38,6 +38,9 @@ class SingleRoach(object):
 
         self.phiCenterX, self.phiCenterY = None, None
         self.tracker = None
+        self.dotEnterEdgeAngle = None
+        self.dotExitEdgeAngle = None
+        self.openLoopSteps = None
         self.radialRms = np.nan
         self.initialVelocity = np.nan
 
@@ -60,7 +63,7 @@ class SingleRoach(object):
         return '|'.join([f.name for f in Flag if self.statusFlag & f.value])
 
     @property
-    def dotAngle(self):
+    def dotCenterAngle(self):
         return self.calculateAngle(self.xDot, self.yDot)
 
     @property
@@ -99,6 +102,11 @@ class SingleRoach(object):
 
         if not len(interPhiDot):
             self.statusFlag |= Flag.NOT_CROSSING_DOT
+
+        else:
+            dotEdgeAngles = np.array([self.calculateAngle(x, y) for x, y in interPhiDot])
+            self.dotEnterEdgeAngle = dotEdgeAngles[np.argmin(abs(dotEdgeAngles - self.angles[-1]))]
+            self.dotExitEdgeAngle = dotEdgeAngles[np.argmax(abs(dotEdgeAngles - self.angles[-1]))]
 
     def updatePhiCenter(self, scalingDf):
         def robustFindPhiCenter(cobraData, scalingDf):
@@ -208,27 +216,51 @@ class SingleRoach(object):
 
         return np.nanmean(np.diff(self.angles))
 
-    def tuneSteps(self, remainingIteration):
-        angularDistance = self.dotAngle - self.angles[-1]
-        anglePerIteration = angularDistance / remainingIteration
+    def tuneSteps(self, remainingMcsIteration, remainingSpsIteration):
+        def calculateSteps(anglePerIteration):
+            predicted = self.tracker.predict_external(steps=1)[0]
+            anglePerKalmanStep = self.angles[-1] - predicted
+            useKalmanStep = anglePerIteration / anglePerKalmanStep
+            useKalmanStep *= -1
+            realSteps = int(round(self.driver.fixedSteps * useKalmanStep))
+            return useKalmanStep, realSteps
 
-        if np.isnan(anglePerIteration):
-            raise RuntimeError(self.cobraId)
+        distanceCenterDot = self.dotCenterAngle - self.angles[-1]
+        distanceEnterDot = self.dotEnterEdgeAngle - self.angles[-1]
+        distanceExitDot = self.dotExitEdgeAngle - self.angles[-1]
 
-        predicted = self.tracker.predict_external(steps=1)[0]
-        anglePerKalmanStep = self.angles[-1] - predicted
+        anglePerMcsIteration = distanceEnterDot / remainingMcsIteration
+        anglePerSpsIteration = distanceExitDot / remainingSpsIteration
 
-        if anglePerKalmanStep == 0:
-            raise RuntimeError("Kalman prediction yields zero angle change; cannot scale.")
+        # anglePerIteration = np.mean([distanceEnterDot, distanceCenterDot]) / remainingIteration
 
-        useKalmanStep = anglePerIteration / anglePerKalmanStep
-        useKalmanStep *= -1
-
-        realSteps = int(round(self.driver.fixedSteps * useKalmanStep))
+        useKalmanStep, realSteps = calculateSteps(anglePerMcsIteration)
+        _, openLoopSteps = calculateSteps(anglePerSpsIteration)
+        self.openLoopSteps = openLoopSteps
 
         self.predicted.append(self.tracker.predict(steps=useKalmanStep))
 
         return realSteps
+
+    def getStepsToDot(self, remainingMcsIteration, remainingSpsIteration):
+        if self.doTrackCobra:
+            steps = self.tuneSteps(remainingMcsIteration, remainingSpsIteration)
+        elif self.statusFlag & Flag.HIDDEN or self.statusFlag & Flag.BROKEN:
+            steps = 0
+        else:
+            steps = -60  # just to get data
+
+        return steps
+
+    def getStepsOpenLoop(self):
+        if self.statusFlag & Flag.BROKEN:
+            steps = 0
+        elif self.openLoopSteps is not None:
+            steps = self.openLoopSteps
+        else:
+            steps = -60  # just to get data
+
+        return steps
 
 
 class HotRoachDriver(object):
@@ -265,16 +297,14 @@ class HotRoachDriver(object):
         threshold = np.nanmedian(stepScales) + nSigma * rms
         return threshold
 
-    def makeScalingDf(self, remainingIteration):
+    def makeScalingDf(self, remainingMcsIteration, remainingSpsIteration):
         res = []
 
         for cobraId, roach in self.roaches.items():
-            if roach.doTrackCobra:
-                steps = roach.tuneSteps(remainingIteration)
-            elif roach.statusFlag & Flag.HIDDEN or roach.statusFlag & Flag.BROKEN:
-                steps = 0
+            if remainingMcsIteration:
+                steps = roach.getStepsToDot(remainingMcsIteration, remainingSpsIteration)
             else:
-                steps = -60  # just to get data
+                steps = roach.getStepsOpenLoop()
 
             bitMask = int(steps != 0)
 

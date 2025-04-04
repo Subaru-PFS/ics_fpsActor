@@ -10,27 +10,26 @@ from importlib import reload
 import cv2
 import ics.cobraCharmer.pfiDesign as pfiDesign
 import ics.fpsActor.boresightMeasurements as boresightMeasure
+import ics.fpsActor.utils.alfUtils as alfUtils
 import ics.fpsActor.utils.pfsConfig as pfsConfigUtils
 import ics.fpsActor.utils.pfsDesign as pfsDesignUtils
-import ics.fpsActor.utils.alfUtils as alfUtils
-from  ics.fpsActor.utils.hotRoach import HotRoachDriver
-
+import ics.utils.sps.fits as fits
 import numpy as np
 import opscore.protocols.keys as keys
 import opscore.protocols.types as types
 import pandas as pd
 from ics.cobraCharmer import pfi as pfiControl
+from ics.cobraCharmer.cobraCoach import calculation
+from ics.cobraCharmer.cobraCoach import cobraCoach
+from ics.cobraCharmer.cobraCoach import engineer as eng
 from ics.fpsActor import fpsFunction as fpstool
 from ics.fpsActor import fpsState
 from ics.fpsActor import najaVenator
 from ics.fpsActor.utils import display as vis
+from ics.fpsActor.utils.hotRoach import HotRoachDriver
 from opdb import opdb
-from pfs.utils import butler
-from ics.cobraCharmer.cobraCoach import calculation
-from ics.cobraCharmer.cobraCoach  import cobraCoach
-from ics.cobraCharmer.cobraCoach  import engineer as eng
 from pfs.datamodel import FiberStatus
-import ics.utils.sps.fits as fits
+from pfs.utils import butler
 
 reload(vis)
 
@@ -78,7 +77,8 @@ class FpsCmd(object):
             ('createHomeDesign', '[<maskFile>]', self.createHomeDesign),
             ('createBlackDotDesign', '[<maskFile>]', self.createBlackDotDesign),
             ('genPfsConfigFromMcs', '<visit> <designId>', self.genPfsConfigFromMcs),
-            ('moveToHome', '@(phi|theta|all) [<expTime>] [@noMCSexposure] [<visit>] [<maskFile>] [<designId>]', self.moveToHome),
+            ('moveToHome', '@(phi|theta|all) [<expTime>] [@noMCSexposure] [<visit>] [<maskFile>] [<designId>]',
+             self.moveToHome),
 
             ('setCobraMode', '@(phi|theta|normal)', self.setCobraMode),
             ('setGeometry', '@(phi|theta) <runDir>', self.setGeometry),
@@ -105,7 +105,8 @@ class FpsCmd(object):
             ('loadDotScales', '[<filename>]', self.loadDotScales),
             ('updateDotLoop', '<filename> [<stepsPerMove>] [@noMove]', self.updateDotLoop),
             ('testDotMove', '[<stepsPerMove>]', self.testDotMove),
-            ('hideCobras', '[<visit>] [<nIterForScaling>] [<stepSizeForScaling>] [<nIterFindDot>]', self.driveHotRoach)
+            ('hideCobras', '[<visit>] [<nIterForScaling>] [<stepSizeForScaling>] [<nIterFindDot>]', self.driveHotRoach),
+            ('driveHotRoachOpenLoop', '', self.driveHotRoachOpenLoop)
         ]
 
         # Define typed command arguments for the above commands.
@@ -148,9 +149,12 @@ class FpsCmd(object):
                                         keys.Key("stepsPerMove", types.Int(), default=-50,
                                                  help="number of steps per move"),
                                         keys.Key("applyScaling", types.String(), help="scaling filename for cobra"),
-                                        keys.Key("nIterForScaling", types.Int(), help="How many steps used to calculate the scaling."),
-                                        keys.Key("stepSizeForScaling", types.Int(), help="# what constant step size is used to calculate the scaling"),
-                                        keys.Key("nIterFindDot", types.Int(), help=" # How many iteration to go the edge of the dot."),
+                                        keys.Key("nIterForScaling", types.Int(),
+                                                 help="How many steps used to calculate the scaling."),
+                                        keys.Key("stepSizeForScaling", types.Int(),
+                                                 help="# what constant step size is used to calculate the scaling"),
+                                        keys.Key("nIterFindDot", types.Int(),
+                                                 help=" # How many iteration to go the edge of the dot."),
                                         )
 
         self.logger = logging.getLogger('fps')
@@ -192,7 +196,7 @@ class FpsCmd(object):
             dbConfig = dict()
 
         try:
-            _db = opdb.OpDB(hostname='db-ics',port='5432',dbname='opdb',username='pfs')
+            _db = opdb.OpDB(hostname='db-ics', port='5432', dbname='opdb', username='pfs')
             _db.connect()
         except:
             raise RuntimeError("unable to connect to the database")
@@ -416,7 +420,7 @@ class FpsCmd(object):
 
         cmdKeys = cmd.cmd.keywords
 
-        #Power off the FPGA
+        # Power off the FPGA
         self.cc.pfi.power(0x23f)
         time.sleep(2)
         res = self.cc.pfi.diag()
@@ -446,7 +450,6 @@ class FpsCmd(object):
         eng.setCobraCoach(self.cc)
 
         cmd.finish(f"text='FPGA connected with model = {self.xml}'")
-
 
     def ledlight(self, cmd):
         """Turn on/off the fiducial fiber light"""
@@ -633,7 +636,6 @@ class FpsCmd(object):
         else:
             scaling = np.ones(len(self.cc.allCobras))
 
-
         # cobraList = np.array([1240,2051,2262,2278,2380,2393])-1
         cobras = self.cc.allCobras[goodIdx]
         scaling = scaling[goodIdx]
@@ -643,11 +645,11 @@ class FpsCmd(object):
 
         if theta:
             self.logger.info(f'theta arm is activated, moving {stepsize} steps, applyScaling={applyScaling}')
-            thetaSteps *= (scaling*stepsize)
+            thetaSteps *= (scaling * stepsize)
             thetaSteps = thetaSteps.round().astype('int32')
         else:
             self.logger.info(f'phi arm is activated, moving {stepsize} steps, applyScaling={applyScaling}')
-            phiSteps *= (scaling*stepsize)
+            phiSteps *= (scaling * stepsize)
             phiSteps = phiSteps.round().astype('int32')
 
         self.cc.pfi.moveSteps(cobras, thetaSteps, phiSteps, thetaFast=False, phiFast=False)
@@ -742,8 +744,8 @@ class FpsCmd(object):
             runDir, bad = eng.makePhiMotorMaps(
                 newXml, steps=steps, totalSteps=totalSteps, repeat=repeat, fast=False)
 
-            #self.xml = pathlib.Path(f'{runDir}/output/{newXml}')
-            #self.cc.pfi.loadModel([self.xml])
+            # self.xml = pathlib.Path(f'{runDir}/output/{newXml}')
+            # self.cc.pfi.loadModel([self.xml])
 
             if slowOnly is False:
                 self.logger.info(f'Running PHI Fast motor map.')
@@ -898,10 +900,10 @@ class FpsCmd(object):
             pfsConfigUtils.writePfsConfig(pfsConfig, cmd=cmd)
             # insert into opdb.
             pfsConfigUtils.ingestPfsConfig(pfsConfig,
-                                        allocated_at='now',
-                                        converg_num_iter=maxIteration,
-                                        converg_elapsed_time=round(time.time() - start, 3),
-                                        cmd=cmd)
+                                           allocated_at='now',
+                                           converg_num_iter=maxIteration,
+                                           converg_elapsed_time=round(time.time() - start, 3),
+                                           cmd=cmd)
 
             cmd.inform(f'pfsConfig=0x{pfsConfig.pfsDesignId:016x},{visit},Done')
         cmd.finish(f'text="Moved all arms back to home"')
@@ -1173,7 +1175,7 @@ class FpsCmd(object):
                                       forUserCmd=cmd, timeLim=300)
         if cmdVar.didFail:
             raise RuntimeError("move to safe position failed")
-        #eng.moveToSafePosition(self.cc.goodIdx, tolerance=0.01,
+        # eng.moveToSafePosition(self.cc.goodIdx, tolerance=0.01,
         #                       tries=12, homed=False, newDir=False, threshold=2.0, thetaMargin=np.deg2rad(15.0))
 
         cmd.finish(f'text="moveToSafePosition is finished"')
@@ -1240,10 +1242,10 @@ class FpsCmd(object):
             doMoveCobraIds = df[df.bitMask.astype('bool')].cobraId.to_numpy()
             return doMoveCobraIds - 1
 
-        #self.logger.info(f"loadGoodIdx maskfile = {maskFile}")
+        # self.logger.info(f"loadGoodIdx maskfile = {maskFile}")
 
-        #doMove = self.cc.goodIdx if maskFile is None else loadMaskFile()
-        #doMove = self.cc.goodIdx if maskFile is None else self.logger.info(f"loadGoodIdx maskfile = {maskFile}")
+        # doMove = self.cc.goodIdx if maskFile is None else loadMaskFile()
+        # doMove = self.cc.goodIdx if maskFile is None else self.logger.info(f"loadGoodIdx maskfile = {maskFile}")
         if maskFile is None:
             doMove = self.cc.goodIdx
         else:
@@ -1280,7 +1282,7 @@ class FpsCmd(object):
         try:
             notConvergedDistanceThreshold = self.actor.actorConfig['pfsConfig']['notConvergedDistanceThreshold']
             # Just in case, we use large tolerance.
-            notConvergedDistanceThreshold = max(notConvergedDistanceThreshold, 5*tolerance)
+            notConvergedDistanceThreshold = max(notConvergedDistanceThreshold, 5 * tolerance)
         except KeyError:
             notConvergedDistanceThreshold = None
 
@@ -1334,12 +1336,11 @@ class FpsCmd(object):
         self.cc.trajectoryMode = True
         traj, moves = eng.createTrajectory(goodIdx, thetas, phis,
                                            tries=iteration, twoSteps=True, threshold=2.0, timeStep=500)
-        moves[:,2]['position'] = targets
+        moves[:, 2]['position'] = targets
 
         cmd.inform(f'text="Reset the current angles for cobra arms."')
         self.cc.trajectoryMode = False
         thetaHome = ((self.cc.calibModel.tht1 - self.cc.calibModel.tht0 + np.pi) % (np.pi * 2) + np.pi)
-
 
         if goHome:
             cmd.inform(f'text="Setting ThetaAngle = Home and phiAngle = 0."')
@@ -1350,7 +1351,8 @@ class FpsCmd(object):
         else:
             # Check if we have atThetas and atPhis. If not, we cannot proceed.
             if hasattr(self, 'atThetas') is False:
-                cmd.fail('text="We are asking to move to a deisgn without cobra information.  Please use goHome option."')
+                cmd.fail(
+                    'text="We are asking to move to a deisgn without cobra information.  Please use goHome option."')
                 return
 
             cmd.inform(f'text="Number of cobras = {len(goodIdx)} Number of angles = {len(self.atThetas[goodIdx])}."')
@@ -1358,15 +1360,13 @@ class FpsCmd(object):
             self.cc.setCurrentAngles(self.cc.allCobras[goodIdx],
                                      thetaAngles=self.atThetas[goodIdx], phiAngles=self.atPhis[goodIdx])
 
-            cobraTargetTable = najaVenator.CobraTargetTable(visit, iteration, self.cc.calibModel, designId, goHome=False)
+            cobraTargetTable = najaVenator.CobraTargetTable(visit, iteration, self.cc.calibModel, designId,
+                                                            goHome=False)
 
-
-        #targetTable = traj.calculateFiberPositions(self.cc)
+        # targetTable = traj.calculateFiberPositions(self.cc)
 
         cobraTargetTable.makeTargetTable(moves, self.cc, goodIdx)
         cobraTargetTable.writeTargetTable()
-
-
 
         # Getting a new directory for this operation by running PFI connection using cobraCoach.
         # This operation will update dataDir for both PFI and camera.  So that we can keep information correctly. 
@@ -1405,7 +1405,8 @@ class FpsCmd(object):
 
             _useScaling, _maxSegments, _maxTotalSteps = self.cc.useScaling, self.cc.maxSegments, self.cc.maxTotalSteps
             self.cc.useScaling, self.cc.maxSegments, self.cc.maxTotalSteps = False, _maxSegments * 2, _maxTotalSteps * 2
-            cmd.inform(f'text="useScaling={self.cc.useScaling}, maxSegments={self.cc.maxSegments}, maxTotalSteps={self.cc.maxTotalSteps}"')
+            cmd.inform(
+                f'text="useScaling={self.cc.useScaling}, maxSegments={self.cc.maxSegments}, maxTotalSteps={self.cc.maxTotalSteps}"')
 
             if shortExp is True:
                 cmd.inform(f'text="Using 0.8 second exposure time for first three iteration."')
@@ -1420,10 +1421,10 @@ class FpsCmd(object):
                                  tries=2, homed=goHome, newDir=False, thetaFast=True, phiFast=True,
                                  threshold=2.0, thetaMargin=np.deg2rad(thetaMarginDeg))
 
-
             self.cc.expTime = expTime
             self.cc.useScaling, self.cc.maxSegments, self.cc.maxTotalSteps = _useScaling, _maxSegments, _maxTotalSteps
-            cmd.inform(f'text="useScaling={self.cc.useScaling}, maxSegments={self.cc.maxSegments}, maxTotalSteps={self.cc.maxTotalSteps}"')
+            cmd.inform(
+                f'text="useScaling={self.cc.useScaling}, maxSegments={self.cc.maxSegments}, maxTotalSteps={self.cc.maxTotalSteps}"')
 
             dataPath, atThetas, atPhis, moves[0, :, 2:] = \
                 eng.moveThetaPhi(cIds, thetas, phis, relative=False, local=True, tolerance=tolerance,
@@ -1448,8 +1449,8 @@ class FpsCmd(object):
 
         # update pfiCenter, cobra which are not matched will be set to NOTCONVERGED.
         maxIteration = pfsConfigUtils.finalize(pfsConfig, self.cc.calibModel, cmd=cmd,
-                                                      noMatchStatus=FiberStatus.NOTCONVERGED,
-                                                      notConvergedDistanceThreshold=notConvergedDistanceThreshold)
+                                               noMatchStatus=FiberStatus.NOTCONVERGED,
+                                               notConvergedDistanceThreshold=notConvergedDistanceThreshold)
         cmd.inform(f'text="maxIteration from cobra_match : {int(maxIteration)}"')
 
         # write pfsConfig to disk.
@@ -1492,10 +1493,10 @@ class FpsCmd(object):
         stepSizeForScaling = cmdKeys['stepSizeForScaling'] if 'stepSizeForScaling' in cmdKeys else 60
         # How many iteration to go the edge of the dot.
         nIterFindDot = cmdKeys['nIterFindDot'] if 'nIterFindDot' in cmdKeys else 20
-        usePercentile = 98 # what percentile do you use to calculate the maximum distance to the dot.
-        distanceToDotTolerance = 1.25 # what tolerance to apply when calculate the maximum distance to the dot.
+        usePercentile = 98  # what percentile do you use to calculate the maximum distance to the dot.
+        distanceToDotTolerance = 1.25  # what tolerance to apply when calculate the maximum distance to the dot.
 
-        for direction in [1,-1]:
+        for direction in [1, -1]:
             stepsize = direction * stepSizeForScaling
 
             for nIter in range(nIterForScaling):
@@ -1504,15 +1505,15 @@ class FpsCmd(object):
 
                 self.cobraMoveSteps(maskFile=maskFilepath, stepsize=stepsize, phi=True)
                 ret = self.actor.cmdr.call(actor='mcs',
-                                          cmdStr=f'expose object expTime=4.8 frameId={frameNum} doCentroid doFibreId',
-                                          forUserCmd=cmd, timeLim=30)
+                                           cmdStr=f'expose object expTime=4.8 frameId={frameNum} doCentroid doFibreId',
+                                           forUserCmd=cmd, timeLim=30)
 
                 if ret.didFail:
-                   raise RuntimeError("mcs expose failed")
+                    raise RuntimeError("mcs expose failed")
 
                 cobraMatch = alfUtils.getCobraMatchData(visit, iteration=iteration)
                 maskFile, maskFilepath = alfUtils.makeHideCobraMaskFile(cobraMatch, iteration + 1, outputDir)
-                iteration +=1
+                iteration += 1
 
         # calculate the scaling
         cmd.inform(f'text="computing scaling..."')
@@ -1522,13 +1523,13 @@ class FpsCmd(object):
         speeds = pd.read_csv(scalingFilepath, index_col=0)
         maxAngle = distanceToDotTolerance * np.nanpercentile(speeds.distance, usePercentile)
         maxSteps = maxAngle * stepSizeForScaling / np.nanmedian(speeds.speed2)
-        stepsize = round(int(maxSteps / nIterFindDot ))
+        stepsize = round(int(maxSteps / nIterFindDot))
 
         for nIter in range(nIterFindDot):
             cmd.inform(f'text="iteration {iteration} moving {len(maskFile[maskFile.bitMask == 1])} cobras"')
             self.cobraMoveSteps(maskFile=maskFilepath, stepsize=stepsize, phi=True, applyScaling=scalingFilepath)
 
-            #if nIter==nIterFindDot-1:
+            # if nIter==nIterFindDot-1:
             #    continue
 
             frameNum = self.actor.visitor.getNextFrameNum()
@@ -1568,11 +1569,10 @@ class FpsCmd(object):
         # what constant step size is used to calculate the scaling
         useStepSizeForScaling = cmdKeys['stepSizeForScaling'] if 'stepSizeForScaling' in cmdKeys else 60
         # How many iteration to go the edge of the dot.
-        nIterFindDot = cmdKeys['nIterFindDot'] if 'nIterFindDot' in cmdKeys else 20
-        usePercentile = 98 # what percentile do you use to calculate the maximum distance to the dot.
-        distanceToDotTolerance = 1.25 # what tolerance to apply when calculate the maximum distance to the dot.
+        nMcsIteration = cmdKeys['nIterFindDot'] if 'nIterFindDot' in cmdKeys else 12
+        nSpsIteration = cmdKeys['nIterFindDot'] if 'nIterFindDot' in cmdKeys else 12
 
-        for direction in [1,-1]:
+        for direction in [1, -1]:
             nIterForScaling = 1 if direction == 1 else useIterForScaling
             stepSizeForScaling = 180 if direction == 1 else useStepSizeForScaling
 
@@ -1580,46 +1580,41 @@ class FpsCmd(object):
 
             for nIter in range(nIterForScaling):
                 frameNum = self.actor.visitor.getNextFrameNum()
-                cmd.inform(f'text="iteration {iteration} moving {len(maskFile[maskFile.bitMask == 1])} cobras {stepsize} steps"')
+                cmd.inform(
+                    f'text="iteration {iteration} moving {len(maskFile[maskFile.bitMask == 1])} cobras {stepsize} steps"')
 
                 self.cobraMoveSteps(maskFile=maskFilepath, stepsize=stepsize, phi=True)
                 ret = self.actor.cmdr.call(actor='mcs',
-                                          cmdStr=f'expose object expTime=4.8 frameId={frameNum} doCentroid doFibreId',
-                                          forUserCmd=cmd, timeLim=30)
+                                           cmdStr=f'expose object expTime=4.8 frameId={frameNum} doCentroid doFibreId',
+                                           forUserCmd=cmd, timeLim=30)
 
                 if ret.didFail:
-                   raise RuntimeError("mcs expose failed")
+                    raise RuntimeError("mcs expose failed")
 
                 cobraMatch = alfUtils.getCobraMatchData(visit, iteration=iteration)
                 maskFile, maskFilepath = alfUtils.makeHideCobraMaskFile(cobraMatch, iteration + 1, outputDir)
-                iteration +=1
+                iteration += 1
 
         convergenceDf = alfUtils.loadConvergenceDf(nearConvergenceId)
         fixedScalingDf = alfUtils.getCobraMatchData(visit)
 
-        driver = HotRoachDriver(convergenceDf, fixedScalingDf, fixedSteps=useStepSizeForScaling*-1)
+        driver = HotRoachDriver(convergenceDf, fixedScalingDf, fixedSteps=useStepSizeForScaling * -1)
         driver.bootstrap()
 
-        for nIter in range(nIterFindDot):
-            df = driver.makeScalingDf(nIterFindDot-nIter)
+        for nIter in range(nMcsIteration):
+            maskFile = driver.makeScalingDf(nMcsIteration - nIter, nSpsIteration)
+
             fileName = f'{iteration:02d}'
-
             maskFilepath = os.path.join(outputDir, f'{fileName}.csv')
-
-            df.to_csv(maskFilepath)
+            maskFile.to_csv(maskFilepath)
 
             cmd.inform(f'text="iteration {iteration} moving {len(maskFile[maskFile.bitMask == 1])} cobras"')
-            self.cobraMoveSteps(maskFile=maskFilepath, stepsize=stepsize, phi=True, applyScaling=maskFilepath)
-
-            #if nIter==nIterFindDot-1:
-            #    continue
+            self.cobraMoveSteps(maskFile=maskFilepath, stepsize=1, phi=True, applyScaling=maskFilepath)
 
             frameNum = self.actor.visitor.getNextFrameNum()
-
             ret = self.actor.cmdr.call(actor='mcs',
                                        cmdStr=f'expose object expTime=4.8 frameId={frameNum} doCentroid doFibreId',
                                        forUserCmd=cmd, timeLim=30)
-
             if ret.didFail:
                 raise RuntimeError("mcs expose failed")
 
@@ -1628,8 +1623,41 @@ class FpsCmd(object):
 
             iteration += 1
 
+        driver.outputDir = outputDir
+        driver.iteration = iteration
+        self.driver = driver
+
         cmd.finish()
 
+    def driveHotRoachOpenLoop(self, cmd):
+        nMcsIteration = 0
+        nSpsIteration = 12
+
+        driver = self.driver
+        iteration = self.driver.iteration
+        outputDir = self.driver.outputDir
+
+        maskFile = driver.makeScalingDf(nMcsIteration, nSpsIteration)
+
+        fileName = f'{iteration:02d}'
+        maskFilepath = os.path.join(outputDir, f'{fileName}.csv')
+        maskFile.to_csv(maskFilepath)
+
+        cmd.inform(f'text="iteration {iteration} moving {len(maskFile[maskFile.bitMask == 1])} cobras"')
+        self.cobraMoveSteps(maskFile=maskFilepath, stepsize=1, phi=True, applyScaling=maskFilepath)
+
+        frameNum = self.actor.visitor.getNextFrameNum()
+
+        ret = self.actor.cmdr.call(actor='mcs',
+                                   cmdStr=f'expose object expTime=4.8 frameId={frameNum} doCentroid doFibreId',
+                                   forUserCmd=cmd, timeLim=30)
+
+        if ret.didFail:
+            raise RuntimeError("mcs expose failed")
+
+        self.driver.iteration += 1
+
+        cmd.finish()
 
     def loadDotScales(self, cmd):
         """Load step scaling just for the dot traversal loop. """
@@ -1728,6 +1756,6 @@ class FpsCmd(object):
 
         # the routine will calculate the value and write to db
         db = self.connectToDB(cmd)
-        boresightMeasure.calcBoresight(cmd, db, frameIds, pfsVisitId, writeToDB = writeToDB)
+        boresightMeasure.calcBoresight(cmd, db, frameIds, pfsVisitId, writeToDB=writeToDB)
 
         cmd.finish(f'text="Boresight calculation is finished."')
