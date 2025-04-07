@@ -623,15 +623,19 @@ class FpsCmd(object):
 
         cmd.finish(f'text="cobraMoveSteps stepsize = {stepsize} completed"')
 
-    def cobraMoveSteps(self, maskFile, stepsize, applyScaling=False, theta=False, phi=False):
+    def cobraMoveSteps(self, maskFile, stepsize, applyScaling=None, theta=False, phi=False):
         theta = False if phi else theta
         # loading mask file and moving only cobra with bitMask==1
         goodIdx = self.loadGoodIdx(maskFile)
 
         if applyScaling:
             scalingDf = pd.read_csv(applyScaling, index_col=0).sort_values('cobraId')
-            stepsize = 1
-            scaling = scalingDf.steps.to_numpy()
+            if 'steps' in scalingDf.columns:
+                stepsize = 1
+                scaling = scalingDf.steps.to_numpy()
+            else:
+                column = 'scaling1' if stepsize > 0 else 'scaling2'
+                scaling = scalingDf[column].to_numpy()
         else:
             scaling = np.ones(len(self.cc.allCobras))
 
