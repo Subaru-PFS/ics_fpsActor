@@ -1,9 +1,7 @@
 import glob
 import math
 import os
-import time
 from datetime import timedelta
-from multiprocessing import Pool
 
 import numpy as np
 import pandas as pd
@@ -70,6 +68,20 @@ def read_sql(sql):
     with getConn() as conn:
         df = pd.read_sql(sql, conn)
         return df.loc[:, ~df.columns.duplicated()]
+
+
+def robustRms(array, axis=None):
+    """
+    Calculates the robust Root Mean Square (RMS) of an array using the inter-quartile range.
+
+    Args:
+    array (numpy.ndarray): Input array.
+
+    Returns:
+    rms (float): Robust RMS of the input array.
+    """
+    lq, uq = np.nanpercentile(array, (25.0, 75.0), axis=axis)
+    return 0.741 * (uq - lq)
 
 
 def getCobraMatchData(visit, iteration=None, **kwargs):
@@ -511,7 +523,7 @@ def parallel_speed_calculation(convergenceDf, scalingDf, num_cores=2):
     # cobra_groups = [(cobraId, group, scalingDf) for cobraId, group in convergenceDf.groupby('cobraId')]
 
     # Use multiprocessing to process cobras in parallel
-    #with Pool(processes=num_cores) as pool:
+    # with Pool(processes=num_cores) as pool:
     #    results = pool.map(process_cobra, cobra_groups)
 
     # Convert results to a DataFrame
@@ -567,6 +579,8 @@ def makeScaling(nearConvergenceId, visit, outputDir, maxScaling=5, minScaling=0.
     final = pd.DataFrame(dict(cobraId=np.arange(1, 2395)))
 
     for column in speeds.columns:
+        if column == 'cobraId':
+            continue
         defaultVal = 1 if 'scaling' in column else np.nan
         final[column] = defaultVal
         final.loc[speeds.cobraId.to_numpy() - 1, column] = speeds[column].to_numpy()
