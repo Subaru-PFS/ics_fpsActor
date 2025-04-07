@@ -28,6 +28,7 @@ from ics.cobraCharmer.cobraCoach import calculation
 from ics.cobraCharmer.cobraCoach  import cobraCoach
 from ics.cobraCharmer.cobraCoach  import engineer as eng
 from pfs.datamodel import FiberStatus
+from ics.fpsActor.utils.hotRoach import HotRoachDriver
 import ics.utils.sps.fits as fits
 
 reload(vis)
@@ -103,7 +104,8 @@ class FpsCmd(object):
             ('loadDotScales', '[<filename>]', self.loadDotScales),
             ('updateDotLoop', '<filename> [<stepsPerMove>] [@noMove]', self.updateDotLoop),
             ('testDotMove', '[<stepsPerMove>]', self.testDotMove),
-            ('hideCobras', '[<visit>]', self.hideCobras)
+            ('hideCobras', '[<visit>] [<nIterForScaling>] [<stepSizeForScaling>] [<nIterFindDot>]', self.driveHotRoach),
+            ('driveHotRoachOpenLoop', '', self.driveHotRoachOpenLoop)
         ]
 
         # Define typed command arguments for the above commands.
@@ -628,11 +630,10 @@ class FpsCmd(object):
 
         if applyScaling:
             scalingDf = pd.read_csv(applyScaling, index_col=0).sort_values('cobraId')
-            column = 'scaling1' if stepsize>0 else 'scaling2'
-            scaling = scalingDf[column].to_numpy()
+            stepsize = 1
+            scaling = scalingDf.steps.to_numpy()
         else:
             scaling = np.ones(len(self.cc.allCobras))
-
 
         # cobraList = np.array([1240,2051,2262,2278,2380,2393])-1
         cobras = self.cc.allCobras[goodIdx]
@@ -1468,6 +1469,7 @@ class FpsCmd(object):
 
     def hideCobras(self, cmd):
         """"""
+        cmdKeys = cmd.cmd.keywords
         visit = self.actor.visitor.setOrGetVisit(cmd)
         iteration = 0
 
@@ -1485,14 +1487,16 @@ class FpsCmd(object):
         cobraMatch = cobraMatch[cobraMatch.iteration == cobraMatch.iteration.max()]
         maskFile, maskFilepath = alfUtils.makeHideCobraMaskFile(cobraMatch, iteration, outputDir)
 
-        nIterForScaling = 5 # How many steps used to calculate the scaling.
-        stepSizeForScaling = 40  # what constant step size is used to calculate the scaling
+        # How many steps used to calculate the scaling.
+        nIterForScaling = cmdKeys['nIterForScaling'] if 'nIterForScaling' in cmdKeys else 3
+        # what constant step size is used to calculate the scaling
+        stepSizeForScaling = cmdKeys['stepSizeForScaling'] if 'stepSizeForScaling' in cmdKeys else 60
+        # How many iteration to go the edge of the dot.
+        nIterFindDot = cmdKeys['nIterFindDot'] if 'nIterFindDot' in cmdKeys else 20
+        usePercentile = 98  # what percentile do you use to calculate the maximum distance to the dot.
+        distanceToDotTolerance = 1.25  # what tolerance to apply when calculate the maximum distance to the dot.
 
-        nIterFindDot = 6  # How many iteration to go the edge of the dot.
-        usePercentile = 98 # what percentile do you use to calculate the maximum distance to the dot.
-        distanceToDotTolerance = 1.3 # what tolerance to apply when calculate the maximum distance to the dot.
-
-        for direction in [1,-1]:
+        for direction in [1, -1]:
             stepsize = direction * stepSizeForScaling
 
             for nIter in range(nIterForScaling):
@@ -1501,15 +1505,15 @@ class FpsCmd(object):
 
                 self.cobraMoveSteps(maskFile=maskFilepath, stepsize=stepsize, phi=True)
                 ret = self.actor.cmdr.call(actor='mcs',
-                                          cmdStr=f'expose object expTime=4.8 frameId={frameNum} doCentroid doFibreId',
-                                          forUserCmd=cmd, timeLim=30)
+                                           cmdStr=f'expose object expTime=4.8 frameId={frameNum} doCentroid doFibreId',
+                                           forUserCmd=cmd, timeLim=30)
 
                 if ret.didFail:
-                   raise RuntimeError("mcs expose failed")
+                    raise RuntimeError("mcs expose failed")
 
                 cobraMatch = alfUtils.getCobraMatchData(visit, iteration=iteration)
                 maskFile, maskFilepath = alfUtils.makeHideCobraMaskFile(cobraMatch, iteration + 1, outputDir)
-                iteration +=1
+                iteration += 1
 
         # calculate the scaling
         cmd.inform(f'text="computing scaling..."')
@@ -1519,14 +1523,14 @@ class FpsCmd(object):
         speeds = pd.read_csv(scalingFilepath, index_col=0)
         maxAngle = distanceToDotTolerance * np.nanpercentile(speeds.distance, usePercentile)
         maxSteps = maxAngle * stepSizeForScaling / np.nanmedian(speeds.speed2)
-        stepsize = round(int(maxSteps / nIterFindDot ))
+        stepsize = round(int(maxSteps / nIterFindDot))
 
         for nIter in range(nIterFindDot):
             cmd.inform(f'text="iteration {iteration} moving {len(maskFile[maskFile.bitMask == 1])} cobras"')
             self.cobraMoveSteps(maskFile=maskFilepath, stepsize=stepsize, phi=True, applyScaling=scalingFilepath)
 
-            if nIter==nIterFindDot-1:
-                continue
+            # if nIter==nIterFindDot-1:
+            #    continue
 
             frameNum = self.actor.visitor.getNextFrameNum()
 
@@ -1543,6 +1547,117 @@ class FpsCmd(object):
 
         cmd.finish()
 
+    def driveHotRoach(self, cmd):
+        """"""
+        cmdKeys = cmd.cmd.keywords
+        visit = self.actor.visitor.setOrGetVisit(cmd)
+        iteration = 0
+
+        rootDir = '/data/fps/hideCobras'
+        outputDir = os.path.join(rootDir, f'v{visit:06d}')
+        if not os.path.isdir(outputDir):
+            os.mkdir(outputDir)
+
+        nearConvergenceId = alfUtils.getLatestNearDotConvergenceId()
+
+        cobraMatch = alfUtils.getCobraMatchData(nearConvergenceId)
+        cobraMatch = cobraMatch[cobraMatch.iteration == cobraMatch.iteration.max()]
+        maskFile, maskFilepath = alfUtils.makeHideCobraMaskFile(cobraMatch, iteration, outputDir)
+
+        # How many steps used to calculate the scaling.
+        useIterForScaling = cmdKeys['nIterForScaling'] if 'nIterForScaling' in cmdKeys else 3
+        # what constant step size is used to calculate the scaling
+        useStepSizeForScaling = cmdKeys['stepSizeForScaling'] if 'stepSizeForScaling' in cmdKeys else 60
+        # How many iteration to go the edge of the dot.
+        nMcsIteration = cmdKeys['nIterFindDot'] if 'nIterFindDot' in cmdKeys else 12
+        nSpsIteration = cmdKeys['nIterFindDot'] if 'nIterFindDot' in cmdKeys else 12
+
+        for direction in [1, -1]:
+            nIterForScaling = 1 if direction == 1 else useIterForScaling
+            stepSizeForScaling = 180 if direction == 1 else useStepSizeForScaling
+
+            stepsize = direction * stepSizeForScaling
+
+            for nIter in range(nIterForScaling):
+                frameNum = self.actor.visitor.getNextFrameNum()
+                cmd.inform(
+                    f'text="iteration {iteration} moving {len(maskFile[maskFile.bitMask == 1])} cobras {stepsize} steps"')
+
+                self.cobraMoveSteps(maskFile=maskFilepath, stepsize=stepsize, phi=True)
+                ret = self.actor.cmdr.call(actor='mcs',
+                                           cmdStr=f'expose object expTime=4.8 frameId={frameNum} doCentroid doFibreId',
+                                           forUserCmd=cmd, timeLim=30)
+
+                if ret.didFail:
+                    raise RuntimeError("mcs expose failed")
+
+                cobraMatch = alfUtils.getCobraMatchData(visit, iteration=iteration)
+                maskFile, maskFilepath = alfUtils.makeHideCobraMaskFile(cobraMatch, iteration + 1, outputDir)
+                iteration += 1
+
+        convergenceDf = alfUtils.loadConvergenceDf(nearConvergenceId)
+        fixedScalingDf = alfUtils.getCobraMatchData(visit)
+
+        driver = HotRoachDriver(convergenceDf, fixedScalingDf, fixedSteps=useStepSizeForScaling * -1)
+        driver.bootstrap()
+
+        for nIter in range(nMcsIteration):
+            maskFile = driver.makeScalingDf(nMcsIteration - nIter, nSpsIteration)
+
+            fileName = f'{iteration:02d}'
+            maskFilepath = os.path.join(outputDir, f'{fileName}.csv')
+            maskFile.to_csv(maskFilepath)
+
+            cmd.inform(f'text="iteration {iteration} moving {len(maskFile[maskFile.bitMask == 1])} cobras"')
+            self.cobraMoveSteps(maskFile=maskFilepath, stepsize=1, phi=True, applyScaling=maskFilepath)
+
+            frameNum = self.actor.visitor.getNextFrameNum()
+            ret = self.actor.cmdr.call(actor='mcs',
+                                       cmdStr=f'expose object expTime=4.8 frameId={frameNum} doCentroid doFibreId',
+                                       forUserCmd=cmd, timeLim=30)
+            if ret.didFail:
+                raise RuntimeError("mcs expose failed")
+
+            cobraMatch = alfUtils.getCobraMatchData(visit, iteration=iteration)
+            driver.newIteration(cobraMatch)
+
+            iteration += 1
+
+        driver.outputDir = outputDir
+        driver.iteration = iteration
+        self.driver = driver
+
+        cmd.finish()
+
+    def driveHotRoachOpenLoop(self, cmd):
+        nMcsIteration = 0
+        nSpsIteration = 12
+
+        driver = self.driver
+        iteration = self.driver.iteration
+        outputDir = self.driver.outputDir
+
+        maskFile = driver.makeScalingDf(nMcsIteration, nSpsIteration)
+
+        fileName = f'{iteration:02d}'
+        maskFilepath = os.path.join(outputDir, f'{fileName}.csv')
+        maskFile.to_csv(maskFilepath)
+
+        cmd.inform(f'text="iteration {iteration} moving {len(maskFile[maskFile.bitMask == 1])} cobras"')
+        self.cobraMoveSteps(maskFile=maskFilepath, stepsize=1, phi=True, applyScaling=maskFilepath)
+
+        frameNum = self.actor.visitor.getNextFrameNum()
+
+        ret = self.actor.cmdr.call(actor='mcs',
+                                   cmdStr=f'expose object expTime=4.8 frameId={frameNum} doCentroid doFibreId',
+                                   forUserCmd=cmd, timeLim=30)
+
+        if ret.didFail:
+            raise RuntimeError("mcs expose failed")
+
+        self.driver.iteration += 1
+
+        cmd.finish()
 
     def loadDotScales(self, cmd):
         """Load step scaling just for the dot traversal loop. """
