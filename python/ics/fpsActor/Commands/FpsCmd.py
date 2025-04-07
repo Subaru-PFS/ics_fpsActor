@@ -10,26 +10,26 @@ from importlib import reload
 import cv2
 import ics.cobraCharmer.pfiDesign as pfiDesign
 import ics.fpsActor.boresightMeasurements as boresightMeasure
+import ics.fpsActor.utils.alfUtils as alfUtils
 import ics.fpsActor.utils.pfsConfig as pfsConfigUtils
 import ics.fpsActor.utils.pfsDesign as pfsDesignUtils
-import ics.fpsActor.utils.alfUtils as alfUtils
+import ics.utils.sps.fits as fits
 import numpy as np
 import opscore.protocols.keys as keys
 import opscore.protocols.types as types
 import pandas as pd
 from ics.cobraCharmer import pfi as pfiControl
+from ics.cobraCharmer.cobraCoach import calculation
+from ics.cobraCharmer.cobraCoach import cobraCoach
+from ics.cobraCharmer.cobraCoach import engineer as eng
 from ics.fpsActor import fpsFunction as fpstool
 from ics.fpsActor import fpsState
 from ics.fpsActor import najaVenator
 from ics.fpsActor.utils import display as vis
-from opdb import opdb
-from pfs.utils import butler
-from ics.cobraCharmer.cobraCoach import calculation
-from ics.cobraCharmer.cobraCoach  import cobraCoach
-from ics.cobraCharmer.cobraCoach  import engineer as eng
-from pfs.datamodel import FiberStatus
 from ics.fpsActor.utils.hotRoach import HotRoachDriver
-import ics.utils.sps.fits as fits
+from opdb import opdb
+from pfs.datamodel import FiberStatus
+from pfs.utils import butler
 
 reload(vis)
 
