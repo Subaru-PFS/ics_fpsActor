@@ -919,6 +919,10 @@ class FpsCmd(object):
         self.atThetas = np.zeros(len(self.cc.allCobras))+thetaHome
         self.atPhis = np.zeros(len(self.cc.allCobras))
         
+        # Set the atThetas and atPhis to the home position.
+        self.cc.setCurrentAngles(self.cc.allCobras, thetaAngles=thetaHome, phiAngles=0)
+        cmd.inform(f'text="Setting the thetaAngle and phiAngle to the home position."')
+        
         cmd.finish(f'text="Moved all arms back to home"')
 
     def cobraAndDotRecenter(self, cmd):
