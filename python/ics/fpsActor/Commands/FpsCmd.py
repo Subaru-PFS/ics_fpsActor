@@ -147,6 +147,12 @@ class FpsCmd(object):
                                         keys.Key("board", types.Int(), help="board index 1-84"),
                                         keys.Key("stepsPerMove", types.Int(), default=-50,
                                                  help="number of steps per move"),
+                                        keys.Key("nIterForScaling", types.Int(), default=3,
+                                                 help="number of iteration for scaling"),
+                                        keys.Key("stepSizeForScaling", types.Int(), default=10,
+                                                help="step size for scaling"),
+                                        keys.Key("nIterFindDot", types.Int(), default=3,
+                                                 help="number of iteration for finding dot"),
                                         keys.Key("applyScaling", types.String(), help="scaling filename for cobra"),
                                         )
 
