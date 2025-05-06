@@ -160,6 +160,10 @@ class FpsCmd(object):
         if self.cc is not None:
             eng.setCobraCoach(self.cc)
 
+
+        self.atPhis = None
+        self.atThetas = None
+
     # .cc and .db live in the actor, so that we can reload safely.
     @property
     def cc(self):
