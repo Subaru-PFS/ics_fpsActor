@@ -913,6 +913,12 @@ class FpsCmd(object):
                                         cmd=cmd)
 
             cmd.inform(f'pfsConfig=0x{pfsConfig.pfsDesignId:016x},{visit},Done')
+
+        # Since the cobra is commaned to be at home.  We need to set the atThetas and atPhis.
+        thetaHome = ((self.cc.calibModel.tht1 - self.cc.calibModel.tht0 + np.pi) % (np.pi * 2) + np.pi)
+        self.atThetas = np.zeros(len(self.cc.allCobras))+thetaHome
+        self.atPhis = np.zeros(len(self.cc.allCobras))
+        
         cmd.finish(f'text="Moved all arms back to home"')
 
     def cobraAndDotRecenter(self, cmd):
