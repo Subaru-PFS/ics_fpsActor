@@ -147,6 +147,12 @@ class FpsCmd(object):
                                         keys.Key("board", types.Int(), help="board index 1-84"),
                                         keys.Key("stepsPerMove", types.Int(), default=-50,
                                                  help="number of steps per move"),
+                                        keys.Key("nIterForScaling", types.Int(), default=3,
+                                                 help="number of iteration for scaling"),
+                                        keys.Key("stepSizeForScaling", types.Int(), default=10,
+                                                help="step size for scaling"),
+                                        keys.Key("nIterFindDot", types.Int(), default=3,
+                                                 help="number of iteration for finding dot"),
                                         keys.Key("applyScaling", types.String(), help="scaling filename for cobra"),
                                         )
 
@@ -159,6 +165,10 @@ class FpsCmd(object):
 
         if self.cc is not None:
             eng.setCobraCoach(self.cc)
+
+
+        self.atPhis = None
+        self.atThetas = None
 
     # .cc and .db live in the actor, so that we can reload safely.
     @property
@@ -909,6 +919,16 @@ class FpsCmd(object):
                                         cmd=cmd)
 
             cmd.inform(f'pfsConfig=0x{pfsConfig.pfsDesignId:016x},{visit},Done')
+
+        # Since the cobra is commaned to be at home.  We need to set the atThetas and atPhis.
+        thetaHome = ((self.cc.calibModel.tht1 - self.cc.calibModel.tht0 + np.pi) % (np.pi * 2) + np.pi)
+        self.atThetas = np.zeros(len(self.cc.allCobras))+thetaHome
+        self.atPhis = np.zeros(len(self.cc.allCobras))
+        
+        # Set the atThetas and atPhis to the home position.
+        self.cc.setCurrentAngles(self.cc.allCobras, thetaAngles=thetaHome, phiAngles=0)
+        cmd.inform(f'text="Setting the thetaAngle and phiAngle to the home position."')
+        
         cmd.finish(f'text="Moved all arms back to home"')
 
     def cobraAndDotRecenter(self, cmd):
