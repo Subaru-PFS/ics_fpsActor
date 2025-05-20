@@ -104,7 +104,7 @@ class FpsCmd(object):
             ('loadDotScales', '[<filename>]', self.loadDotScales),
             ('updateDotLoop', '<filename> [<stepsPerMove>] [@noMove]', self.updateDotLoop),
             ('testDotMove', '[<stepsPerMove>]', self.testDotMove),
-            ('hideCobras', '[<visit>] [<nIterForScaling>] [<stepSizeForScaling>] [<nMcsIteration>]', self.driveHotRoach),
+            ('hideCobras', '[<visit>] [<nMcsIteration>] [<nSpsIteration>] [<stepSizeForScaling>]', self.driveHotRoach),
             ('driveHotRoachOpenLoop', '<nSpsIteration>', self.driveHotRoachOpenLoop),
             ('driveHotRoachCloseLoop', '<maskFile> <nSpsIteration>', self.driveHotRoachCloseLoop)
         ]
