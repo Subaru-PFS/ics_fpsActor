@@ -1598,8 +1598,8 @@ class FpsCmd(object):
         # what constant step size is used to calculate the scaling
         useStepSizeForScaling = cmdKeys['stepSizeForScaling'] if 'stepSizeForScaling' in cmdKeys else 60
         # How many iteration to go the edge of the dot.
-        nMcsIteration = cmdKeys['nMcsIteration'] if 'nMcsIteration' in cmdKeys else 12
-        nSpsIteration = cmdKeys['nSpsIteration'] if 'nSpsIteration' in cmdKeys else 6
+        nMcsIteration = cmdKeys['nMcsIteration'].values[0] if 'nMcsIteration' in cmdKeys else 12
+        nSpsIteration = cmdKeys['nSpsIteration'].values[0] if 'nSpsIteration' in cmdKeys else 6
 
         for direction in [1, -1]:
             nIterForScaling = 1 if direction == 1 else useIterForScaling
