@@ -293,6 +293,9 @@ class SingleRoach(object):
         return steps
 
     def trackWhenHidden(self, attenuation):
+        if not self.doTrackCobra:
+            return
+
         distanceToCenterDot = DotModel.inferDistFromAttenuation(attenuation)
         angle = self.dotCenterAngle + distanceToCenterDot
 
