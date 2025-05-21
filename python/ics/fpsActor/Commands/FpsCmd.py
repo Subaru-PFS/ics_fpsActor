@@ -1648,7 +1648,7 @@ class FpsCmd(object):
                 raise RuntimeError("mcs expose failed")
 
             cobraMatch = alfUtils.getCobraMatchData(visit, iteration=iteration)
-            driver.newIteration(cobraMatch)
+            driver.newMcsIteration(cobraMatch, doUpdateTracker=nIter<nMcsIteration-1)
 
             iteration += 1
 
@@ -1699,6 +1699,8 @@ class FpsCmd(object):
         outputDir = self.driver.outputDir
 
         flux = pd.read_csv(cmdKeys['maskFile'].values[0], index_col=0)
+        mergeAngle = flux.nIter.max() == 1
+        driver.newSpsIteration(flux, mergeAngle=mergeAngle)
         maskFile = driver.makeScalingDf(nMcsIteration, nSpsIteration, flux=flux)
 
         fileName = f'{iteration:02d}'

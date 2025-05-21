@@ -191,8 +191,19 @@ class SingleRoach(object):
 
         self.angles.append(angle)
 
-    def addIteration(self, iterRow):
+    def addMcsIteration(self, iterRow, doUpdateTracker):
         self.addAngle(iterRow)
+
+        if doUpdateTracker:
+            self.updateTracker(self.angles[-1])
+
+    def addSpsIteration(self, attenuation, mergeAngle):
+        distanceToCenterDot = DotModel.inferDistFromAttenuation(attenuation)
+        angle = self.dotCenterAngle + distanceToCenterDot
+
+        if mergeAngle:
+            self.angles[-1] = np.nanmean([self.angles[-1], angle])
+
         self.updateTracker(self.angles[-1])
 
     def updateTracker(self, angle):
@@ -292,18 +303,6 @@ class SingleRoach(object):
 
         return steps
 
-    def trackWhenHidden(self, attenuation):
-        if not self.doTrackCobra:
-            return
-
-        distanceToCenterDot = DotModel.inferDistFromAttenuation(attenuation)
-        angle = self.dotCenterAngle + distanceToCenterDot
-
-        if self.statusFlag & Flag.HIDDEN:
-            self.statusFlag &= ~Flag.HIDDEN
-
-            self.updateTracker(angle)
-
 
 class HotRoachDriver(object):
     params = [1.000e-01, 9.996e-02, 5.974e-02, 1.294e-02]
@@ -339,18 +338,13 @@ class HotRoachDriver(object):
         threshold = np.nanmedian(stepScales) + nSigma * rms
         return threshold
 
-    def makeScalingDf(self, remainingMcsIteration, remainingSpsIteration, flux=None):
+    def makeScalingDf(self, remainingMcsIteration, remainingSpsIteration, doOpenLoop=False):
         res = []
 
         for cobraId, roach in self.roaches.items():
-            if remainingMcsIteration:
-                steps = roach.getStepsToDot(remainingMcsIteration, remainingSpsIteration)
-            elif flux is None:
+            if doOpenLoop:
                 steps = roach.getStepsOpenLoop()
             else:
-                fluxNorm = flux[flux.cobraId == cobraId].sort_values('nIter').fluxNorm.to_numpy()
-                attenuation = fluxNorm[-1] / fluxNorm[0]
-                roach.trackWhenHidden(attenuation)
                 steps = roach.getStepsToDot(remainingMcsIteration, remainingSpsIteration)
 
             bitMask = int(steps != 0)
@@ -359,9 +353,23 @@ class HotRoachDriver(object):
 
         return pd.DataFrame(res, columns=['cobraId', 'bitMask', 'steps'])
 
-    def newIteration(self, cobraMatch):
+    def newMcsIteration(self, cobraMatch, doUpdateTracker):
         for cobraId, roach in self.roaches.items():
             if not roach.doTrackCobra:
                 continue
 
-            roach.addIteration(cobraMatch[cobraMatch.cobra_id == roach.cobraId].squeeze())
+            roach.addMcsIteration(cobraMatch[cobraMatch.cobra_id == roach.cobraId].squeeze(),
+                                  doUpdateTracker=doUpdateTracker)
+
+    def newSpsIteration(self, fluxDf, mergeAngle):
+        for cobraId, roach in self.roaches.items():
+            if roach.statusFlag & Flag.HIDDEN:
+                roach.statusFlag &= ~Flag.HIDDEN
+
+            if not roach.doTrackCobra:
+                continue
+
+            fluxNorm = fluxDf[fluxDf.cobraId == cobraId].sort_values('nIter').fluxNorm.to_numpy()
+            attenuation = fluxNorm[-1] / fluxNorm[0]
+
+            roach.addSpsIteration(attenuation, mergeAngle=mergeAngle)
