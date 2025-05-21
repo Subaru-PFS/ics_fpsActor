@@ -202,7 +202,6 @@ class SingleRoach(object):
         angle = self.dotCenterAngle + distanceToCenterDot
 
         if mergeAngle:
-            print([self.angles[-1], angle])
             self.angles[-1] = np.nanmean([self.angles[-1], angle])
         else:
             self.angles.append(angle)
