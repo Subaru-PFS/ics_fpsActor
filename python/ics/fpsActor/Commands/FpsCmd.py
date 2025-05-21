@@ -1701,7 +1701,7 @@ class FpsCmd(object):
         flux = pd.read_csv(cmdKeys['maskFile'].values[0], index_col=0)
         mergeAngle = flux.nIter.max() == 1
         driver.newSpsIteration(flux, mergeAngle=mergeAngle)
-        maskFile = driver.makeScalingDf(nMcsIteration, nSpsIteration, flux=flux)
+        maskFile = driver.makeScalingDf(nMcsIteration, nSpsIteration)
 
         fileName = f'{iteration:02d}'
         maskFilepath = os.path.join(outputDir, f'{fileName}.csv')
