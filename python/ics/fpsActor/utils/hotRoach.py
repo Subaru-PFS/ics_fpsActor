@@ -68,6 +68,7 @@ class SingleRoach(object):
         self.openLoopSteps = None
         self.radialRms = np.nan
         self.initialVelocity = np.nan
+        self.gradientDirection = -1
 
         self.angles = []
         self.predicted = []
@@ -197,9 +198,12 @@ class SingleRoach(object):
         if doUpdateTracker:
             self.updateTracker(self.angles[-1])
 
-    def addSpsIteration(self, attenuation, mergeAngle):
+    def addSpsIteration(self, gradientDirection, attenuation, mergeAngle):
+        if gradientDirection != self.gradientDirection:
+            self.gradientDirection = gradientDirection
+
         distanceToCenterDot = DotModel.inferDistFromAttenuation(attenuation)
-        angle = self.dotCenterAngle + distanceToCenterDot
+        angle = self.dotCenterAngle - self.gradientDirection * distanceToCenterDot
 
         if mergeAngle:
             self.angles[-1] = np.nanmean([self.angles[-1], angle])
@@ -372,6 +376,7 @@ class HotRoachDriver(object):
                 continue
 
             fluxNorm = fluxDf[fluxDf.cobraId == cobraId].sort_values('nIter').fluxNorm.to_numpy()
+            gradientDirection = np.sign(fluxNorm[-1] - fluxNorm[-2])
             attenuation = fluxNorm[-1] / fluxNorm[0]
 
-            roach.addSpsIteration(attenuation, mergeAngle=mergeAngle)
+            roach.addSpsIteration(gradientDirection, attenuation, mergeAngle=mergeAngle)
