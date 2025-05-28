@@ -104,8 +104,9 @@ class FpsCmd(object):
             ('loadDotScales', '[<filename>]', self.loadDotScales),
             ('updateDotLoop', '<filename> [<stepsPerMove>] [@noMove]', self.updateDotLoop),
             ('testDotMove', '[<stepsPerMove>]', self.testDotMove),
-            ('hideCobras', '[<visit>] [<nIterForScaling>] [<stepSizeForScaling>] [<nIterFindDot>]', self.driveHotRoach),
-            ('driveHotRoachOpenLoop', '', self.driveHotRoachOpenLoop)
+            ('hideCobras', '[<visit>] [<nMcsIteration>] [<nSpsIteration>] [<stepSizeForScaling>]', self.driveHotRoach),
+            ('driveHotRoachOpenLoop', '<nSpsIteration>', self.driveHotRoachOpenLoop),
+            ('driveHotRoachCloseLoop', '<maskFile> <nSpsIteration>', self.driveHotRoachCloseLoop)
         ]
 
         # Define typed command arguments for the above commands.
@@ -145,14 +146,18 @@ class FpsCmd(object):
                                         keys.Key("theta", types.Float(), help="Distance to move theta"),
                                         keys.Key("phi", types.Float(), help="Distance to move phi"),
                                         keys.Key("board", types.Int(), help="board index 1-84"),
-                                        keys.Key("stepsPerMove", types.Int(), default=-50,
+                                        keys.Key("stepsPerMove", types.Int(),
                                                  help="number of steps per move"),
-                                        keys.Key("nIterForScaling", types.Int(), default=3,
+                                        keys.Key("nIterForScaling", types.Int(),
                                                  help="number of iteration for scaling"),
-                                        keys.Key("stepSizeForScaling", types.Int(), default=10,
-                                                help="step size for scaling"),
-                                        keys.Key("nIterFindDot", types.Int(), default=3,
+                                        keys.Key("stepSizeForScaling", types.Int(),
+                                                 help="step size for scaling"),
+                                        keys.Key("nIterFindDot", types.Int(),
                                                  help="number of iteration for finding dot"),
+                                        keys.Key("nMcsIteration", types.Int(),
+                                                 help="number of mcsIteration for finding edge of the dot"),
+                                        keys.Key("nSpsIteration", types.Int(),
+                                                 help="number of spsIteration for finding center of the dot"),
                                         keys.Key("applyScaling", types.String(), help="scaling filename for cobra"),
                                         )
 
@@ -1593,8 +1598,8 @@ class FpsCmd(object):
         # what constant step size is used to calculate the scaling
         useStepSizeForScaling = cmdKeys['stepSizeForScaling'] if 'stepSizeForScaling' in cmdKeys else 60
         # How many iteration to go the edge of the dot.
-        nMcsIteration = cmdKeys['nIterFindDot'] if 'nIterFindDot' in cmdKeys else 12
-        nSpsIteration = cmdKeys['nIterFindDot'] if 'nIterFindDot' in cmdKeys else 12
+        nMcsIteration = cmdKeys['nMcsIteration'].values[0] if 'nMcsIteration' in cmdKeys else 12
+        nSpsIteration = cmdKeys['nSpsIteration'].values[0] if 'nSpsIteration' in cmdKeys else 6
 
         for direction in [1, -1]:
             nIterForScaling = 1 if direction == 1 else useIterForScaling
@@ -1643,7 +1648,7 @@ class FpsCmd(object):
                 raise RuntimeError("mcs expose failed")
 
             cobraMatch = alfUtils.getCobraMatchData(visit, iteration=iteration)
-            driver.newIteration(cobraMatch)
+            driver.newMcsIteration(cobraMatch, doUpdateTracker=nIter<nMcsIteration-1)
 
             iteration += 1
 
@@ -1654,8 +1659,9 @@ class FpsCmd(object):
         cmd.finish()
 
     def driveHotRoachOpenLoop(self, cmd):
+        cmdKeys = cmd.cmd.keywords
         nMcsIteration = 0
-        nSpsIteration = 12
+        nSpsIteration = cmdKeys['nSpsIteration']
 
         driver = self.driver
         iteration = self.driver.iteration
@@ -1678,6 +1684,31 @@ class FpsCmd(object):
 
         if ret.didFail:
             raise RuntimeError("mcs expose failed")
+
+        self.driver.iteration += 1
+
+        cmd.finish()
+
+    def driveHotRoachCloseLoop(self, cmd):
+        cmdKeys = cmd.cmd.keywords
+        nMcsIteration = 0
+        nSpsIteration = cmdKeys['nSpsIteration'].values[0]
+
+        driver = self.driver
+        iteration = self.driver.iteration
+        outputDir = self.driver.outputDir
+
+        flux = pd.read_csv(cmdKeys['maskFile'].values[0], index_col=0)
+        mergeAngle = flux.nIter.max() == 1
+        driver.newSpsIteration(flux, mergeAngle=mergeAngle)
+        maskFile = driver.makeScalingDf(nMcsIteration, nSpsIteration)
+
+        fileName = f'{iteration:02d}'
+        maskFilepath = os.path.join(outputDir, f'{fileName}.csv')
+        maskFile.to_csv(maskFilepath)
+
+        cmd.inform(f'text="iteration {iteration} moving {len(maskFile[maskFile.bitMask == 1])} cobras"')
+        self.cobraMoveSteps(maskFile=maskFilepath, stepsize=1, phi=True, applyScaling=maskFilepath)
 
         self.driver.iteration += 1
 
