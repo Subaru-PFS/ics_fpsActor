@@ -4,6 +4,31 @@ import numpy as np
 import pandas as pd
 from ics.fpsActor.utils.alfUtils import sgfm, circleIntersections, findPhiCenter, robustRms
 from ics.fpsActor.utils.kalmanTracker import KalmanAngleTracker3D
+from scipy.interpolate import interp1d
+
+
+class DotModel:
+    x = [0.00132981, 0.00230789, 0.01474092, 0.18052107, 0.38697369,
+         0.55950376, 0.70959454, 0.89372059, 0.99174909, 1.0]
+    y = [0.0, 0.07896623, 0.14536758, 0.20218487, 0.25713816,
+         0.31589083, 0.37996429, 0.43791802, 0.49316161, 0.55856142]
+
+    model = interp1d(x, y, kind='linear', bounds_error=False, fill_value=np.nan)
+
+    @staticmethod
+    def inferDistFromAttenuation(attenuations):
+        # Convert to array if it's a scalar
+        arr = np.atleast_1d(attenuations).astype(float)
+
+        # Default result using interpolation
+        dist = DotModel.model(arr)
+
+        # Handle edge cases
+        dist[arr < DotModel.x[0]] = 0
+        dist[arr > 0.95] = np.nan
+
+        # Return scalar if input was scalar
+        return dist[0] if np.isscalar(attenuations) else dist
 
 
 class Flag(enum.IntFlag):
@@ -166,8 +191,21 @@ class SingleRoach(object):
 
         self.angles.append(angle)
 
-    def addIteration(self, iterRow):
+    def addMcsIteration(self, iterRow, doUpdateTracker):
         self.addAngle(iterRow)
+
+        if doUpdateTracker:
+            self.updateTracker(self.angles[-1])
+
+    def addSpsIteration(self, attenuation, mergeAngle):
+        distanceToCenterDot = DotModel.inferDistFromAttenuation(attenuation)
+        angle = self.dotCenterAngle + distanceToCenterDot
+
+        if mergeAngle:
+            self.angles[-1] = np.nanmean([self.angles[-1], angle])
+        else:
+            self.angles.append(angle)
+
         self.updateTracker(self.angles[-1])
 
     def updateTracker(self, angle):
@@ -230,12 +268,17 @@ class SingleRoach(object):
         distanceExitDot = self.dotExitEdgeAngle - self.angles[-1]
 
         anglePerMcsIteration = distanceEnterDot / remainingMcsIteration
-        anglePerSpsIteration = distanceExitDot / remainingSpsIteration
+        anglePerSpsIteration = distanceCenterDot / remainingSpsIteration
 
         # anglePerIteration = np.mean([distanceEnterDot, distanceCenterDot]) / remainingIteration
 
-        useKalmanStep, realSteps = calculateSteps(anglePerMcsIteration)
+        if remainingMcsIteration:
+            useKalmanStep, realSteps = calculateSteps(anglePerMcsIteration)
+        else:
+            useKalmanStep, realSteps = calculateSteps(anglePerSpsIteration)
+
         _, openLoopSteps = calculateSteps(anglePerSpsIteration)
+
         self.openLoopSteps = openLoopSteps
 
         self.predicted.append(self.tracker.predict(steps=useKalmanStep))
@@ -297,14 +340,14 @@ class HotRoachDriver(object):
         threshold = np.nanmedian(stepScales) + nSigma * rms
         return threshold
 
-    def makeScalingDf(self, remainingMcsIteration, remainingSpsIteration):
+    def makeScalingDf(self, remainingMcsIteration, remainingSpsIteration, doOpenLoop=False):
         res = []
 
         for cobraId, roach in self.roaches.items():
-            if remainingMcsIteration:
-                steps = roach.getStepsToDot(remainingMcsIteration, remainingSpsIteration)
-            else:
+            if doOpenLoop:
                 steps = roach.getStepsOpenLoop()
+            else:
+                steps = roach.getStepsToDot(remainingMcsIteration, remainingSpsIteration)
 
             bitMask = int(steps != 0)
 
@@ -312,9 +355,23 @@ class HotRoachDriver(object):
 
         return pd.DataFrame(res, columns=['cobraId', 'bitMask', 'steps'])
 
-    def newIteration(self, cobraMatch):
+    def newMcsIteration(self, cobraMatch, doUpdateTracker):
         for cobraId, roach in self.roaches.items():
             if not roach.doTrackCobra:
                 continue
 
-            roach.addIteration(cobraMatch[cobraMatch.cobra_id == roach.cobraId].squeeze())
+            roach.addMcsIteration(cobraMatch[cobraMatch.cobra_id == roach.cobraId].squeeze(),
+                                  doUpdateTracker=doUpdateTracker)
+
+    def newSpsIteration(self, fluxDf, mergeAngle):
+        for cobraId, roach in self.roaches.items():
+            if roach.statusFlag & Flag.HIDDEN:
+                roach.statusFlag &= ~Flag.HIDDEN
+
+            if not roach.doTrackCobra:
+                continue
+
+            fluxNorm = fluxDf[fluxDf.cobraId == cobraId].sort_values('nIter').fluxNorm.to_numpy()
+            attenuation = fluxNorm[-1] / fluxNorm[0]
+
+            roach.addSpsIteration(attenuation, mergeAngle=mergeAngle)
