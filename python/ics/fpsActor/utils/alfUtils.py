@@ -5,6 +5,7 @@ from datetime import timedelta
 
 import numpy as np
 import pandas as pd
+import pfs.utils.coordinates.transform as transformUtils
 import psycopg2
 from pfs.datamodel import PfsConfig, TargetType
 from pfs.utils.butler import Butler as Nestor
@@ -589,3 +590,101 @@ def makeScaling(nearConvergenceId, visit, outputDir, maxScaling=5, minScaling=0.
     final.to_csv(filepath)
 
     return filepath
+
+
+def getMcsData(**kwargs):
+    """Retrieve final cobra position in mm.
+
+    Parameters
+    ----------
+    visitId : `int`
+        Convergence identifier.
+    """
+    mcsIds = McsVisitId(**kwargs)
+    sql = f'SELECT * from mcs_data inner join mcs_exposure on mcs_exposure.mcs_frame_id=mcs_data.mcs_frame_id where mcs_data.mcs_frame_id={mcsIds.mcsFrameId}'
+    return read_sql(sql)
+
+
+class McsVisitId(dict):
+    """
+    A dictionary-like class for representing an MCS visit ID.
+
+    Attributes:
+        visit (int): The visit number.
+        iteration (int): The iteration number.
+        mcsFrameId (int): The MCS frame ID.
+
+    Methods:
+        visit: Get the visit number.
+        iteration: Get the iteration number.
+        mcsFrameId: Get the MCS frame ID.
+    """
+
+    def __init__(self, visit=0, iteration=0, mcsFrameId=0):
+        """
+        Initialize an McsVisitId object.
+
+        Parameters:
+            visit (int): The visit number.
+            iteration (int): The iteration number.
+            mcsFrameId (int): The MCS frame ID.
+        """
+
+        if mcsFrameId:
+            visit = int(mcsFrameId / 100)
+            iteration = mcsFrameId - 100 * visit
+
+        else:
+            mcsFrameId = 100 * visit + iteration
+
+        self['visit'] = visit
+        self['iteration'] = iteration
+        self['mcsFrameId'] = mcsFrameId
+
+    @property
+    def visit(self):
+        """int: The visit number."""
+        return self['visit']
+
+    @property
+    def iteration(self):
+        """int: The iteration number."""
+        return self['iteration']
+
+    @property
+    def mcsFrameId(self):
+        """int: The MCS frame ID."""
+        return self['mcsFrameId']
+
+
+def getMcsPfiTransform(mcs_frame_id):
+    sql = f'SELECT * from mcs_pfi_transformation where mcs_frame_id={mcs_frame_id}'
+    return read_sql(sql)
+
+
+def constructMcsPfiTransform(**kwargs):
+    mcsIds = McsVisitId(**kwargs)
+    allSpots = getMcsData(**kwargs)
+    altitude, = allSpots.altitude.unique()
+    insrot, = allSpots.insrot.unique()
+
+    param = getMcsPfiTransform(mcsIds.mcsFrameId)
+    camera_name = param.squeeze().camera_name
+    camera_name = 'usmcs' if camera_name == 'rmod_71m' else camera_name
+    pfiTransform = transformUtils.fromCameraName(camera_name, altitude=altitude, insrot=insrot)
+    pfiTransform.mcsDistort.setArgs(*param[['x0', 'y0', 'theta', 'dscale', 'scale2']].to_numpy())
+
+    return pfiTransform
+
+
+def getMcsDataOnPfi(mcsVisit, iteration=0):
+    mcsFrameId = 100 * mcsVisit + iteration
+
+    allSpots = getMcsData(mcsFrameId=mcsFrameId)
+    pfiTransform = constructMcsPfiTransform(mcsFrameId=mcsFrameId)
+
+    x_mm, y_mm = pfiTransform.mcsToPfi(allSpots['mcs_center_x_pix'].to_numpy(), allSpots['mcs_center_y_pix'].to_numpy())
+    allSpots['pfi_center_x_mm'] = x_mm
+    allSpots['pfi_center_y_mm'] = y_mm
+
+    return allSpots
