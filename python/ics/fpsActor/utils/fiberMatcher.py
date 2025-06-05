@@ -49,6 +49,12 @@ class FiberMatcher:
         fidMatch["fwhm_pix"] = fidAtHome["fwhm_pix"].to_numpy()
         fidMatch["armLength"] = r
         fidMatch = fidMatch.reset_index()
+        fidMatch["global_id"] = -fidMatch["fiducial_fiber_id"].to_numpy()
+        fidMatch["x"] = fidMatch["pfi_center_x_mm"].to_numpy()
+        fidMatch["y"] = fidMatch["pfi_center_y_mm"].to_numpy()
+        fidMatch["xPrior"] = fidMatch["pfi_center_x_mm"].to_numpy()
+        fidMatch["yPrior"] = fidMatch["pfi_center_y_mm"].to_numpy()
+        fidMatch["type"] = "fiducial"
 
         # 2. Cobra match data
         cobQuery = f"""
@@ -82,9 +88,35 @@ class FiberMatcher:
         cobXY = cobXY[~cobXY.FIBER_BROKEN_MASK]
         cobXY.loc[~cobXY.COBRA_OK_MASK, "armLength"] = r
 
+        cobXY['global_id'] = cobXY.cobraId.to_numpy()
+        cobXY["type"] = "cobra"
+
+        targets = read_sql(f"""
+            SELECT fiber_id, pfi_nominal_x_mm, pfi_nominal_y_mm
+            FROM pfs_design_fiber
+            INNER JOIN pfs_config ON pfs_config.pfs_design_id = pfs_design_fiber.pfs_design_id
+            WHERE pfs_config.visit0 = {nearId}
+        """)
+
+        # Merge into cobXY on fiberId
+        cobXY = cobXY.merge(targets, how="left", left_on="fiberId", right_on="fiber_id")
+
+        # Optionally rename for consistency
+        cobXY = cobXY.rename(columns={
+            "pfi_nominal_x_mm": "xTarget",
+            "pfi_nominal_y_mm": "yTarget"
+        })
+
+        cobXY["xPrior"] = np.nanmean(cobXY[["x", "xTarget"]].to_numpy(), axis=1)
+        cobXY["yPrior"] = np.nanmean(cobXY[["y", "yTarget"]].to_numpy(), axis=1)
+
         return fidMatch, cobXY
 
-    def match(self, visit, iteration=0):
+    def match(self, visit, iteration=0, searchRadius=1.5):
+        """
+        Match MCS spots to fibers for a given visit and iteration.
+        If searchRadius is set, it overrides the fiber's default armLength for tighter matching (useful for iteration > 0).
+        """
         # Load MCS data
         mcsData = getMcsDataOnPfi(visit, iteration)
         mcsData = mcsData[[
@@ -96,35 +128,103 @@ class FiberMatcher:
         # Prepare reference catalog
         fidXY = self.fidXY.copy()
         cobXY = self.cobXY.copy()
-
-        fidXY["fiber_id"] = -fidXY["fiducial_fiber_id"].to_numpy()
-        fidXY["x"] = fidXY["pfi_center_x_mm"].to_numpy()
-        fidXY["y"] = fidXY["pfi_center_y_mm"].to_numpy()
-        fidXY["type"] = "fiducial"
-
-        cobXY = cobXY.rename(columns={"cobraId": "fiber_id"})
-        cobXY["type"] = "cobra"
-
         ref = pd.concat([fidXY, cobXY], ignore_index=True)
-        refPositions = np.column_stack((ref["x"], ref["y"]))
-        tree = cKDTree(refPositions)
 
-        # Match
+        # MCS spot positions
         mcsPositions = mcsData[["pfi_center_x_mm", "pfi_center_y_mm"]].to_numpy()
-        dist, idx = tree.query(mcsPositions, distance_upper_bound=6.0)
+        tree = cKDTree(mcsPositions)
 
+        # Matching loop
         matches = []
-        for i, (d, j) in enumerate(zip(dist, idx)):
-            if j >= len(ref):
+        for _, fiber in ref.iterrows():
+            # Determine search radius
+            radius = searchRadius if iteration > 0 else fiber.armLength * 1.05
+
+            # Center for search: use previous position if searchRadius is tight
+            center_x = fiber.xPrior if iteration > 0 else fiber.x
+            center_y = fiber.yPrior if iteration > 0 else fiber.y
+
+            if any(np.isnan([center_x, center_y])):
                 continue
-            if d <= ref.iloc[j].armLength:
+
+            # Find all spots within the radius
+            candidates = tree.query_ball_point([center_x, center_y], r=radius)
+
+            for spot_idx in candidates:
+                spot = mcsData.iloc[spot_idx]
+                d = np.hypot(spot.pfi_center_x_mm - fiber.x, spot.pfi_center_y_mm - fiber.y)
                 matches.append({
-                    "spot_id": mcsData.iloc[i].spot_id,
-                    "fiber_id": ref.iloc[j].fiber_id,
-                    "fiber_type": ref.iloc[j].type,
-                    "distance_mm": d
+                    "spot_id": spot.spot_id,
+                    "global_id": fiber.global_id,
+                    "fiber_type": fiber.type,
+                    "distance_mm": d,
+                    "spot_x": spot.pfi_center_x_mm,
+                    "spot_y": spot.pfi_center_y_mm,
+                    "xyPrior_x": fiber.xPrior,
+                    "xyPrior_y": fiber.yPrior
                 })
 
-        matches = pd.DataFrame(matches)
-        merged = matches.merge(mcsData, on="spot_id", how="left")
+        matchDf = pd.DataFrame(matches)
+
+        if matchDf.empty:
+            return pd.DataFrame()  # early return if no matches
+
+        # Compute distance to prior position (if any)
+        matchDf["dist_to_prior"] = np.hypot(matchDf["spot_x"] - matchDf["xyPrior_x"],
+                                            matchDf["spot_y"] - matchDf["xyPrior_y"])
+
+        # If multiple matches for a fiber, keep the closest to prior (or patrol center for iteration 0)
+        matchDf = matchDf.sort_values("dist_to_prior").drop_duplicates("global_id", keep="first")
+
+        # Final merge to get full spot info
+        merged = matchDf.merge(mcsData, on="spot_id", how="left")
         return merged
+
+    def cobraMatch(self, visit, iteration=0):
+        """Return cobra-only match table with correct columns, padding, and dtypes (like getCobraMatchData)."""
+        matches = self.match(visit, iteration)
+        cobraMatch = matches[matches.fiber_type == "cobra"].copy()
+
+        # Add cobra_id
+        cobraMatch["cobra_id"] = cobraMatch["global_id"]
+
+        # Pad missing cobra_ids
+        cobraMatch = cobraMatch.set_index("cobra_id").reindex(np.arange(1, 2395)).reset_index()
+
+        # Replace NaN spot_id with -1 and ensure int
+        cobraMatch["spot_id"] = cobraMatch["spot_id"].fillna(-1).astype(int)
+
+        # adding visit and iteration
+        cobraMatch["pfs_visit_id"] = visit
+        cobraMatch["iteration"] = iteration
+
+        # Columns and dtypes to match the expected format
+        columns_and_types = {
+            "pfs_visit_id": "int64",
+            "iteration": "int64",
+            "cobra_id": "int64",
+            "spot_id": "int64",
+            "pfi_center_x_mm": "float64",
+            "pfi_center_y_mm": "float64",
+            "mcs_center_x_pix": "float64",
+            "mcs_center_y_pix": "float64"
+        }
+
+        # Ensure all required columns are present with correct type
+        for col, dtype in columns_and_types.items():
+            if col not in cobraMatch.columns:
+                cobraMatch[col] = np.nan if "float" in dtype else -1
+            cobraMatch[col] = cobraMatch[col].astype(dtype)
+
+        # Return ordered DataFrame
+        cobraMatch = cobraMatch[list(columns_and_types.keys())]
+
+        # updating prior
+        updatePrior = cobraMatch[cobraMatch.cobra_id.isin(self.cobXY.cobraId.to_numpy())].sort_values('cobra_id')
+        np.testing.assert_equal(updatePrior.cobra_id.to_numpy(), self.cobXY.cobraId.to_numpy())
+
+        # updating prior
+        self.cobXY['xPrior'] = updatePrior.pfi_center_x_mm.to_numpy()
+        self.cobXY['yPrior'] = updatePrior.pfi_center_y_mm.to_numpy()
+
+        return cobraMatch
