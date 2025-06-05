@@ -27,6 +27,7 @@ from ics.fpsActor import fpsState
 from ics.fpsActor import najaVenator
 from ics.fpsActor.utils import display as vis
 from ics.fpsActor.utils.hotRoach import HotRoachDriver
+from ics.fpsActor.utils.fiberMatcher import FiberMatcher
 from opdb import opdb
 from pfs.datamodel import FiberStatus
 from pfs.utils import butler
@@ -1588,6 +1589,7 @@ class FpsCmd(object):
             os.mkdir(outputDir)
 
         nearConvergenceId = alfUtils.getLatestNearDotConvergenceId()
+        fiberMatcher = FiberMatcher(nearConvergenceId)
 
         cobraMatch = alfUtils.getCobraMatchData(nearConvergenceId)
         cobraMatch = cobraMatch[cobraMatch.iteration == cobraMatch.iteration.max()]
@@ -1600,6 +1602,8 @@ class FpsCmd(object):
         # How many iteration to go the edge of the dot.
         nMcsIteration = cmdKeys['nMcsIteration'].values[0] if 'nMcsIteration' in cmdKeys else 12
         nSpsIteration = cmdKeys['nSpsIteration'].values[0] if 'nSpsIteration' in cmdKeys else 6
+
+        fixedScalingDf = []
 
         for direction in [1, -1]:
             nIterForScaling = 1 if direction == 1 else useIterForScaling
@@ -1620,15 +1624,17 @@ class FpsCmd(object):
                 if ret.didFail:
                     raise RuntimeError("mcs expose failed")
 
-                cobraMatch = alfUtils.getCobraMatchData(visit, iteration=iteration)
+                cobraMatch = fiberMatcher.cobraMatch(visit, iteration=iteration)
                 maskFile, maskFilepath = alfUtils.makeHideCobraMaskFile(cobraMatch, iteration + 1, outputDir)
+
+                fixedScalingDf.append(cobraMatch)
                 iteration += 1
 
         convergenceDf = alfUtils.loadConvergenceDf(nearConvergenceId)
-        fixedScalingDf = alfUtils.getCobraMatchData(visit)
+        fixedScalingDf = pd.concat(fixedScalingDf).reset_index(drop=True)
 
         driver = HotRoachDriver(convergenceDf, fixedScalingDf, fixedSteps=useStepSizeForScaling * -1)
-        driver.bootstrap()
+        driver.bootstrap(fiberMatcher.allCobXY.x.to_numpy(), fiberMatcher.allCobXY.y.to_numpy())
 
         for nIter in range(nMcsIteration):
             maskFile = driver.makeScalingDf(nMcsIteration - nIter, nSpsIteration)
@@ -1647,7 +1653,7 @@ class FpsCmd(object):
             if ret.didFail:
                 raise RuntimeError("mcs expose failed")
 
-            cobraMatch = alfUtils.getCobraMatchData(visit, iteration=iteration)
+            cobraMatch = fiberMatcher.cobraMatch(visit, iteration=iteration)
             driver.newMcsIteration(cobraMatch, doUpdateTracker=nIter<nMcsIteration-1)
 
             iteration += 1

@@ -26,6 +26,7 @@ yCob = np.array(calibModel.centers.imag).astype('float32')
 armLength = np.array(calibModel.L1 + calibModel.L2).astype('float32')
 L1 = np.array(calibModel.L1).astype('float32')
 L2 = np.array(calibModel.L2).astype('float32')
+tht0 = np.array(calibModel.tht0).astype('float32')
 FIBER_BROKEN_MASK = (calibModel.status & calibModel.FIBER_BROKEN_MASK).astype('bool')
 COBRA_OK_MASK = (calibModel.status & calibModel.COBRA_OK_MASK).astype('bool')
 
@@ -36,6 +37,7 @@ sgfm['COBRA_OK_MASK'] = COBRA_OK_MASK
 sgfm['armLength'] = armLength
 sgfm['L1'] = L1
 sgfm['L2'] = L2
+sgfm['tht0'] = tht0
 # adding blackSpots position and radius.
 np.testing.assert_equal(sgfm.cobraId.to_numpy(), dots.spotId.to_numpy())
 sgfm['xDot'] = dots.x.to_numpy()
@@ -43,7 +45,7 @@ sgfm['yDot'] = dots.y.to_numpy()
 sgfm['rDot'] = dots.r.to_numpy()
 
 sgfm = sgfm[['scienceFiberId', 'cobraId', 'fiberId', 'spectrographId',
-             'FIBER_BROKEN_MASK', 'COBRA_OK_MASK', 'x', 'y', 'xDot', 'yDot', 'rDot', 'armLength', 'L1', 'L2']]
+             'FIBER_BROKEN_MASK', 'COBRA_OK_MASK', 'x', 'y', 'xDot', 'yDot', 'rDot', 'armLength', 'L1', 'L2', 'tht0']]
 
 
 def getConn():

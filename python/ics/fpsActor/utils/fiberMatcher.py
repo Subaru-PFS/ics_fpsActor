@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-from ics.fpsActor.utils.alfUtils import sgfm, read_sql, getMcsDataOnPfi
+from ics.fpsActor.utils.alfUtils import sgfm, read_sql, getMcsDataOnPfi, loadConvergenceDf
 from scipy.spatial import cKDTree
 
 
@@ -11,7 +11,21 @@ class FiberMatcher:
         """Initialize with a reference visit ID and assign arm lengths to static fibers."""
         self.nearConvergenceId = nearConvergenceId
         self.notMovingRadius = notMovingRadius
-        self.fidXY, self.cobXY = self._getBasePosition()
+        self.fidXY, self.allCobXY = self._getBasePosition()
+        self.cobXY = self.allCobXY[~self.allCobXY.FIBER_BROKEN_MASK]
+
+        # updating prior with measured position after converging.
+        self.cobXY = self.updatePrior(self.cobXY.xPosition.to_numpy(),
+                                      self.cobXY.yPosition.to_numpy())
+
+    def _calcThetaCenterFromHome(self, homeX, homeY, L1, L2, tht0):
+        tx = homeX + L2 * np.cos(tht0)
+        ty = homeY + L2 * np.sin(tht0)
+
+        x = tx - L1 * np.cos(tht0)
+        y = ty - L1 * np.sin(tht0)
+
+        return x, y
 
     def _toFwhmPix(self, df):
         """Compute FWHM (in pixels) from second moments assuming a Gaussian profile."""
@@ -81,38 +95,27 @@ class FiberMatcher:
         cobraPos = cobMatch.groupby("cobra_id")[["pfi_center_x_mm", "pfi_center_y_mm"]].mean()
 
         cobXY = sgfm.copy()
-        cobXY["x"] = cobraPos["pfi_center_x_mm"].to_numpy()
-        cobXY["y"] = cobraPos["pfi_center_y_mm"].to_numpy()
+        x, y = self._calcThetaCenterFromHome(cobraPos.pfi_center_x_mm.to_numpy(), cobraPos.pfi_center_y_mm.to_numpy(),
+                                             sgfm.L1, sgfm.L2, sgfm.tht0)
+        cobXY["x"] = x
+        cobXY["y"] = y
         cobXY["peakvalue"] = atHome["peakvalue"].to_numpy()
         cobXY["fwhm_pix"] = atHome["fwhm_pix"].to_numpy()
-        cobXY = cobXY[~cobXY.FIBER_BROKEN_MASK]
+
         cobXY.loc[~cobXY.COBRA_OK_MASK, "armLength"] = r
 
         cobXY['global_id'] = cobXY.cobraId.to_numpy()
         cobXY["type"] = "cobra"
 
-        targets = read_sql(f"""
-            SELECT fiber_id, pfi_nominal_x_mm, pfi_nominal_y_mm
-            FROM pfs_design_fiber
-            INNER JOIN pfs_config ON pfs_config.pfs_design_id = pfs_design_fiber.pfs_design_id
-            WHERE pfs_config.visit0 = {nearId}
-        """)
+        targets = loadConvergenceDf(nearId)
+        targets = targets[['fiberId', 'xPosition', 'yPosition', 'xTarget', 'yTarget']]
 
         # Merge into cobXY on fiberId
-        cobXY = cobXY.merge(targets, how="left", left_on="fiberId", right_on="fiber_id")
-
-        # Optionally rename for consistency
-        cobXY = cobXY.rename(columns={
-            "pfi_nominal_x_mm": "xTarget",
-            "pfi_nominal_y_mm": "yTarget"
-        })
-
-        cobXY["xPrior"] = np.nanmean(cobXY[["x", "xTarget"]].to_numpy(), axis=1)
-        cobXY["yPrior"] = np.nanmean(cobXY[["y", "yTarget"]].to_numpy(), axis=1)
+        cobXY = cobXY.merge(targets, how="left", left_on="fiberId", right_on="fiberId")
 
         return fidMatch, cobXY
 
-    def match(self, visit, iteration=0, searchRadius=1.5):
+    def match(self, visit, iteration=0, searchRadius0=2.0, searchRadius=1.0):
         """
         Match MCS spots to fibers for a given visit and iteration.
         If searchRadius is set, it overrides the fiber's default armLength for tighter matching (useful for iteration > 0).
@@ -138,11 +141,11 @@ class FiberMatcher:
         matches = []
         for _, fiber in ref.iterrows():
             # Determine search radius
-            radius = searchRadius if iteration > 0 else fiber.armLength * 1.05
+            radius = searchRadius0 if iteration == 0 else searchRadius
 
             # Center for search: use previous position if searchRadius is tight
-            center_x = fiber.xPrior if iteration > 0 else fiber.x
-            center_y = fiber.yPrior if iteration > 0 else fiber.y
+            center_x = fiber.xPrior
+            center_y = fiber.yPrior
 
             if any(np.isnan([center_x, center_y])):
                 continue
@@ -160,8 +163,8 @@ class FiberMatcher:
                     "distance_mm": d,
                     "spot_x": spot.pfi_center_x_mm,
                     "spot_y": spot.pfi_center_y_mm,
-                    "xyPrior_x": fiber.xPrior,
-                    "xyPrior_y": fiber.yPrior
+                    "xPrior": fiber.xPrior,
+                    "yPrior": fiber.yPrior
                 })
 
         matchDf = pd.DataFrame(matches)
@@ -170,8 +173,8 @@ class FiberMatcher:
             return pd.DataFrame()  # early return if no matches
 
         # Compute distance to prior position (if any)
-        matchDf["dist_to_prior"] = np.hypot(matchDf["spot_x"] - matchDf["xyPrior_x"],
-                                            matchDf["spot_y"] - matchDf["xyPrior_y"])
+        matchDf["dist_to_prior"] = np.hypot(matchDf["spot_x"] - matchDf["xPrior"],
+                                            matchDf["spot_y"] - matchDf["yPrior"])
 
         # If multiple matches for a fiber, keep the closest to prior (or patrol center for iteration 0)
         matchDf = matchDf.sort_values("dist_to_prior").drop_duplicates("global_id", keep="first")
@@ -223,8 +226,21 @@ class FiberMatcher:
         updatePrior = cobraMatch[cobraMatch.cobra_id.isin(self.cobXY.cobraId.to_numpy())].sort_values('cobra_id')
         np.testing.assert_equal(updatePrior.cobra_id.to_numpy(), self.cobXY.cobraId.to_numpy())
 
-        # updating prior
-        self.cobXY['xPrior'] = updatePrior.pfi_center_x_mm.to_numpy()
-        self.cobXY['yPrior'] = updatePrior.pfi_center_y_mm.to_numpy()
+        self.cobXY = self.updatePrior(updatePrior.pfi_center_x_mm.to_numpy(),
+                                      updatePrior.pfi_center_y_mm.to_numpy())
 
         return cobraMatch
+
+    def updatePrior(self, x, y):
+        """Update prior positions for cobras, replacing NaNs with fallback dot positions."""
+        cobXY = self.cobXY.copy()
+
+        cobXY["xPrior"] = x
+        cobXY["yPrior"] = y
+
+        isNan = cobXY[['xPrior', 'yPrior']].isna().any(axis=1)
+
+        cobXY.loc[isNan, 'xPrior'] = cobXY.loc[isNan, 'xDot']
+        cobXY.loc[isNan, 'yPrior'] = cobXY.loc[isNan, 'yDot']
+
+        return cobXY

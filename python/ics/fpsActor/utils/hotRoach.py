@@ -43,7 +43,7 @@ class Flag(enum.IntFlag):
 
 class SingleRoach(object):
 
-    def __init__(self, driver, cobraId):
+    def __init__(self, driver, cobraId, thetaX, thetaY):
         self.driver = driver
         row = sgfm[sgfm.cobraId == cobraId].squeeze()
 
@@ -52,8 +52,8 @@ class SingleRoach(object):
         self.fiberId = row["fiberId"]
         self.spectrographId = row["spectrographId"]
         self.COBRA_OK_MASK = row["COBRA_OK_MASK"]
-        self.x = row["x"]
-        self.y = row["y"]
+        self.x = thetaX
+        self.y = thetaY
         self.xDot = row["xDot"]
         self.yDot = row["yDot"]
         self.rDot = row["rDot"]
@@ -316,9 +316,9 @@ class HotRoachDriver(object):
 
         self.roaches = dict()
 
-    def bootstrap(self):
+    def bootstrap(self, thetaX, thetaY):
         for cobraId, cobraData in self.convergenceDf.groupby('cobraId'):
-            self.roaches[cobraId] = SingleRoach(self, cobraId)
+            self.roaches[cobraId] = SingleRoach(self, cobraId, thetaX[cobraId - 1], thetaY[cobraId - 1])
             self.roaches[cobraId].bootstrap()
 
         radialRmsThreshold = self.calculateRmsThreshold()
