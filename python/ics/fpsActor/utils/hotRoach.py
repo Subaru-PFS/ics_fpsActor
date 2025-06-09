@@ -264,10 +264,13 @@ class SingleRoach(object):
             return useKalmanStep, realSteps
 
         distanceCenterDot = self.dotCenterAngle - self.angles[-1]
-        distanceEnterDot = self.dotEnterEdgeAngle - self.angles[-1]
+
+        # slightly overshooting because the actual position of the dot is not perfectly known.
+        objective = self.dotEnterEdgeAngle + (self.dotCenterAngle - self.dotEnterEdgeAngle) * self.driver.mcsOverShoot
+        distanceToObjective = objective - self.angles[-1]
         distanceExitDot = self.dotExitEdgeAngle - self.angles[-1]
 
-        anglePerMcsIteration = distanceEnterDot / remainingMcsIteration
+        anglePerMcsIteration = distanceToObjective / remainingMcsIteration
         anglePerSpsIteration = distanceCenterDot / remainingSpsIteration
 
         # anglePerIteration = np.mean([distanceEnterDot, distanceCenterDot]) / remainingIteration
@@ -309,10 +312,11 @@ class SingleRoach(object):
 class HotRoachDriver(object):
     params = [1.000e-01, 9.996e-02, 5.974e-02, 1.294e-02]
 
-    def __init__(self, convergenceDf, fixedScalingDf, fixedSteps):
+    def __init__(self, convergenceDf, fixedScalingDf, fixedSteps, mcsOverShoot):
         self.convergenceDf = convergenceDf
         self.fixedScalingDf = fixedScalingDf
         self.fixedSteps = fixedSteps
+        self.mcsOverShoot = mcsOverShoot
 
         self.roaches = dict()
 

@@ -1599,6 +1599,8 @@ class FpsCmd(object):
         useIterForScaling = cmdKeys['nIterForScaling'] if 'nIterForScaling' in cmdKeys else 3
         # what constant step size is used to calculate the scaling
         useStepSizeForScaling = cmdKeys['stepSizeForScaling'] if 'stepSizeForScaling' in cmdKeys else 60
+        # When moving the cobras to the entrance of the dot, how much you overshoot wrt to expected dot position.
+        mcsOverShoot = cmdKeys['mcsOverShoot'] if 'mcsOverShoot' in cmdKeys else 0.2
         # How many iteration to go the edge of the dot.
         nMcsIteration = cmdKeys['nMcsIteration'].values[0] if 'nMcsIteration' in cmdKeys else 12
         nSpsIteration = cmdKeys['nSpsIteration'].values[0] if 'nSpsIteration' in cmdKeys else 6
@@ -1633,7 +1635,8 @@ class FpsCmd(object):
         convergenceDf = alfUtils.loadConvergenceDf(nearConvergenceId)
         fixedScalingDf = pd.concat(fixedScalingDf).reset_index(drop=True)
 
-        driver = HotRoachDriver(convergenceDf, fixedScalingDf, fixedSteps=useStepSizeForScaling * -1)
+        driver = HotRoachDriver(convergenceDf, fixedScalingDf,
+                                fixedSteps=useStepSizeForScaling * -1, mcsOverShoot=mcsOverShoot)
         driver.bootstrap(fiberMatcher.allCobXY.x.to_numpy(), fiberMatcher.allCobXY.y.to_numpy())
 
         for nIter in range(nMcsIteration):
