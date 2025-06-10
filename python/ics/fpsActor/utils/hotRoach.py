@@ -61,6 +61,10 @@ class SingleRoach(object):
         self.L1 = row["L1"]
         self.L2 = row["L2"]
 
+        self.nearDotConvergenceDf = driver.convergenceDf[self.driver.convergenceDf.cobraId == self.cobraId].squeeze()
+        self.fixedScalingDf = driver.fixedScalingDf[self.driver.fixedScalingDf.cobra_id == self.cobraId].sort_values(
+            'iteration').reset_index(drop=True)
+
         self.phiCenterX, self.phiCenterY = None, None
         self.tracker = None
         self.dotEnterEdgeAngle = None
@@ -69,19 +73,21 @@ class SingleRoach(object):
         self.radialRms = np.nan
         self.initialVelocity = np.nan
 
-        self.angles = []
-        self.predicted = []
+        self.angles_measured = []
+        self.angles_predicted = []
+
+        self.spotRows = []
+        self.spotsArray = []
 
         self.statusFlag = 0
 
     @property
-    def nearDotConvergenceDf(self):
-        return self.driver.convergenceDf[self.driver.convergenceDf.cobraId == self.cobraId].squeeze()
+    def spotsDf(self):
+        return pd.DataFrame(self.spotRows).reset_index(drop=True).sort_values('iteration')
 
     @property
-    def fixedScalingDf(self):
-        return self.driver.fixedScalingDf[self.driver.fixedScalingDf.cobra_id == self.cobraId].sort_values(
-            'iteration').reset_index(drop=True)
+    def angles(self):
+        return np.array(self.spotsArray)[:, 0]
 
     @property
     def statusStr(self):
@@ -103,7 +109,11 @@ class SingleRoach(object):
 
     @property
     def doTrackCobra(self):
-        return self.statusFlag in [0]
+        return self.statusFlag in [0, 2]
+
+    @property
+    def doDriveCobra(self):
+        return self.statusFlag == 0
 
     def setStatusFlag(self, radialRmsThreshold, stepScaleThreshold):
         if not self.COBRA_OK_MASK:
@@ -162,13 +172,13 @@ class SingleRoach(object):
         self.updatePhiCenter(self.fixedScalingDf)
 
         for j, iterRow in self.fixedScalingDf.iterrows():
-            self.addAngle(iterRow)
+            self.addSpotInfo(iterRow)
 
         self.radialRms = self.calculateRadialRms()
         self.initialVelocity = self.calculateInitialVelocity()
 
     def setupTracker(self):
-        if not self.doTrackCobra:
+        if not self.doDriveCobra:
             return
 
         self.tracker = KalmanAngleTracker3D(initialAngle=self.angles[0],
@@ -180,39 +190,45 @@ class SingleRoach(object):
                                             r_measurement=self.driver.params[3])
 
         for i in range(len(self.angles) - 1):
-            self.predicted.append(self.tracker.predict(steps=1))
+            self.angles_predicted.append(self.tracker.predict(steps=1))
             self.updateTracker(self.angles[i + 1])
 
-    def addAngle(self, iterRow):
+    def addSpotInfo(self, iterRow):
         if iterRow.spot_id == -1:
             angle = np.nan
         else:
             angle = self.calculateAngle(iterRow.pfi_center_x_mm, iterRow.pfi_center_y_mm)
 
-        self.angles.append(angle)
+        self.spotsArray.append((angle, iterRow.peakvalue, iterRow.fwhm))
+        self.spotRows.append(iterRow)
 
-    def addMcsIteration(self, iterRow, doUpdateTracker):
-        self.addAngle(iterRow)
+    def newMcsIteration(self, iterRow, nSigma=3):
+        # add spot_info no matter what.
+        self.addSpotInfo(iterRow)
 
-        if doUpdateTracker:
+        _, medPeakValue, medFwhm = np.median(self.spotsArray, axis=0)
+        _, sigPeakValue, sigFhwm = np.std(self.spotsArray, axis=0, ddof=1)
+
+        peakSigma = (medPeakValue - iterRow.peakvalue) / sigPeakValue
+        fwhmSigma = (medFwhm - iterRow.fwhm) / sigFhwm
+
+        combinedSigma = 0.3 * peakSigma + 0.7 * fwhmSigma
+
+        # if peak is partially or completely hidden
+        if combinedSigma > nSigma or np.isnan(self.angles[-1]):
+            self.statusFlag |= Flag.HIDDEN
+
+        elif self.doDriveCobra:
             self.updateTracker(self.angles[-1])
 
-    def addSpsIteration(self, attenuation, mergeAngle):
-        distanceToCenterDot = DotModel.inferDistFromAttenuation(attenuation)
-        angle = self.dotCenterAngle + distanceToCenterDot
-
-        if mergeAngle:
-            self.angles[-1] = np.nanmean([self.angles[-1], angle])
-        else:
-            self.angles.append(angle)
-
-        self.updateTracker(self.angles[-1])
-
     def updateTracker(self, angle):
+        # I guess it doesn't hurt to keep it for now.
         if np.isnan(angle):
             self.statusFlag |= Flag.HIDDEN
             return
 
+        # keeping track of what was actually being fed to the kalman.
+        self.angles_measured.append(angle)
         self.tracker.update(angle)
 
     def projectAngle(self, angle):
@@ -256,8 +272,8 @@ class SingleRoach(object):
 
     def tuneSteps(self, remainingMcsIteration, remainingSpsIteration):
         def calculateSteps(anglePerIteration):
-            predicted = self.tracker.predict_external(steps=1)[0]
-            anglePerKalmanStep = self.angles[-1] - predicted
+            angles_predicted = self.tracker.predict_external(steps=1)[0]
+            anglePerKalmanStep = self.angles[-1] - angles_predicted
             useKalmanStep = anglePerIteration / anglePerKalmanStep
             useKalmanStep *= -1
             realSteps = int(round(self.driver.fixedSteps * useKalmanStep))
@@ -268,12 +284,9 @@ class SingleRoach(object):
         # slightly overshooting because the actual position of the dot is not perfectly known.
         objective = self.dotEnterEdgeAngle + (self.dotCenterAngle - self.dotEnterEdgeAngle) * self.driver.mcsOverShoot
         distanceToObjective = objective - self.angles[-1]
-        distanceExitDot = self.dotExitEdgeAngle - self.angles[-1]
 
         anglePerMcsIteration = distanceToObjective / remainingMcsIteration
         anglePerSpsIteration = distanceCenterDot / remainingSpsIteration
-
-        # anglePerIteration = np.mean([distanceEnterDot, distanceCenterDot]) / remainingIteration
 
         if remainingMcsIteration:
             useKalmanStep, realSteps = calculateSteps(anglePerMcsIteration)
@@ -284,12 +297,12 @@ class SingleRoach(object):
 
         self.openLoopSteps = openLoopSteps
 
-        self.predicted.append(self.tracker.predict(steps=useKalmanStep))
+        self.angles_predicted.append(self.tracker.predict(steps=useKalmanStep))
 
         return realSteps
 
     def getStepsToDot(self, remainingMcsIteration, remainingSpsIteration):
-        if self.doTrackCobra:
+        if self.doDriveCobra:
             steps = self.tuneSteps(remainingMcsIteration, remainingSpsIteration)
         elif self.statusFlag & Flag.HIDDEN or self.statusFlag & Flag.BROKEN:
             steps = 0
@@ -310,9 +323,12 @@ class SingleRoach(object):
 
 
 class HotRoachDriver(object):
+    """Driver managing all SingleRoach instances and iteration coordination for Cobra tracking."""
+
     params = [1.000e-01, 9.996e-02, 5.974e-02, 1.294e-02]
 
     def __init__(self, convergenceDf, fixedScalingDf, fixedSteps, mcsOverShoot):
+        """Initialize the HotRoachDriver with convergence data and global parameters."""
         self.convergenceDf = convergenceDf
         self.fixedScalingDf = fixedScalingDf
         self.fixedSteps = fixedSteps
@@ -321,6 +337,7 @@ class HotRoachDriver(object):
         self.roaches = dict()
 
     def bootstrap(self, thetaX, thetaY):
+        """Bootstrap all SingleRoach objects and initialize their tracking states."""
         for cobraId, cobraData in self.convergenceDf.groupby('cobraId'):
             self.roaches[cobraId] = SingleRoach(self, cobraId, thetaX[cobraId - 1], thetaY[cobraId - 1])
             self.roaches[cobraId].bootstrap()
@@ -333,18 +350,21 @@ class HotRoachDriver(object):
             roach.setupTracker()
 
     def calculateRmsThreshold(self, nSigma=10):
+        """Calculate radial RMS threshold for outlier detection using robust RMS."""
         radialRms = np.array([roach.radialRms for roach in self.roaches.values()])
         rms = robustRms(radialRms)
         threshold = np.nanmedian(radialRms) + nSigma * rms
         return threshold
 
     def calculateStepScaleThreshold(self, nSigma=50):
+        """Calculate step scaling threshold for outlier detection using robust RMS."""
         stepScales = np.array([roach.stepScale for roach in self.roaches.values()])
         rms = robustRms(stepScales)
         threshold = np.nanmedian(stepScales) + nSigma * rms
         return threshold
 
     def makeScalingDf(self, remainingMcsIteration, remainingSpsIteration, doOpenLoop=False):
+        """Create a DataFrame of Cobra movement steps for the next iteration."""
         res = []
 
         for cobraId, roach in self.roaches.items():
@@ -359,23 +379,14 @@ class HotRoachDriver(object):
 
         return pd.DataFrame(res, columns=['cobraId', 'bitMask', 'steps'])
 
-    def newMcsIteration(self, cobraMatch, doUpdateTracker):
+    def newMcsIteration(self, cobraMatch):
+        """Update each SingleRoach with a new MCS iteration measurement."""
         for cobraId, roach in self.roaches.items():
             if not roach.doTrackCobra:
                 continue
 
-            roach.addMcsIteration(cobraMatch[cobraMatch.cobra_id == roach.cobraId].squeeze(),
-                                  doUpdateTracker=doUpdateTracker)
+            roach.newMcsIteration(cobraMatch[cobraMatch.cobra_id == roach.cobraId].squeeze())
 
     def newSpsIteration(self, fluxDf, mergeAngle):
-        for cobraId, roach in self.roaches.items():
-            if roach.statusFlag & Flag.HIDDEN:
-                roach.statusFlag &= ~Flag.HIDDEN
-
-            if not roach.doTrackCobra:
-                continue
-
-            fluxNorm = fluxDf[fluxDf.cobraId == cobraId].sort_values('nIter').fluxNorm.to_numpy()
-            attenuation = fluxNorm[-1] / fluxNorm[0]
-
-            roach.addSpsIteration(attenuation, mergeAngle=mergeAngle)
+        """"""
+        pass

@@ -1657,7 +1657,7 @@ class FpsCmd(object):
                 raise RuntimeError("mcs expose failed")
 
             cobraMatch = fiberMatcher.cobraMatch(visit, iteration=iteration)
-            driver.newMcsIteration(cobraMatch, doUpdateTracker=nIter<nMcsIteration-1)
+            driver.newMcsIteration(cobraMatch)
 
             iteration += 1
 

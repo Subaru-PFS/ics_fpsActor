@@ -690,3 +690,38 @@ def getMcsDataOnPfi(mcsVisit, iteration=0):
     allSpots['pfi_center_y_mm'] = y_mm
 
     return allSpots
+
+def momentsToFwhm(mcs_second_moment_x_pix,
+                  mcs_second_moment_y_pix,
+                  mcs_second_moment_xy_pix):
+    """
+    Convert second moments to FWHM estimate for a 2D Gaussian spot.
+
+    Parameters:
+    - mcs_second_moment_x_pix: Second moment along x (variance)
+    - mcs_second_moment_y_pix: Second moment along y (variance)
+    - mcs_second_moment_xy_pix: Cross-term
+
+    Returns:
+    - fwhm_pix: Scalar FWHM estimate in pixels
+    """
+    # Compute covariance matrix
+    cov = np.array([
+        [mcs_second_moment_x_pix, mcs_second_moment_xy_pix],
+        [mcs_second_moment_xy_pix, mcs_second_moment_y_pix]
+    ])
+
+    # Compute eigenvalues (variances along principal axes)
+    eigenvalues = np.linalg.eigvalsh(cov)
+
+    # Compute RMS width along major and minor axes
+    rms_widths = np.sqrt(eigenvalues)
+
+    # Average RMS width (could also use max or geometric mean)
+    rms_mean = np.mean(rms_widths)
+
+    # Convert RMS width to FWHM (factor for Gaussian profile)
+    fwhm_pix = 2.355 * rms_mean  # 2*sqrt(2*ln(2)) = 2.355
+
+    return fwhm_pix
+

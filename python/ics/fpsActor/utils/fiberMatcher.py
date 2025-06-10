@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-from ics.fpsActor.utils.alfUtils import sgfm, read_sql, getMcsDataOnPfi, loadConvergenceDf
+from ics.fpsActor.utils.alfUtils import sgfm, read_sql, getMcsDataOnPfi, loadConvergenceDf, momentsToFwhm
 from scipy.spatial import cKDTree
 
 
@@ -186,6 +186,10 @@ class FiberMatcher:
     def cobraMatch(self, visit, iteration=0):
         """Return cobra-only match table with correct columns, padding, and dtypes (like getCobraMatchData)."""
         matches = self.match(visit, iteration)
+        matches['fwhm'] = momentsToFwhm(matches.mcs_second_moment_x_pix.to_numpy(),
+                                        matches.mcs_second_moment_y_pix.to_numpy(),
+                                        matches.mcs_second_moment_xy_pix.to_numpy())
+
         cobraMatch = matches[matches.fiber_type == "cobra"].copy()
 
         # Add cobra_id
@@ -202,6 +206,7 @@ class FiberMatcher:
         cobraMatch["iteration"] = iteration
 
         # Columns and dtypes to match the expected format
+        # Columns and dtypes to match the expected format
         columns_and_types = {
             "pfs_visit_id": "int64",
             "iteration": "int64",
@@ -210,7 +215,9 @@ class FiberMatcher:
             "pfi_center_x_mm": "float64",
             "pfi_center_y_mm": "float64",
             "mcs_center_x_pix": "float64",
-            "mcs_center_y_pix": "float64"
+            "mcs_center_y_pix": "float64",
+            "fwhm": "float64",
+            "peakvalue": "float64",
         }
 
         # Ensure all required columns are present with correct type
