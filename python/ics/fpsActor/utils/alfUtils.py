@@ -317,6 +317,53 @@ def circleIntersections(x1, y1, r1, x2, y2, r2):
     return [(xInt1, yInt1), (xInt2, yInt2)]
 
 
+def circleIntersectionsOrClosest(x1, y1, r1, x2, y2, r2):
+    """
+    Return intersection points if two circles intersect,
+    otherwise return the closest point on each circle perimeter.
+
+    Returns:
+    - If intersecting: list of two (x, y) tuples
+    - If not intersecting: list with one tuple (x, y) for each circle: closest approach
+    """
+    dx = x2 - x1
+    dy = y2 - y1
+    d = math.hypot(dx, dy)
+
+    if d == 0:
+        # Same center → infinite intersections or concentric
+        return []
+
+    # Check for intersection
+    if d > r1 + r2 or d < abs(r1 - r2):
+        # No intersection: return closest points on both circles
+        ux, uy = dx / d, dy / d  # unit vector from circle 1 to circle 2
+
+        # Closest point on first circle toward second
+        xA = x1 + r1 * ux
+        yA = y1 + r1 * uy
+
+        # Closest point on second circle toward first
+        xB = x2 - r2 * ux
+        yB = y2 - r2 * uy
+
+        return [(xA, yA), (xB, yB)]
+
+    # They intersect → calculate normal way
+    a = (r1 ** 2 - r2 ** 2 + d ** 2) / (2 * d)
+    h = math.sqrt(max(r1 ** 2 - a ** 2, 0))
+
+    xMid = x1 + a * dx / d
+    yMid = y1 + a * dy / d
+
+    xInt1 = xMid + h * dy / d
+    yInt1 = yMid - h * dx / d
+    xInt2 = xMid - h * dy / d
+    yInt2 = yMid + h * dx / d
+
+    return [(xInt1, yInt1), (xInt2, yInt2)]
+
+
 def findPhiCenter(cobraData):
     """
     Find the optimal intersection point (phi center) between two circles
@@ -691,6 +738,7 @@ def getMcsDataOnPfi(mcsVisit, iteration=0):
 
     return allSpots
 
+
 def momentsToFwhm(mcs_second_moment_x_pix,
                   mcs_second_moment_y_pix,
                   mcs_second_moment_xy_pix):
@@ -724,4 +772,3 @@ def momentsToFwhm(mcs_second_moment_x_pix,
     fwhm_pix = 2.355 * rms_mean  # 2*sqrt(2*ln(2)) = 2.355
 
     return fwhm_pix
-
