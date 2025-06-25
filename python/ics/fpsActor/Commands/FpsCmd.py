@@ -1666,6 +1666,7 @@ class FpsCmd(object):
         self.driver = driver
 
         cmd.finish()
+        self.driver.concludeMcsPhase()
 
     def driveHotRoachOpenLoop(self, cmd):
         cmdKeys = cmd.cmd.keywords
@@ -1700,17 +1701,20 @@ class FpsCmd(object):
 
     def driveHotRoachCloseLoop(self, cmd):
         cmdKeys = cmd.cmd.keywords
-        nMcsIteration = 0
         nSpsIteration = cmdKeys['nSpsIteration'].values[0]
 
         driver = self.driver
         iteration = self.driver.iteration
         outputDir = self.driver.outputDir
 
-        flux = pd.read_csv(cmdKeys['maskFile'].values[0], index_col=0)
-        mergeAngle = flux.nIter.max() == 1
-        driver.newSpsIteration(flux, mergeAngle=mergeAngle)
-        maskFile = driver.makeScalingDf(nMcsIteration, nSpsIteration)
+        allFluxDf = pd.read_csv(cmdKeys['maskFile'].values[0], index_col=0)
+        nActualIterations = allFluxDf.nIter.max() - 1  # exclude reference
+        remainingSpsIteration = nSpsIteration - nActualIterations
+
+        # updating driver from latest measured flux
+        driver.newSpsIteration(allFluxDf)
+        # getting maskFile with steps.
+        maskFile = driver.makeScalingDf(remainingMcsIteration=0, remainingSpsIteration=remainingSpsIteration)
 
         fileName = f'{iteration:02d}'
         maskFilepath = os.path.join(outputDir, f'{fileName}.csv')
