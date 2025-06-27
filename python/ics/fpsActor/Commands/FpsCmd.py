@@ -1287,6 +1287,14 @@ class FpsCmd(object):
         cards = fits.getPfsConfigCards(self.actor, cmd, visit, expType='acquisition')
         return pfsConfigUtils.pfsConfigFromDesign(pfsDesign, visit, header=cards, maskFile=maskFile)
 
+    def checkFiducialInterference(self, thetas, phis):
+        """Check if the targets interfere with the fiducial fiber."""
+
+
+
+        pass
+
+
     def moveToPfsDesign(self, cmd):
         """ Move cobras to a PFS design. """
         thetaMarginDeg = 5.0
@@ -1359,6 +1367,9 @@ class FpsCmd(object):
 
         thetas = thetaSolution[:, 0]
         phis = phiSolution[:, 0]
+
+        # Checking the interference with the fiducial fiber
+        self.checkFiducialInterference(thetas, phis)
 
         # Here we start to deal with target table
         cmd.inform(f'text="Handling the cobra target table."')
