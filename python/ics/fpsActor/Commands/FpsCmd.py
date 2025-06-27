@@ -1289,10 +1289,80 @@ class FpsCmd(object):
 
     def checkFiducialInterference(self, thetas, phis):
         """Check if the targets interfere with the fiducial fiber."""
+        file = 'cobraInterferenceROM_20250627.csv'
+        df = pd.read_csv(file)
 
+        # Remove 'SC' from 'Module #' and 'PID' from 'Cobra ID'
+        df["Module #"] = df["Module #"].str.replace("SC", "", regex=False)
+        df["Cobra ID"] = df["Cobra ID"].str.replace("PID", "", regex=False)
+        df = df[df["comments"] != "no cllision"]
 
+        # Convert 'Module #' and 'Cobra ID' to integers
+        df["Module #"] = df["Module #"].astype(int)
+        df["Cobra ID"] = df["Cobra ID"].astype(int)
+        df["Cobra Index"] = df.apply(
+            lambda row: self.cc.calibModel.findCobraByModuleAndPositioner(row["Module #"], row["Cobra ID"]),
+            axis=1
+        )
 
-        pass
+        # Reorder columns to move 'Cobra Index' to third column
+        cols = df.columns.tolist()
+        # Move 'Cobra Index' to position 2 (third column, 0-based indexing)
+        cols.insert(2, cols.pop(cols.index("Cobra Index")))
+        df = df[cols]
+
+        # Check theta angles against interference limits
+        interference_warnings = []
+        
+        for i, (theta, phi) in enumerate(zip(thetas, phis)):
+            # Get the goodIdx for this theta/phi position
+            cobra_idx = self.cc.goodIdx[i] if hasattr(self, 'cc') and hasattr(self.cc, 'goodIdx') else i
+            
+            # Find matching rows in the interference DataFrame for this cobra
+            matching_rows = df[df["Cobra Index"] == cobra_idx]
+            
+            if not matching_rows.empty:
+                for _, row in matching_rows.iterrows():
+                    # Assume the CSV has columns like 'Theta Limit 1' and 'Theta Limit 2'
+                    # Adjust column names based on actual CSV structure
+                    if 'Theta Limit 1' in df.columns and 'Theta Limit 2' in df.columns:
+                        theta_limit_1 = row['Theta Limit 1']
+                        theta_limit_2 = row['Theta Limit 2']
+                        
+                        # Check if theta is within the forbidden range (between limits)
+                        # Theta should be OUTSIDE the limits to avoid interference
+                        if theta_limit_1 <= theta <= theta_limit_2:
+                            warning_msg = (f"WARNING: Cobra {cobra_idx} theta angle {np.rad2deg(theta):.2f}° "
+                                         f"is within interference limits [{np.rad2deg(theta_limit_1):.2f}°, "
+                                         f"{np.rad2deg(theta_limit_2):.2f}°]")
+                            interference_warnings.append(warning_msg)
+                    
+                    # Alternative: if columns are named differently, try common variations
+                    elif 'theta_limit_1' in df.columns and 'theta_limit_2' in df.columns:
+                        theta_limit_1 = row['theta_limit_1']
+                        theta_limit_2 = row['theta_limit_2']
+                        
+                        if theta_limit_1 <= theta <= theta_limit_2:
+                            warning_msg = (f"WARNING: Cobra {cobra_idx} theta angle {np.rad2deg(theta):.2f}° "
+                                         f"is within interference limits [{np.rad2deg(theta_limit_1):.2f}°, "
+                                         f"{np.rad2deg(theta_limit_2):.2f}°]")
+                            interference_warnings.append(warning_msg)
+        
+        # Log or raise warnings if interferences are found
+        if interference_warnings:
+            for warning in interference_warnings:
+                if hasattr(self, 'logger'):
+                    self.logger.warning(warning)
+                else:
+                    print(warning)
+            
+            # Optionally raise an exception if critical interference is detected
+            # raise RuntimeError(f"Fiducial interference detected for {len(interference_warnings)} cobra(s)")
+        else:
+            if hasattr(self, 'logger'):
+                self.logger.info("No fiducial interference detected for the given theta angles")
+            else:
+                print("No fiducial interference detected for the given theta angles")
 
 
     def moveToPfsDesign(self, cmd):
