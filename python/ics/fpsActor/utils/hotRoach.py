@@ -591,6 +591,8 @@ class SingleRoach(object):
     def inferAngleFromThroughput(self, throughput, side, span, nSteps):
         """Infer cobra angular position from SPS throughput estimate."""
         dist = DotModel.inferDistFromAttenuation(throughput)
+        if not dist:
+            return self.targetAngle
 
         if side == -1:
             angles = self.targetAngle + np.linspace(0, span, nSteps)
