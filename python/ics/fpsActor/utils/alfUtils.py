@@ -739,36 +739,35 @@ def getMcsDataOnPfi(mcsVisit, iteration=0):
     return allSpots
 
 
-def momentsToFwhm(mcs_second_moment_x_pix,
-                  mcs_second_moment_y_pix,
-                  mcs_second_moment_xy_pix):
+def momentsToFwhm(mcs_second_moment_x_pix, mcs_second_moment_y_pix, mcs_second_moment_xy_pix):
     """
-    Convert second moments to FWHM estimate for a 2D Gaussian spot.
+    Vectorized: compute FWHM for each set of moments in arrays.
 
     Parameters:
-    - mcs_second_moment_x_pix: Second moment along x (variance)
-    - mcs_second_moment_y_pix: Second moment along y (variance)
-    - mcs_second_moment_xy_pix: Cross-term
+    - mcs_second_moment_x_pix: 1D numpy array
+    - mcs_second_moment_y_pix: 1D numpy array
+    - mcs_second_moment_xy_pix: 1D numpy array
 
     Returns:
-    - fwhm_pix: Scalar FWHM estimate in pixels
+    - fwhm_pix: 1D numpy array of FWHM for each input row
     """
-    # Compute covariance matrix
-    cov = np.array([
-        [mcs_second_moment_x_pix, mcs_second_moment_xy_pix],
-        [mcs_second_moment_xy_pix, mcs_second_moment_y_pix]
-    ])
+    # Construct 2x2 covariance matrices for each spot
+    cov_matrices = np.array([[mcs_second_moment_x_pix, mcs_second_moment_xy_pix],
+                             [mcs_second_moment_xy_pix, mcs_second_moment_y_pix]])
+
+    # Move axis to shape (n, 2, 2)
+    cov_matrices = np.moveaxis(cov_matrices, -1, 0)
 
     # Compute eigenvalues (variances along principal axes)
-    eigenvalues = np.linalg.eigvalsh(cov)
+    eigenvalues = np.linalg.eigvalsh(cov_matrices)
 
     # Compute RMS width along major and minor axes
     rms_widths = np.sqrt(eigenvalues)
 
-    # Average RMS width (could also use max or geometric mean)
-    rms_mean = np.mean(rms_widths)
+    # Mean RMS width for each spot
+    rms_mean = np.mean(rms_widths, axis=1)
 
-    # Convert RMS width to FWHM (factor for Gaussian profile)
-    fwhm_pix = 2.355 * rms_mean  # 2*sqrt(2*ln(2)) = 2.355
+    # Convert to FWHM (2.355 factor for Gaussian)
+    fwhm_pix = 2.355 * rms_mean
 
     return fwhm_pix
