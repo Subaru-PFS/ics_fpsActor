@@ -1307,47 +1307,53 @@ class FpsCmd(object):
 
         # Reorder columns to move 'Cobra Index' to third column
         cols = df.columns.tolist()
-        # Move 'Cobra Index' to position 2 (third column, 0-based indexing)
         cols.insert(2, cols.pop(cols.index("Cobra Index")))
         df = df[cols]
 
+        # Convert theta and phi values from radians to degrees
+        thetas_deg = np.rad2deg(thetas)
+        phis_deg = np.rad2deg(phis)
+
         # Check theta angles against interference limits
         interference_warnings = []
-        
-        for i, (theta, phi) in enumerate(zip(thetas, phis)):
+
+        for i, (theta_deg, phi_deg) in enumerate(zip(thetas_deg, phis_deg)):
             # Get the goodIdx for this theta/phi position
-            cobra_idx = self.cc.goodIdx[i] if hasattr(self, 'cc') and hasattr(self.cc, 'goodIdx') else i
+            if not hasattr(self, 'cc') or not hasattr(self.cc, 'goodIdx'):
+                raise RuntimeError("cc or goodIdx is not initialized. Cannot proceed.")
             
+            cobra_idx = self.cc.goodIdx[i]
             # Find matching rows in the interference DataFrame for this cobra
             matching_rows = df[df["Cobra Index"] == cobra_idx]
-            
+
             if not matching_rows.empty:
                 for _, row in matching_rows.iterrows():
-                    # Assume the CSV has columns like 'Theta Limit 1' and 'Theta Limit 2'
-                    # Adjust column names based on actual CSV structure
-                    if 'Theta Limit 1' in df.columns and 'Theta Limit 2' in df.columns:
-                        theta_limit_1 = row['Theta Limit 1']
-                        theta_limit_2 = row['Theta Limit 2']
-                        
-                        # Check if theta is within the forbidden range (between limits)
-                        # Theta should be OUTSIDE the limits to avoid interference
-                        if theta_limit_1 <= theta <= theta_limit_2:
-                            warning_msg = (f"WARNING: Cobra {cobra_idx} theta angle {np.rad2deg(theta):.2f}° "
-                                         f"is within interference limits [{np.rad2deg(theta_limit_1):.2f}°, "
-                                         f"{np.rad2deg(theta_limit_2):.2f}°]")
+                    # Check if theta is within the forbidden range
+                    if 'theta limit 1' in df.columns and 'theta limit 2' in df.columns:
+                        theta_limit_1 = row['theta limit 1']
+                        theta_limit_2 = row['theta limit 2']
+
+                        # Handle wrap-around case
+                        if theta_limit_1 > theta_limit_2:
+                            if theta_deg >= theta_limit_1 or theta_deg <= theta_limit_2:
+                                warning_msg = (f"WARNING: Cobra {cobra_idx} theta angle {theta_deg:.2f}° "
+                                            f"is within interference limits [{theta_limit_1:.2f}°, {theta_limit_2:.2f}°]")
+                                interference_warnings.append(warning_msg)
+                        else:
+                            if theta_limit_1 <= theta_deg <= theta_limit_2:
+                                warning_msg = (f"WARNING: Cobra {cobra_idx} theta angle {theta_deg:.2f}° "
+                                            f"is within interference limits [{theta_limit_1:.2f}°, {theta_limit_2:.2f}°]")
+                                interference_warnings.append(warning_msg)
+
+                    # Check if phi exceeds the maximum allowed angle
+                    if 'max phi angle for full theta circular motion' in df.columns:
+                        max_phi_angle = row['max phi angle for full theta circular motion']
+
+                        if phi_deg > max_phi_angle:
+                            warning_msg = (f"WARNING: Cobra {cobra_idx} phi angle {phi_deg:.2f}° "
+                                        f"exceeds the maximum allowed angle {max_phi_angle:.2f}°")
                             interference_warnings.append(warning_msg)
-                    
-                    # Alternative: if columns are named differently, try common variations
-                    elif 'theta_limit_1' in df.columns and 'theta_limit_2' in df.columns:
-                        theta_limit_1 = row['theta_limit_1']
-                        theta_limit_2 = row['theta_limit_2']
-                        
-                        if theta_limit_1 <= theta <= theta_limit_2:
-                            warning_msg = (f"WARNING: Cobra {cobra_idx} theta angle {np.rad2deg(theta):.2f}° "
-                                         f"is within interference limits [{np.rad2deg(theta_limit_1):.2f}°, "
-                                         f"{np.rad2deg(theta_limit_2):.2f}°]")
-                            interference_warnings.append(warning_msg)
-        
+
         # Log or raise warnings if interferences are found
         if interference_warnings:
             for warning in interference_warnings:
@@ -1355,14 +1361,11 @@ class FpsCmd(object):
                     self.logger.warning(warning)
                 else:
                     print(warning)
-            
-            # Optionally raise an exception if critical interference is detected
-            # raise RuntimeError(f"Fiducial interference detected for {len(interference_warnings)} cobra(s)")
         else:
             if hasattr(self, 'logger'):
-                self.logger.info("No fiducial interference detected for the given theta angles")
+                self.logger.info("No fiducial interference detected for the given theta and phi angles")
             else:
-                print("No fiducial interference detected for the given theta angles")
+                print("No fiducial interference detected for the given theta and phi angles")
 
 
     def moveToPfsDesign(self, cmd):
