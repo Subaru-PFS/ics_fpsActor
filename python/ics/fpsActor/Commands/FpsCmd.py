@@ -1288,7 +1288,11 @@ class FpsCmd(object):
         return pfsConfigUtils.pfsConfigFromDesign(pfsDesign, visit, header=cards, maskFile=maskFile)
 
     def checkFiducialInterference(self, thetas, phis):
-        """Check if the targets interfere with the fiducial fiber."""
+        """Check if the targets interfere with the fiducial fiber.
+        
+        Returns:
+            list: Indices of cobra arms that have interference/collision
+        """
         file = 'cobraInterferenceROM_20250627.csv'
         df = pd.read_csv(file)
 
@@ -1314,7 +1318,8 @@ class FpsCmd(object):
         thetas_deg = np.rad2deg(thetas)
         phis_deg = np.rad2deg(phis)
 
-        # Check theta angles against interference limits
+        # Track cobra indices with interference
+        interfering_cobra_indices = []
         interference_warnings = []
 
         for i, (theta_deg, phi_deg) in enumerate(zip(thetas_deg, phis_deg)):
@@ -1327,6 +1332,8 @@ class FpsCmd(object):
             matching_rows = df[df["Cobra Index"] == cobra_idx]
 
             if not matching_rows.empty:
+                cobra_has_interference = False
+                
                 for _, row in matching_rows.iterrows():
                     # Check if theta is within the forbidden range
                     if 'theta limit 1' in df.columns and 'theta limit 2' in df.columns:
@@ -1339,11 +1346,13 @@ class FpsCmd(object):
                                 warning_msg = (f"WARNING: Cobra {cobra_idx} theta angle {theta_deg:.2f}° "
                                             f"is within interference limits [{theta_limit_1:.2f}°, {theta_limit_2:.2f}°]")
                                 interference_warnings.append(warning_msg)
+                                cobra_has_interference = True
                         else:
                             if theta_limit_1 <= theta_deg <= theta_limit_2:
                                 warning_msg = (f"WARNING: Cobra {cobra_idx} theta angle {theta_deg:.2f}° "
                                             f"is within interference limits [{theta_limit_1:.2f}°, {theta_limit_2:.2f}°]")
                                 interference_warnings.append(warning_msg)
+                                cobra_has_interference = True
 
                     # Check if phi exceeds the maximum allowed angle
                     if 'max phi angle for full theta circular motion' in df.columns:
@@ -1353,6 +1362,11 @@ class FpsCmd(object):
                             warning_msg = (f"WARNING: Cobra {cobra_idx} phi angle {phi_deg:.2f}° "
                                         f"exceeds the maximum allowed angle {max_phi_angle:.2f}°")
                             interference_warnings.append(warning_msg)
+                            cobra_has_interference = True
+                
+                # Add to interfering list if this cobra has any interference
+                if cobra_has_interference and cobra_idx not in interfering_cobra_indices:
+                    interfering_cobra_indices.append(cobra_idx)
 
         # Log or raise warnings if interferences are found
         if interference_warnings:
@@ -1366,7 +1380,8 @@ class FpsCmd(object):
                 self.logger.info("No fiducial interference detected for the given theta and phi angles")
             else:
                 print("No fiducial interference detected for the given theta and phi angles")
-
+        
+        return interfering_cobra_indices
 
     def moveToPfsDesign(self, cmd):
         """ Move cobras to a PFS design. """
@@ -1442,7 +1457,23 @@ class FpsCmd(object):
         phis = phiSolution[:, 0]
 
         # Checking the interference with the fiducial fiber
-        self.checkFiducialInterference(thetas, phis)
+        interfering_cobra_indices = self.checkFiducialInterference(thetas, phis)
+
+        # Combine isNan indices and interfering cobra indices to create notMoveMask
+        notMoveMask = np.zeros(len(self.cc.allCobras), dtype=bool)
+
+        # Set True for NaN targets (using original indices before goodIdx filtering)
+        notMoveMask[isNan] = True
+        notMoveMask[interfering_cobra_indices] = True
+        
+        # Filter goodIdx to exclude cobras that should not move
+        filteredGoodIdx = goodIdx[~notMoveMask[goodIdx]]
+        filteredTargets = targets[~notMoveMask[goodIdx]]
+        filteredCobras = self.cc.allCobras[filteredGoodIdx]
+        filteredThetas = thetas[~notMoveMask[goodIdx]]
+        filteredPhis = phis[~notMoveMask[goodIdx]]
+
+        cmd.inform(f'text="Created notMoveMask: {np.sum(isNan)} NaN targets + {len(interfering_cobra_indices)} interfering cobras = {np.sum(notMoveMask)} total cobras to exclude"')
 
         # Here we start to deal with target table
         cmd.inform(f'text="Handling the cobra target table."')
@@ -1500,7 +1531,7 @@ class FpsCmd(object):
 
         if twoSteps:
             cmd.inform(f'pfsConfig=0x{designId:016x},{visit},inProgress')
-            cIds = goodIdx
+            cIds = filteredGoodIdx  # Changed from goodIdx to filteredGoodIdx
 
             moves = np.zeros((1, len(cIds), iteration), dtype=eng.moveDtype)
 
@@ -1509,12 +1540,12 @@ class FpsCmd(object):
 
             # limit phi angle for first two tries
             limitPhi = np.pi / 3 - self.cc.calibModel.phiIn[cIds] - np.pi
-            thetasVia = np.copy(thetas)
-            phisVia = np.copy(phis)
+            thetasVia = np.copy(filteredThetas)  # Changed from thetas to filteredThetas
+            phisVia = np.copy(filteredPhis)     # Changed from phis to filteredPhis
             for c in range(len(cIds)):
-                if phis[c] > limitPhi[c]:
+                if filteredPhis[c] > limitPhi[c]:  # Changed from phis[c] to filteredPhis[c]
                     phisVia[c] = limitPhi[c]
-                    thetasVia[c] = thetas[c] + (phis[c] - limitPhi[c]) / 2
+                    thetasVia[c] = filteredThetas[c] + (filteredPhis[c] - limitPhi[c]) / 2  # Changed accordingly
                     if thetasVia[c] > thetaRange[c]:
                         thetasVia[c] = thetaRange[c]
 
@@ -1535,26 +1566,24 @@ class FpsCmd(object):
                                  tries=2, homed=goHome, newDir=False, thetaFast=True, phiFast=True,
                                  threshold=2.0, thetaMargin=np.deg2rad(thetaMarginDeg))
 
-
             self.cc.expTime = expTime
             self.cc.useScaling, self.cc.maxSegments, self.cc.maxTotalSteps = _useScaling, _maxSegments, _maxTotalSteps
             cmd.inform(f'text="useScaling={self.cc.useScaling}, maxSegments={self.cc.maxSegments}, maxTotalSteps={self.cc.maxTotalSteps}"')
 
             dataPath, atThetas, atPhis, moves[0, :, 2:] = \
-                eng.moveThetaPhi(cIds, thetas, phis, relative=False, local=True, tolerance=tolerance,
+                eng.moveThetaPhi(cIds, filteredThetas, filteredPhis, relative=False, local=True, tolerance=tolerance,  # Changed from thetas, phis
                                  tries=iteration - 2,
                                  homed=False,
                                  newDir=False, thetaFast=True, phiFast=True, threshold=2.0,
                                  thetaMargin=np.deg2rad(thetaMarginDeg))
 
         else:
-            cIds = goodIdx
-            dataPath, atThetas, atPhis, moves = eng.moveThetaPhi(cIds, thetas,
-                                                                 phis, relative=False, local=True, tolerance=tolerance,
-                                                                 tries=iteration, homed=goHome,
-                                                                 newDir=False, thetaFast=False, phiFast=False,
-                                                                 threshold=2.0,
-                                                                 thetaMargin=np.deg2rad(thetaMarginDeg))
+            cIds = filteredGoodIdx
+            dataPath, atThetas, atPhis, moves = eng.moveThetaPhi(cIds, filteredThetas, filteredPhis, 
+                                                         relative=False, local=True, tolerance=tolerance,
+                                                         tries=iteration, homed=goHome, newDir=False, 
+                                                         thetaFast=False, phiFast=False, threshold=2.0,
+                                                         thetaMargin=np.deg2rad(thetaMarginDeg))
         self.atThetas = atThetas
         self.atPhis = atPhis
 
