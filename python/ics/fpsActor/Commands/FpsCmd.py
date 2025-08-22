@@ -1437,8 +1437,8 @@ class FpsCmd(object):
             pfsConfigUtils.tweakTargetPosition(pfsConfig)
 
         targets, isNan = pfsConfigUtils.makeTargetsArray(pfsConfig)
-        # setting NaN targets to centers + (0.5+0.5j)
-        targets[isNan] = self.cc.calibModel.centers[isNan] + (0.04 + 0.04j)
+        # setting NaN targets to centers 
+        targets[isNan] = self.cc.calibModel.centers[isNan] 
 
         cmd.inform(f'text="Setting good cobra index"')
         # loading mask file and moving only cobra with bitMask==1
@@ -1448,10 +1448,11 @@ class FpsCmd(object):
         cobras = self.cc.allCobras[goodIdx]
 
         thetaSolution, phiSolution, flags = self.cc.pfi.positionsToAngles(cobras, targets)
-        valid = (flags[:, 0] & self.cc.pfi.SOLUTION_OK) != 0
-        if not np.all(valid):
+        invalid = flags[:,0] != self.cc.pfi.SOLUTION_OK
+
+        if not np.all(invalid):
             # raise RuntimeError(f"Given positions are invalid: {np.where(valid)[0]}")
-            cmd.inform(f'text="Given positions are invalid: {np.where(valid)[0]}"')
+            cmd.inform(f'text="Given positions are invalid: {goodIdx[np.where(invalid)[0]]}"')
 
         thetas = thetaSolution[:, 0]
         phis = phiSolution[:, 0]
@@ -1465,7 +1466,8 @@ class FpsCmd(object):
         # Set True for NaN targets (using original indices before goodIdx filtering)
         notMoveMask[isNan] = True
         notMoveMask[interfering_cobra_indices] = True
-        
+        notMoveMask[goodIdx[np.where(invalid)[0]]] = True
+
         # Filter goodIdx to exclude cobras that should not move
         filteredGoodIdx = goodIdx[~notMoveMask[goodIdx]]
         filteredTargets = targets[~notMoveMask[goodIdx]]
