@@ -1293,8 +1293,10 @@ class FpsCmd(object):
         Returns:
             list: Indices of cobra arms that have interference/collision
         """
-        file = 'cobraInterferenceROM_20250627.csv'
-        df = pd.read_csv(file)
+        #file = 'cobraInterferenceROM_20250627.csv'
+        #df = pd.read_csv(file)
+        butlerResource = butler.Butler()
+        df = butlerResource.getPath("cobraInterferenced")
 
         # Remove 'SC' from 'Module #' and 'PID' from 'Cobra ID'
         df["Module #"] = df["Module #"].str.replace("SC", "", regex=False)
