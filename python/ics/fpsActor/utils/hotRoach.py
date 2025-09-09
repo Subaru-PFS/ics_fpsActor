@@ -72,7 +72,7 @@ class SingleRoach(object):
         self.fixedScalingDf = driver.fixedScalingDf[self.driver.fixedScalingDf.cobra_id == self.cobraId].sort_values(
             'iteration').reset_index(drop=True)
 
-        self.phiCenterX, self.phiCenterY = None, None
+        self.phiCenterX, self.phiCenterY = np.nan, np.nan
         self.tracker = None
         self.dotEnterEdgeAngle = None
         self.dotExitEdgeAngle = None
@@ -287,7 +287,7 @@ class SingleRoach(object):
 
     def addSpotInfo(self, iterRow):
         """Add angle and spot info from an MCS iteration row."""
-        if iterRow.spot_id == -1:
+        if iterRow.spot_id == -1 or self.statusFlag & Flag.PHICENTER_UNKNOWN:
             angle = np.nan
         else:
             angle = self.calculateAngle(iterRow.pfi_center_x_mm, iterRow.pfi_center_y_mm)
@@ -300,6 +300,10 @@ class SingleRoach(object):
         """Process a new MCS spot measurement and update tracking."""
         # add spot_info no matter what.
         self.addSpotInfo(iterRow)
+
+        # no need to go further, still interested to see spots_info that why
+        if not self.doTrackCobra:
+            return
 
         _, medPeakValue, medFwhm, _, _ = np.median(self.spotsArray, axis=0)
         _, sigPeakValue, sigFhwm, _, _ = np.std(self.spotsArray, axis=0, ddof=1)
@@ -667,9 +671,6 @@ class HotRoachDriver(object):
     def newMcsIteration(self, cobraMatch):
         """Update each SingleRoach with a new MCS iteration measurement."""
         for cobraId, roach in self.roaches.items():
-            if not roach.doTrackCobra:
-                continue
-
             roach.newMcsIteration(cobraMatch[cobraMatch.cobra_id == roach.cobraId].squeeze())
 
     def concludeMcsPhase(self):
