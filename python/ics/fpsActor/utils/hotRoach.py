@@ -545,6 +545,10 @@ class SingleRoach(object):
         if not self.doTrackCobra or np.isnan(throughput):
             return
 
+        # STANDBY comes from MCS phase which is no longer relevant here.
+        if self.statusFlag & Flag.STANDBY:
+            self.unsetStatusFlag(Flag.STANDBY)
+
         self.fiberThroughput.append(throughput)
         side = self.getCobraSide()
 
