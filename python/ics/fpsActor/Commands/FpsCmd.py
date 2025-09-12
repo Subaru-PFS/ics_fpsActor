@@ -1363,7 +1363,7 @@ class FpsCmd(object):
         phis = phiSolution[:, 0]
 
         # Checking the interference with the fiducial fiber
-        interfering_cobra_indices = self.checkFiducialInterference(thetas, phis)
+        interfering_cobra_indices = self.cc.checkFiducialInterference(thetas, phis)
 
         # Combine isNan indices and interfering cobra indices to create notMoveMask
         notMoveMask = np.zeros(len(self.cc.allCobras), dtype=bool)
