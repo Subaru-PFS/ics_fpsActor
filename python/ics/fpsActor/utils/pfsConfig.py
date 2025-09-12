@@ -71,7 +71,7 @@ def tweakTargetPosition(pfsConfig, cmd=None):
     return pfsConfig
 
 
-def finalize(pfsConfig, calibModel, cmd=None, noMatchStatus=FiberStatus.BLACKSPOT, notConvergedDistanceThreshold=None):
+def finalize(pfsConfig, calibModel, cmd=None, noMatchStatus=FiberStatus.BLACKSPOT, notConvergedDistanceThreshold=None, NOT_MOVE_MASK=None):
     """Finalize pfsConfig after converging, updating pfiCenter, fiberStatus, ra, dec"""
 
     def fetchFinalConvergence(visitId):
@@ -145,10 +145,16 @@ def finalize(pfsConfig, calibModel, cmd=None, noMatchStatus=FiberStatus.BLACKSPO
     # Set fiberStatus for the not matched cobras, BLACKSPOT or NOTCONVERGED.
     lastIteration.loc[FIBER_GOOD_MASK & NO_MATCH_MASK, 'fiberStatus'] = noMatchStatus
 
+    # setting MASKED fiberStatus
+    if NOT_MOVE_MASK is not None:
+        lastIteration.loc[FIBER_GOOD_MASK & ~NO_MATCH_MASK & NOT_MOVE_MASK, 'fiberStatus'] = FiberStatus.MASKED
+    else:
+        NOT_MOVE_MASK = np.zeros(len(lastIteration), dtype='bool')
+
     # setting NOTCONVERGED fiberStatus for cobra above distance threshold.
     if notConvergedDistanceThreshold:
         aboveThreshold = lastIteration.distanceToTarget.to_numpy() > notConvergedDistanceThreshold
-        cobraMask = aboveThreshold & WITH_TARGET_MASK & FIBER_GOOD_MASK & ~NO_MATCH_MASK
+        cobraMask = aboveThreshold & WITH_TARGET_MASK & FIBER_GOOD_MASK & ~NO_MATCH_MASK & ~NOT_MOVE_MASK
         lastIteration.loc[cobraMask, 'fiberStatus'] = FiberStatus.NOTCONVERGED
 
     pfsConfig.fiberStatus[fiberIndex] = lastIteration.fiberStatus.to_numpy()
