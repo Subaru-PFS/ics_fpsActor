@@ -1501,7 +1501,7 @@ class FpsCmd(object):
         maxIteration = pfsConfigUtils.finalize(pfsConfig, self.cc.calibModel, cmd=cmd,
                                                noMatchStatus=FiberStatus.BLACKSPOT,
                                                notConvergedDistanceThreshold=notConvergedDistanceThreshold,
-                                               NOT_MOVE_MASK=notMoveMask)
+                                               NOT_MOVE_MASK=notMoveMask, atThetas=atThetas, atPhis=atPhis)
         cmd.inform(f'text="maxIteration from cobra_match : {int(maxIteration)}"')
 
         # write pfsConfig to disk.
