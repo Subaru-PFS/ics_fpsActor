@@ -1287,6 +1287,7 @@ class FpsCmd(object):
         cards = fits.getPfsConfigCards(self.actor, cmd, visit, expType='acquisition')
         return pfsConfigUtils.pfsConfigFromDesign(pfsDesign, visit, header=cards, maskFile=maskFile)
 
+
     def moveToPfsDesign(self, cmd):
         """ Move cobras to a PFS design. """
         thetaMarginDeg = 5.0
@@ -1341,8 +1342,8 @@ class FpsCmd(object):
             pfsConfigUtils.tweakTargetPosition(pfsConfig)
 
         targets, isNan = pfsConfigUtils.makeTargetsArray(pfsConfig)
-        # setting NaN targets to centers + (0.5+0.5j)
-        targets[isNan] = self.cc.calibModel.centers[isNan] + (0.04 + 0.04j)
+        # setting NaN targets to centers 
+        targets[isNan] = self.cc.calibModel.centers[isNan] 
 
         cmd.inform(f'text="Setting good cobra index"')
         # loading mask file and moving only cobra with bitMask==1
@@ -1352,13 +1353,34 @@ class FpsCmd(object):
         cobras = self.cc.allCobras[goodIdx]
 
         thetaSolution, phiSolution, flags = self.cc.pfi.positionsToAngles(cobras, targets)
-        valid = (flags[:, 0] & self.cc.pfi.SOLUTION_OK) != 0
-        if not np.all(valid):
+        invalid = flags[:,0] != self.cc.pfi.SOLUTION_OK
+
+        if not np.all(invalid):
             # raise RuntimeError(f"Given positions are invalid: {np.where(valid)[0]}")
-            cmd.inform(f'text="Given positions are invalid: {np.where(valid)[0]}"')
+            cmd.inform(f'text="Given positions are invalid: {goodIdx[np.where(invalid)[0]]}"')
 
         thetas = thetaSolution[:, 0]
         phis = phiSolution[:, 0]
+
+        # Checking the interference with the fiducial fiber
+        interfering_cobra_indices = self.cc.checkFiducialInterference(thetas, phis)
+
+        # Combine isNan indices and interfering cobra indices to create notMoveMask
+        notMoveMask = np.zeros(len(self.cc.allCobras), dtype=bool)
+
+        # Set True for NaN targets (using original indices before goodIdx filtering)
+        notMoveMask[isNan] = True
+        notMoveMask[interfering_cobra_indices] = True
+        notMoveMask[goodIdx[np.where(invalid)[0]]] = True
+
+        # Filter goodIdx to exclude cobras that should not move
+        filteredGoodIdx = goodIdx[~notMoveMask[goodIdx]]
+        filteredTargets = targets[~notMoveMask[goodIdx]]
+        filteredCobras = self.cc.allCobras[filteredGoodIdx]
+        filteredThetas = thetas[~notMoveMask[goodIdx]]
+        filteredPhis = phis[~notMoveMask[goodIdx]]
+
+        cmd.inform(f'text="Created notMoveMask: {np.sum(isNan)} NaN targets + {len(interfering_cobra_indices)} interfering cobras = {np.sum(notMoveMask)} total cobras to exclude"')
 
         # Here we start to deal with target table
         cmd.inform(f'text="Handling the cobra target table."')
@@ -1416,7 +1438,7 @@ class FpsCmd(object):
 
         if twoSteps:
             cmd.inform(f'pfsConfig=0x{designId:016x},{visit},inProgress')
-            cIds = goodIdx
+            cIds = filteredGoodIdx  # Changed from goodIdx to filteredGoodIdx
 
             moves = np.zeros((1, len(cIds), iteration), dtype=eng.moveDtype)
 
@@ -1425,12 +1447,12 @@ class FpsCmd(object):
 
             # limit phi angle for first two tries
             limitPhi = np.pi / 3 - self.cc.calibModel.phiIn[cIds] - np.pi
-            thetasVia = np.copy(thetas)
-            phisVia = np.copy(phis)
+            thetasVia = np.copy(filteredThetas)  # Changed from thetas to filteredThetas
+            phisVia = np.copy(filteredPhis)     # Changed from phis to filteredPhis
             for c in range(len(cIds)):
-                if phis[c] > limitPhi[c]:
+                if filteredPhis[c] > limitPhi[c]:  # Changed from phis[c] to filteredPhis[c]
                     phisVia[c] = limitPhi[c]
-                    thetasVia[c] = thetas[c] + (phis[c] - limitPhi[c]) / 2
+                    thetasVia[c] = filteredThetas[c] + (filteredPhis[c] - limitPhi[c]) / 2  # Changed accordingly
                     if thetasVia[c] > thetaRange[c]:
                         thetasVia[c] = thetaRange[c]
 
@@ -1451,26 +1473,24 @@ class FpsCmd(object):
                                  tries=2, homed=goHome, newDir=False, thetaFast=True, phiFast=True,
                                  threshold=2.0, thetaMargin=np.deg2rad(thetaMarginDeg))
 
-
             self.cc.expTime = expTime
             self.cc.useScaling, self.cc.maxSegments, self.cc.maxTotalSteps = _useScaling, _maxSegments, _maxTotalSteps
             cmd.inform(f'text="useScaling={self.cc.useScaling}, maxSegments={self.cc.maxSegments}, maxTotalSteps={self.cc.maxTotalSteps}"')
 
             dataPath, atThetas, atPhis, moves[0, :, 2:] = \
-                eng.moveThetaPhi(cIds, thetas, phis, relative=False, local=True, tolerance=tolerance,
+                eng.moveThetaPhi(cIds, filteredThetas, filteredPhis, relative=False, local=True, tolerance=tolerance,  # Changed from thetas, phis
                                  tries=iteration - 2,
                                  homed=False,
                                  newDir=False, thetaFast=True, phiFast=True, threshold=2.0,
                                  thetaMargin=np.deg2rad(thetaMarginDeg))
 
         else:
-            cIds = goodIdx
-            dataPath, atThetas, atPhis, moves = eng.moveThetaPhi(cIds, thetas,
-                                                                 phis, relative=False, local=True, tolerance=tolerance,
-                                                                 tries=iteration, homed=goHome,
-                                                                 newDir=False, thetaFast=False, phiFast=False,
-                                                                 threshold=2.0,
-                                                                 thetaMargin=np.deg2rad(thetaMarginDeg))
+            cIds = filteredGoodIdx
+            dataPath, atThetas, atPhis, moves = eng.moveThetaPhi(cIds, filteredThetas, filteredPhis, 
+                                                         relative=False, local=True, tolerance=tolerance,
+                                                         tries=iteration, homed=goHome, newDir=False, 
+                                                         thetaFast=False, phiFast=False, threshold=2.0,
+                                                         thetaMargin=np.deg2rad(thetaMarginDeg))
         self.atThetas = atThetas
         self.atPhis = atPhis
 
