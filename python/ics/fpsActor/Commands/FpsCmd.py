@@ -1499,8 +1499,9 @@ class FpsCmd(object):
 
         # update pfiCenter, cobra which are not matched will be set to NOTCONVERGED.
         maxIteration = pfsConfigUtils.finalize(pfsConfig, self.cc.calibModel, cmd=cmd,
-                                                      noMatchStatus=FiberStatus.BLACKSPOT,
-                                                      notConvergedDistanceThreshold=notConvergedDistanceThreshold)
+                                               noMatchStatus=FiberStatus.BLACKSPOT,
+                                               notConvergedDistanceThreshold=notConvergedDistanceThreshold,
+                                               NOT_MOVE_MASK=notMoveMask)
         cmd.inform(f'text="maxIteration from cobra_match : {int(maxIteration)}"')
 
         # write pfsConfig to disk.
