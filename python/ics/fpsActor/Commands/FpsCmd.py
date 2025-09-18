@@ -78,7 +78,8 @@ class FpsCmd(object):
             ('createHomeDesign', '[<maskFile>]', self.createHomeDesign),
             ('createBlackDotDesign', '[<maskFile>]', self.createBlackDotDesign),
             ('genPfsConfigFromMcs', '<visit> <designId>', self.genPfsConfigFromMcs),
-            ('moveToHome', '@(phi|theta|all) [<expTime>] [@noMCSexposure] [<visit>] [<maskFile>] [<designId>]', self.moveToHome),
+            ('moveToHome', '@(phi|theta|all) [<expTime>] [@noMCSexposure] [<visit>] [<maskFile>] '
+                           '[<designId>] [@thetaCCW]', self.moveToHome),
 
             ('setCobraMode', '@(phi|theta|normal)', self.setCobraMode),
             ('setGeometry', '@(phi|theta) <runDir>', self.setGeometry),
@@ -863,7 +864,9 @@ class FpsCmd(object):
         theta = 'theta' in cmdKeys
         allfiber = 'all' in cmdKeys
         noMCSexposure = 'noMCSexposure' in cmdKeys
+        useMCS = not noMCSexposure
         designId = cmdKeys['designId'].values[0] if 'designId' in cmdKeys else None
+        thetaCCW = 'thetaCCW' in cmdKeys
 
         self.cc.expTime = expTime
         cmd.inform(f'text="Setting moveToHome expTime={expTime}, noMCSexposure={noMCSexposure}"')
@@ -884,31 +887,28 @@ class FpsCmd(object):
         goodCobra = self.cc.allCobras[goodIdx]
 
         # Only grab a visit if we need one for the PFSC and pfsConfig files
-        if not noMCSexposure:
+        if useMCS:
             visit = self.actor.visitor.setOrGetVisit(cmd)
 
         start = time.time()
 
         if phi:
             eng.setPhiMode()
-            self.cc.moveToHome(goodCobra, phiEnable=True,
-                               noMCS=noMCSexposure)
+            self.cc.moveToHome(goodCobra, phiEnable=True, noMCS=noMCSexposure, thetaCCW=thetaCCW)
 
-        if theta:
+        elif theta:
             eng.setThetaMode()
-            self.cc.moveToHome(goodCobra, thetaEnable=True,
-                               noMCS=noMCSexposure)
+            self.cc.moveToHome(goodCobra, thetaEnable=True, noMCS=noMCSexposure, thetaCCW=thetaCCW)
 
-        if allfiber:
+        elif allfiber:
             eng.setNormalMode()
-            if noMCSexposure:
-                self.cc.moveToHome(goodCobra, thetaEnable=True, phiEnable=True, thetaCCW=False, noMCS=True)
-            else:
-                diff = self.cc.moveToHome(goodCobra, thetaEnable=True, phiEnable=True, thetaCCW=False)
+            diff = self.cc.moveToHome(goodCobra, thetaEnable=True, phiEnable=True,
+                                      thetaCCW=thetaCCW, noMCS=noMCSexposure)
+            if useMCS:
                 self.logger.info(f'Averaged position offset compared with cobra center = {np.mean(diff)}')
 
         # Only generate pfsConfigs if we take an image which needs them.
-        if not noMCSexposure:
+        if useMCS:
             # making base pfsConfig from design file, fetching additional keys from gen2.
             pfsConfig = self.getPfsConfig(cmd, visit=visit, pfsDesign=pfsDesign)
             cmd.inform(f'pfsConfig=0x{pfsDesign.pfsDesignId:016x},{visit},inProgress')
