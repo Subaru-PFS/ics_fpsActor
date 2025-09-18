@@ -907,13 +907,23 @@ class FpsCmd(object):
             if useMCS:
                 self.logger.info(f'Averaged position offset compared with cobra center = {np.mean(diff)}')
 
+        # Since the cobra is commaned to be at home.  We need to set the atThetas and atPhis.
+        thetaHome = ((self.cc.calibModel.tht1 - self.cc.calibModel.tht0 + np.pi) % (np.pi * 2) + np.pi)
+        self.atThetas = np.zeros(len(self.cc.allCobras)) + thetaHome
+        self.atPhis = np.zeros(len(self.cc.allCobras))
+
+        # Set the atThetas and atPhis to the home position.
+        self.cc.setCurrentAngles(self.cc.allCobras, thetaAngles=thetaHome, phiAngles=0)
+        cmd.inform(f'text="Setting the thetaAngle and phiAngle to the home position."')
+
         # Only generate pfsConfigs if we take an image which needs them.
         if useMCS:
             # making base pfsConfig from design file, fetching additional keys from gen2.
             pfsConfig = self.getPfsConfig(cmd, visit=visit, pfsDesign=pfsDesign)
             cmd.inform(f'pfsConfig=0x{pfsDesign.pfsDesignId:016x},{visit},inProgress')
 
-            maxIteration = pfsConfigUtils.finalize(pfsConfig, self.cc.calibModel, cmd=cmd)
+            maxIteration = pfsConfigUtils.finalize(pfsConfig, self.cc.calibModel, cmd=cmd,
+                                                   atThetas=self.atThetas, atPhis=self.atPhis)
 
             # write pfsConfig to disk.
             pfsConfigUtils.writePfsConfig(pfsConfig, cmd=cmd)
@@ -926,14 +936,7 @@ class FpsCmd(object):
 
             cmd.inform(f'pfsConfig=0x{pfsConfig.pfsDesignId:016x},{visit},Done')
 
-        # Since the cobra is commaned to be at home.  We need to set the atThetas and atPhis.
-        thetaHome = ((self.cc.calibModel.tht1 - self.cc.calibModel.tht0 + np.pi) % (np.pi * 2) + np.pi)
-        self.atThetas = np.zeros(len(self.cc.allCobras))+thetaHome
-        self.atPhis = np.zeros(len(self.cc.allCobras))
-        
-        # Set the atThetas and atPhis to the home position.
-        self.cc.setCurrentAngles(self.cc.allCobras, thetaAngles=thetaHome, phiAngles=0)
-        cmd.inform(f'text="Setting the thetaAngle and phiAngle to the home position."')
+
         
         cmd.finish(f'text="Moved all arms back to home"')
 
