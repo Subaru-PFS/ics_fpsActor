@@ -71,7 +71,8 @@ def tweakTargetPosition(pfsConfig, cmd=None):
     return pfsConfig
 
 
-def finalize(pfsConfig, calibModel, cmd=None, noMatchStatus=FiberStatus.BLACKSPOT, notConvergedDistanceThreshold=None, NOT_MOVE_MASK=None):
+def finalize(pfsConfig, calibModel, cmd=None, noMatchStatus=FiberStatus.BLACKSPOT, notConvergedDistanceThreshold=None,
+             NOT_MOVE_MASK=None):
     """Finalize pfsConfig after converging, updating pfiCenter, fiberStatus, ra, dec"""
 
     def fetchFinalConvergence(visitId):
@@ -159,6 +160,10 @@ def finalize(pfsConfig, calibModel, cmd=None, noMatchStatus=FiberStatus.BLACKSPO
 
     pfsConfig.fiberStatus[fiberIndex] = lastIteration.fiberStatus.to_numpy()
     logger.info(f'{pfsConfig.filename} fiberStatus updated successfully...')
+
+    # overriding cobraId
+    pfsConfig.cobraId[fiberIndex] = lastIteration.cobra_id.to_numpy()
+    logger.info(f'{pfsConfig.filename} cobraId updated successfully...')
 
     # Setting ra,dec for UNASSIGNED target.
     try:
