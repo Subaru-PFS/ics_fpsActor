@@ -38,7 +38,7 @@ def makeTargetsArray(pfsConfig):
     cobraId = FiberIds().fiberIdToCobraId(fiberId)
     # targets vector has an entry for each cobra and sorted by cobraId.
     targets = np.empty((2394, 2), dtype=pfsConfig.pfiNominal.dtype)
-    targets[:] = np.NaN
+    targets[:] = np.nan
     # cobraMask is boolean array(shape=cobraId.shape)
     cobraMask = np.isin(cobraId, allCobraIds)
     # only existing cobraId.
@@ -104,12 +104,12 @@ def finalize(pfsConfig, calibModel, cmd=None, noMatchStatus=FiberStatus.BLACKSPO
 
     # Setting missing matches to NaNs.
     NO_MATCH_MASK = lastIteration.spot_id == -1
-    lastIteration.loc[NO_MATCH_MASK, 'pfi_center_x_mm'] = np.NaN
-    lastIteration.loc[NO_MATCH_MASK, 'pfi_center_y_mm'] = np.NaN
+    lastIteration.loc[NO_MATCH_MASK, 'pfi_center_x_mm'] = np.nan
+    lastIteration.loc[NO_MATCH_MASK, 'pfi_center_y_mm'] = np.nan
 
     # Fill final position with NaNs.
     pfiCenter = np.empty(pfsConfig.pfiNominal.shape, dtype=pfsConfig.pfiNominal.dtype)
-    pfiCenter[:] = np.NaN
+    pfiCenter[:] = np.nan
 
     # Construct the index.
     fiberId = FiberIds().cobraIdToFiberId(lastIteration.cobra_id.to_numpy())
