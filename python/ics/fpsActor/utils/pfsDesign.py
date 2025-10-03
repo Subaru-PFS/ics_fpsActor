@@ -51,8 +51,8 @@ def createHomeDesign(calibModel, goodIdx, maskFile):
     targetType = sgfm.sort_values('fiberId').targetType.to_numpy()
 
     # setting position to NaN where no target.
-    sgfm.loc[~MOVE_MASK, 'x'] = np.NaN
-    sgfm.loc[~MOVE_MASK, 'y'] = np.NaN
+    sgfm.loc[~MOVE_MASK, 'x'] = np.nan
+    sgfm.loc[~MOVE_MASK, 'y'] = np.nan
 
     # faking ra and dec.
     pfiNominal = sgfm.sort_values('fiberId')[['x', 'y']].to_numpy()
@@ -86,8 +86,8 @@ def createBlackDotDesign(calibModel, goodIdx, maskFile):
     targetType = sgfm.sort_values('fiberId').targetType.to_numpy()
 
     # setting position to NaN where no target.
-    sgfm.loc[~MOVE_MASK, 'x'] = np.NaN
-    sgfm.loc[~MOVE_MASK, 'y'] = np.NaN
+    sgfm.loc[~MOVE_MASK, 'x'] = np.nan
+    sgfm.loc[~MOVE_MASK, 'y'] = np.nan
 
     # faking ra and dec.
     pfiNominal = sgfm.sort_values('fiberId')[['x', 'y']].to_numpy()
