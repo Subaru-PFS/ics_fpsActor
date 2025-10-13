@@ -31,6 +31,7 @@ from ics.fpsActor.utils.fiberMatcher import FiberMatcher
 from opdb import opdb
 from pfs.datamodel import FiberStatus
 from pfs.utils import butler
+from pfs.utils.pfsConfigUtils import tweakTargetPosition
 
 reload(vis)
 
@@ -1339,7 +1340,7 @@ class FpsCmd(object):
         if doTweak:
             # Last minute tweaking for proper motion / parallax ..
             cmd.inform(f'text="Tweaking designed targets position..."')
-            pfsConfigUtils.tweakTargetPosition(pfsConfig)
+            tweakTargetPosition(pfsConfig)
 
         targets, isNan = pfsConfigUtils.makeTargetsArray(pfsConfig)
         # setting NaN targets to centers 
