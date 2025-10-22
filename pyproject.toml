@@ -8,7 +8,6 @@ description = "PFS FPS Actor: control and utilities for the Fiber Positioner Sys
 authors = [
     { name = "Subaru PFS ICS Team" }
 ]
-license = { text = "GPL-3.0-or-later" }
 readme = "README.md"
 requires-python = ">=3.12"
 keywords = ["PFS", "Subaru", "ICS", "FPS", "actor"]
@@ -32,15 +31,14 @@ dependencies = [
     "pandas",
     "psycopg2-binary",
     "scipy",
-    "sdss-actorcore",
-    "sdss-opscore",
     "sep",
     "twisted",
-    "ics-cobraCharmer @ git+https://github.com/Subaru-PFS/ics_cobraCharmer",
-    "ics-utils @ git+https://github.com/Subaru-PFS/ics_utils",
+    "ics-cobraCharmer @ git+https://github.com/Subaru-PFS/ics_cobraCharmer.git",
+    "ics-utils @ git+https://github.com/Subaru-PFS/ics_utils.git",
     "opdb @ git+https://github.com/Subaru-PFS/spt_operational_database.git",
     "pfs-datamodel @ git+https://github.com/Subaru-PFS/datamodel.git",
-    "pfs-utils @ git+https://github.com/Subaru-PFS/pfs_utils@w.2025.31",
+    "pfs-tron-actorcore @ git+https://github.com/Subaru-PFS/tron_actorcore.git",
+    "pfs-utils @ git+https://github.com/Subaru-PFS/pfs_utils.git",
 ]
 dynamic = ["version"]
 
@@ -78,6 +76,9 @@ known_first_party = ["ics"]
 # Ruff configuration to ignore naming capitalization/camelCase rules for functions, methods, and variables
 [tool.ruff.lint]
 ignore = ["N802", "N803", "N806", "N815", "N816", "EM101", "TRY003"]
+
+[tool.pydocstyle]
+convention = "numpy"
 
 [tool.hatch.metadata]
 allow-direct-references = true
