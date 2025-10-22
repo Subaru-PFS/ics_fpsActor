@@ -1,0 +1,84 @@
+[build-system]
+requires = ["setuptools>=61", "wheel", "lsst-versions"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ics-fpsActor"
+description = "PFS FPS Actor: control and utilities for the Fiber Positioner System"
+authors = [
+    { name = "Subaru PFS ICS Team" }
+]
+readme = "README.md"
+requires-python = ">=3.12"
+keywords = ["PFS", "Subaru", "ICS", "FPS", "actor"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+    "Operating System :: OS Independent",
+    "Framework :: Twisted",
+]
+
+# Core runtime dependencies inferred from imports
+# Note: Several dependencies are part of the PFS/ICS ecosystem and use dotted distribution names.
+# These should be available from the organization's package index.
+dependencies = [
+    "astropy",
+    "fitsio",
+    "matplotlib",
+    "numpy",
+    "opencv-python",
+    "pandas",
+    "psycopg2-binary",
+    "scipy",
+    "sep",
+    "twisted",
+    "ics-cobraCharmer @ git+https://github.com/Subaru-PFS/ics_cobraCharmer.git",
+    "ics-utils @ git+https://github.com/Subaru-PFS/ics_utils.git",
+    "opdb @ git+https://github.com/Subaru-PFS/spt_operational_database.git",
+    "pfs-datamodel @ git+https://github.com/Subaru-PFS/datamodel.git",
+    "pfs-tron-actorcore @ git+https://github.com/Subaru-PFS/tron_actorcore.git",
+    "pfs-utils @ git+https://github.com/Subaru-PFS/pfs_utils.git",
+]
+dynamic = ["version"]
+
+[project.urls]
+Homepage = "https://github.com/Subaru-PFS/ics_fpsActor"
+Repository = "https://github.com/Subaru-PFS/ics_fpsActor.git"
+
+[project.scripts]
+fpsActor = "ics.fpsActor.main:main"
+
+[tool.setuptools]
+# Use namespace packages under the ics namespace
+package-dir = { "" = "python" }
+
+[tool.setuptools.packages.find]
+where = ["python"]
+include = ["ics.fpsActor*"]
+
+[tool.setuptools.package-data]
+# Add package data patterns here if needed in the future
+"ics.fpsActor" = []
+
+[tool.lsst_versions]
+write_to = "python/ics/fpsActor/version.py"
+
+[tool.black]
+line-length = 110
+target-version = ["py312"]
+
+[tool.isort]
+profile = "black"
+line_length = 110
+known_first_party = ["ics"]
+
+# Ruff configuration to ignore naming capitalization/camelCase rules for functions, methods, and variables
+[tool.ruff.lint]
+ignore = ["N802", "N803", "N806", "N815", "N816", "EM101", "TRY003"]
+
+[tool.pydocstyle]
+convention = "numpy"
+
+[tool.hatch.metadata]
+allow-direct-references = true
