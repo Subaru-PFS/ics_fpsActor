@@ -65,7 +65,9 @@ class FpsCmd(object):
             ('powerOn', '', self.powerOn),
             ('powerOff', '', self.powerOff),
             ('diag', '', self.diag),
+            ('calib', '[<board>] [@updateModel] [@ccw]', self.calib),
             ('hk', '[<board>] [@short]', self.hk),
+            ('writeModel', '<xml>', self.writeModel),
             ('connect', '', self.connect),
             ('fpgaSim', '@(on|off) [<datapath>]', self.fpgaSim),
             ('ledlight', '@(on|off)', self.ledlight),
@@ -276,6 +278,17 @@ class FpsCmd(object):
 
         cmd.finish(f"text='Loaded model = {self.xml}'")
 
+    def writeModel(self, cmd):
+        """Save current model to XML file"""
+
+        cmdKeys = cmd.cmd.keywords
+        xml = cmdKeys['xml'].values[0]
+
+        cmd.inform('text="writing {xml}..."')
+        self.cc.calibModel.createCalibrationFile(xml)
+
+        cmd.finish()
+
     def getPositionsForFrame(self, frameId):
         mcsData = self.nv.readCentroid(frameId)
         self.logger.info(f'mcs data {mcsData.shape[0]}')
@@ -386,6 +399,31 @@ class FpsCmd(object):
                 for cobraId in range(len(f1)):
                     cmd.inform(f'text="    {cobraId + 1:2d}  {f1[cobraId]:0.2f} {c1[cobraId]:0.2f}    '
                                f'{f2[cobraId]:0.2f} {c2[cobraId]:0.2f}"')
+        cmd.finish()
+
+    def calib(self, cmd):
+        """Run FPGA Piezo tuning info for one board or the entire PFI. """
+
+        cmdKeys = cmd.cmd.keywords
+        boards = [cmdKeys['board'].values[0]] if 'board' in cmdKeys else range(1, 85)
+        clockwise = 'ccw' not in cmdKeys
+        updateModel = 'updateModel' in cmdKeys
+
+        # First, run the calibration step per-board, just to keep current requirements down.
+        for b in boards:
+            cmd.inform(f'text="calibrating board {b} {"cw" if clockwise else "ccw"} piezo frequencies"')
+            ret = self.cc.pfi.calibrateFreq(board=b,
+                                            clockwise=clockwise)
+            time.sleep(1)
+
+        # Then grab all the results at once.
+        for b in boards:
+            ret = self.cc.pfi.boardHk(b, updateModel=updateModel)
+            error, t1, t2, v, f1, c1, f2, c2 = ret
+            cmd.inform(f'text="board {b} error={error} temps=({t1:0.2f}, {t2:0.2f}) voltage={v:0.3f}"')
+            for cobraId in range(len(f1)):
+                cmd.inform(f'text="    {cobraId + 1:2d}  {f1[cobraId]:0.2f} {c1[cobraId]:0.2f}    '
+                           f'{f2[cobraId]:0.2f} {c2[cobraId]:0.2f}"')
         cmd.finish()
 
     def powerOn(self, cmd):
