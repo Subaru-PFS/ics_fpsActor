@@ -1235,7 +1235,9 @@ class FpsCmd(object):
         cmd.finish(f'text="PHI is now at {angle} degrees!"')
 
     def moveToSafePosition(self, cmd):
-        """ Home then move cobras to nominal safe position: 60 deg for both phi and theta.
+        
+        """ Move cobras to nominal safe position: thetas OUT, phis in.
+        Assumes phi is at 60deg and that we know thetaPositions.
         """
         cmdKeys = cmd.cmd.keywords
         visit = self.actor.visitor.setOrGetVisit(cmd)
