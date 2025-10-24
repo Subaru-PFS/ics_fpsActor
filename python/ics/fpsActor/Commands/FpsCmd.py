@@ -1212,6 +1212,9 @@ class FpsCmd(object):
         thetas = np.full(len(self.cc.goodIdx), np.deg2rad(60))
         phis = np.full(len(self.cc.goodIdx), np.deg2rad(60))
 
+        cobras = self.cc.allCobras[self.cc.goodIdx]
+        targets = self.cc.anglesToPositions(cobras, thetas, phis)
+
         self.cc.pfi.resetMotorScaling()
         dataPath, thetas, phis, moves = eng.moveThetaPhi(self.cc.goodIdx, thetas, phis, 
             False, False, tolerance=0.01, tries=8, homed=False, newDir=False, threshold=2.0, thetaMargin=np.deg2rad(15.0))
@@ -1220,6 +1223,7 @@ class FpsCmd(object):
         #                       tries=12, homed=False, newDir=False, threshold=2.0, thetaMargin=np.deg2rad(15.0))
         
         # Save the moves for record.
+        np.save(dataPath / 'targets', targets)
         np.save(dataPath / 'moves', moves)
         np.save(dataPath / 'thetas', thetas)
         np.save(dataPath / 'phis', phis)
