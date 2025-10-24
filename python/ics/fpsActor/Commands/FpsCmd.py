@@ -1189,6 +1189,7 @@ class FpsCmd(object):
 
         cmd.finish(f'text="PHI is now at {angle} degrees!"')
 
+
     def moveToSafePosition(self, cmd):
         """ Move cobras to nominal safe position: thetas OUT, phis in.
         Assumes phi is at 60deg and that we know thetaPositions.
@@ -1197,17 +1198,33 @@ class FpsCmd(object):
         cmdKeys = cmd.cmd.keywords
         visit = self.actor.visitor.setOrGetVisit(cmd)
         expTime = cmdKeys['expTime'].values[0] if 'expTime' in cmdKeys else None
-        if expTime is None:
-            cmdString = 'moveToPfsDesign designID=0x464fb47d38f6c9f2 tolerance=0.1 iteration=12 goHome noTweak'
-        else:
-            cmdString = f'moveToPfsDesign designID=0x464fb47d38f6c9f2 expTime={expTime} tolerance=0.1 iteration=12 goHome noTweak'
+        
+        #if expTime is None:
+        #    cmdString = 'moveToPfsDesign designID=0x464fb47d38f6c9f2 tolerance=0.1 iteration=12 goHome noTweak'
+        #else:
+        #    cmdString = f'moveToPfsDesign designID=0x464fb47d38f6c9f2 expTime={expTime} tolerance=0.1 iteration=12 goHome noTweak'
 
-        cmdVar = self.actor.cmdr.call(actor='fps', cmdStr=cmdString,
-                                      forUserCmd=cmd, timeLim=300)
-        if cmdVar.didFail:
-            raise RuntimeError("move to safe position failed")
+        #cmdVar = self.actor.cmdr.call(actor='fps', cmdStr=cmdString,
+        #                              forUserCmd=cmd, timeLim=300)
+        #if cmdVar.didFail:
+        #    raise RuntimeError("move to safe position failed")
+        
+        thetas = np.full(len(self.cc.goodIdx), np.deg2rad(60))
+        phis = np.full(len(self.cc.goodIdx), np.deg2rad(60))
+
+        self.cc.pfi.resetMotorScaling()
+        dataPath, thetas, phis, moves = eng.moveThetaPhi(self.cc.goodIdx, thetas, phis, 
+            False, False, tolerance=0.01, tries=8, homed=False, newDir=False, threshold=2.0, thetaMargin=np.deg2rad(15.0))
+        
         #eng.moveToSafePosition(self.cc.goodIdx, tolerance=0.01,
         #                       tries=12, homed=False, newDir=False, threshold=2.0, thetaMargin=np.deg2rad(15.0))
+        
+        # Save the moves for record.
+        np.save(dataPath / 'moves', moves)
+        np.save(dataPath / 'thetas', thetas)
+        np.save(dataPath / 'phis', phis)
+        cmd.inform(f'text="Data of moves are saved to {dataPath}"')
+
 
         cmd.finish(f'text="moveToSafePosition is finished"')
 
@@ -1292,7 +1309,7 @@ class FpsCmd(object):
 
     def moveToPfsDesign(self, cmd):
         """ Move cobras to a PFS design. """
-        thetaMarginDeg = 5.0
+        thetaMarginDeg = 15.0
 
         """
         Initialize the cobra control parameters. When moving to a design, these parameters need to be set.
@@ -1373,7 +1390,7 @@ class FpsCmd(object):
         # Set True for NaN targets (using original indices before goodIdx filtering)
         notMoveMask[isNan] = True
         notMoveMask[interfering_cobra_indices] = True
-        notMoveMask[goodIdx[np.where(invalid)[0]]] = True
+        #notMoveMask[goodIdx[np.where(invalid)[0]]] = True
 
         # Filter goodIdx to exclude cobras that should not move
         filteredGoodIdx = goodIdx[~notMoveMask[goodIdx]]
