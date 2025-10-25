@@ -87,7 +87,7 @@ class FpsCmd(object):
             ('moveToPfsDesign',
              '<designId> [@twoStepsOff] [@shortExpOff] [@goHome] [@noTweak] [<visit>] [<expTime>] [<iteration>] [<tolerance>] [<maskFile>]',
              self.moveToPfsDesign),
-            ('moveToSafePosition', '[<expTime>] [<visit>]', self.moveToSafePosition),
+            ('moveToSafePosition', '[<expTime>] [<visit>] [<tolerance>]', self.moveToSafePosition),
             ('makeMotorMap', '@(phi|theta) <stepsize> <repeat> [<totalsteps>] [@slowOnly] [@forceMove] [<visit>]',
              self.makeMotorMap),
             ('makeMotorMapGroups', '@(phi|theta) <stepsize> <repeat> [@slowMap] [@fastMap] [<cobraGroup>] [<visit>]',
@@ -1191,24 +1191,13 @@ class FpsCmd(object):
 
 
     def moveToSafePosition(self, cmd):
-        """ Move cobras to nominal safe position: thetas OUT, phis in.
-        Assumes phi is at 60deg and that we know thetaPositions.
-
+        """ Home then move cobras to nominal safe position: 60 deg for both phi and theta.
         """
         cmdKeys = cmd.cmd.keywords
         visit = self.actor.visitor.setOrGetVisit(cmd)
         expTime = cmdKeys['expTime'].values[0] if 'expTime' in cmdKeys else None
-        
-        #if expTime is None:
-        #    cmdString = 'moveToPfsDesign designID=0x464fb47d38f6c9f2 tolerance=0.1 iteration=12 goHome noTweak'
-        #else:
-        #    cmdString = f'moveToPfsDesign designID=0x464fb47d38f6c9f2 expTime={expTime} tolerance=0.1 iteration=12 goHome noTweak'
+        tolerance = cmdKeys['tolerance'].values[0] if 'tolerance' in cmdKeys else 0.1
 
-        #cmdVar = self.actor.cmdr.call(actor='fps', cmdStr=cmdString,
-        #                              forUserCmd=cmd, timeLim=300)
-        #if cmdVar.didFail:
-        #    raise RuntimeError("move to safe position failed")
-        
         thetas = np.full(len(self.cc.goodIdx), np.deg2rad(60))
         phis = np.full(len(self.cc.goodIdx), np.deg2rad(60))
 
@@ -1217,18 +1206,16 @@ class FpsCmd(object):
 
         self.cc.pfi.resetMotorScaling()
         dataPath, thetas, phis, moves = eng.moveThetaPhi(self.cc.goodIdx, thetas, phis, 
-            False, False, tolerance=0.01, tries=8, homed=False, newDir=False, threshold=2.0, thetaMargin=np.deg2rad(15.0))
-        
-        #eng.moveToSafePosition(self.cc.goodIdx, tolerance=0.01,
-        #                       tries=12, homed=False, newDir=False, threshold=2.0, thetaMargin=np.deg2rad(15.0))
-        
+                                                         False, False, tolerance=tolerance,
+                                                         tries=8, homed=False, newDir=False,
+                                                         threshold=2.0, thetaMargin=np.deg2rad(15.0))
+
         # Save the moves for record.
         np.save(dataPath / 'targets', targets)
         np.save(dataPath / 'moves', moves)
         np.save(dataPath / 'thetas', thetas)
         np.save(dataPath / 'phis', phis)
         cmd.inform(f'text="Data of moves are saved to {dataPath}"')
-
 
         cmd.finish(f'text="moveToSafePosition is finished"')
 
@@ -1376,11 +1363,13 @@ class FpsCmd(object):
         cobras = self.cc.allCobras[goodIdx]
 
         thetaSolution, phiSolution, flags = self.cc.pfi.positionsToAngles(cobras, targets)
-        invalid = flags[:,0] != self.cc.pfi.SOLUTION_OK
+        invalid = (flags[:,0] & self.cc.pfi.SOLUTION_OK) == 0
 
         if not np.all(invalid):
             # raise RuntimeError(f"Given positions are invalid: {np.where(valid)[0]}")
-            cmd.inform(f'text="Given positions are invalid: {goodIdx[np.where(invalid)[0]]}"')
+            cmd.inform(f'text="Given {invalid.sum()} positions are invalid: {goodIdx[np.where(invalid)[0]]}"')
+            for ii in np.where(invalid)[0]:
+                self.logger.info(f'invalid pos: {ii} {flags[ii,0]:08b}')
 
         thetas = thetaSolution[:, 0]
         phis = phiSolution[:, 0]
