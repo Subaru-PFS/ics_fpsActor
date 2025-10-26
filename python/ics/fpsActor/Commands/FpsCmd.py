@@ -1231,7 +1231,7 @@ class FpsCmd(object):
     def motorOntimeSearch(self, cmd):
         """ FPS interface of searching the on time parameters for a specified motor speed """
         cmdKeys = cmd.cmd.keywords
-        visit = self.actor.visitor.setOrGetVisit(cmd)
+        visit = self.actor.visitor.setOrGetVisit(cmd, doAutoVisit=True)
 
         # self._connect()
 
@@ -1255,7 +1255,7 @@ class FpsCmd(object):
     def makeOntimeMap(self, cmd):
         """ Making on-time map. """
         cmdKeys = cmd.cmd.keywords
-        visit = self.actor.visitor.setOrGetVisit(cmd)
+        visit = self.actor.visitor.setOrGetVisit(cmd, doAutoVisit=True)
 
         phi = 'phi' in cmdKeys
         theta = 'theta' in cmdKeys
