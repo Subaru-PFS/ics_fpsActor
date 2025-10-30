@@ -72,7 +72,7 @@ def tweakTargetPosition(pfsConfig, cmd=None):
 
 
 def finalize(pfsConfig, calibModel, cmd=None, noMatchStatus=FiberStatus.BLACKSPOT, notConvergedDistanceThreshold=None,
-             NOT_MOVE_MASK=None):
+             NOT_MOVE_MASK=None, atThetas=None, atPhis=None):
     """Finalize pfsConfig after converging, updating pfiCenter, fiberStatus, ra, dec"""
 
     def fetchFinalConvergence(visitId):
@@ -122,6 +122,13 @@ def finalize(pfsConfig, calibModel, cmd=None, noMatchStatus=FiberStatus.BLACKSPO
     pfiCenter[fiberIndex, 1] = lastIteration.pfi_center_y_mm.to_numpy()
     pfsConfig.pfiCenter = pfiCenter
     logger.info(f'{pfsConfig.filename} pfiCenter updated successfully...')
+
+    # Set cobraTheta, cobraPhi in degrees.
+    atThetas = np.full(len(lastIteration), np.nan, dtype=np.float32) if atThetas is None else atThetas
+    atPhis = np.full(len(lastIteration), np.nan, dtype=np.float32) if atPhis is None else atPhis
+    pfsConfig.cobraTheta[fiberIndex] = np.rad2deg(atThetas)
+    pfsConfig.cobraPhi[fiberIndex] = np.rad2deg(atPhis)
+    logger.info(f'{pfsConfig.filename} atThetas atPhis updated successfully...')
 
     # Calculate distance to target.
     distanceToTarget = np.hypot(pfsConfig.pfiNominal[:, 0] - pfsConfig.pfiCenter[:, 0],
