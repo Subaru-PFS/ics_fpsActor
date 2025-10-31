@@ -87,7 +87,7 @@ class FpsCmd(object):
             ('moveToPfsDesign',
              '<designId> [@twoStepsOff] [@shortExpOff] [@goHome] [@noTweak] [<visit>] [<expTime>] [<iteration>] [<tolerance>] [<maskFile>]',
              self.moveToPfsDesign),
-            ('moveToSafePosition', '[<expTime>] [<visit>]', self.moveToSafePosition),
+            ('moveToSafePosition', '[<expTime>] [<visit>] [<tolerance>] [@noHome]', self.moveToSafePosition),
             ('makeMotorMap', '@(phi|theta) <stepsize> <repeat> [<totalsteps>] [@slowOnly] [@forceMove] [<visit>]',
              self.makeMotorMap),
             ('makeMotorMapGroups', '@(phi|theta) <stepsize> <repeat> [@slowMap] [@fastMap] [<cobraGroup>] [<visit>]',
@@ -102,7 +102,7 @@ class FpsCmd(object):
             ('expose', '[<visit>] [<expTime>] [<cnt>]', self.testIteration),  # New alias
             ('testLoop', '[<visit>] [<expTime>] [<cnt>] [@noMatching]',
              self.testIteration),  # Historical alias.
-            ('cobraMoveSteps', '@(phi|theta) <stepsize> [<maskFile>] [<applyScaling>]', self.cobraMoveStepsCmd),
+            ('cobraMoveSteps', '@(phi|theta) <stepsize> [<maskFile>] [<applyScaling>] [<cnt>]', self.cobraMoveStepsCmd),
             ('cobraMoveAngles', '@(phi|theta) <angle> [<maskFile>]', self.cobraMoveAngles),
             ('loadDotScales', '[<filename>]', self.loadDotScales),
             ('updateDotLoop', '<filename> [<stepsPerMove>] [@noMove]', self.updateDotLoop),
@@ -636,12 +636,14 @@ class FpsCmd(object):
         maskFile = cmdKeys['maskFile'].values[0] if 'maskFile' in cmdKeys else None
         applyScaling = cmdKeys['applyScaling'].values[0] if 'applyScaling' in cmdKeys else False
         stepsize = cmd.cmd.keywords['stepsize'].values[0]
+        cnt = cmdKeys['cnt'].values[0] if 'cnt' in cmdKeys else 1
 
-        self.cobraMoveSteps(maskFile=maskFile, applyScaling=applyScaling, stepsize=stepsize, theta=theta, phi=phi)
+        self.cobraMoveSteps(maskFile=maskFile, applyScaling=applyScaling, stepsize=stepsize, theta=theta, phi=phi,
+                            nreps=cnt)
 
         cmd.finish(f'text="cobraMoveSteps stepsize = {stepsize} completed"')
 
-    def cobraMoveSteps(self, maskFile, stepsize, applyScaling=None, theta=False, phi=False):
+    def cobraMoveSteps(self, maskFile, stepsize, applyScaling=None, theta=False, phi=False, nreps=1):
         theta = False if phi else theta
         # loading mask file and moving only cobra with bitMask==1
         goodIdx = self.loadGoodIdx(maskFile)
@@ -673,7 +675,12 @@ class FpsCmd(object):
             phiSteps *= (scaling*stepsize)
             phiSteps = phiSteps.round().astype('int32')
 
-        self.cc.pfi.moveSteps(cobras, thetaSteps, phiSteps, thetaFast=False, phiFast=False)
+        t0 = time.time()
+        for i in range(nreps):
+            t1 = time.time()
+            self.cc.pfi.moveSteps(cobras, thetaSteps, phiSteps, thetaFast=False, phiFast=False)
+            t2 = time.time()
+            self.logger.info(f'moveSteps {i+1}/{nreps}: {t2-t1:0.3f} {t2-t0:0.3f}')
 
     def makeMotorMapwithGroups(self, cmd):
         """
@@ -1189,25 +1196,35 @@ class FpsCmd(object):
 
         cmd.finish(f'text="PHI is now at {angle} degrees!"')
 
-    def moveToSafePosition(self, cmd):
-        """ Move cobras to nominal safe position: thetas OUT, phis in.
-        Assumes phi is at 60deg and that we know thetaPositions.
 
+    def moveToSafePosition(self, cmd):
+        """ Home then move cobras to nominal safe position: 60 deg for both phi and theta.
         """
         cmdKeys = cmd.cmd.keywords
         visit = self.actor.visitor.setOrGetVisit(cmd)
         expTime = cmdKeys['expTime'].values[0] if 'expTime' in cmdKeys else None
-        if expTime is None:
-            cmdString = 'moveToPfsDesign designID=0x464fb47d38f6c9f2 tolerance=0.1 iteration=12 goHome noTweak'
-        else:
-            cmdString = f'moveToPfsDesign designID=0x464fb47d38f6c9f2 expTime={expTime} tolerance=0.1 iteration=12 goHome noTweak'
+        tolerance = cmdKeys['tolerance'].values[0] if 'tolerance' in cmdKeys else 0.1
+        goHome = 'noHome' not in cmdKeys
 
-        cmdVar = self.actor.cmdr.call(actor='fps', cmdStr=cmdString,
-                                      forUserCmd=cmd, timeLim=300)
-        if cmdVar.didFail:
-            raise RuntimeError("move to safe position failed")
-        #eng.moveToSafePosition(self.cc.goodIdx, tolerance=0.01,
-        #                       tries=12, homed=False, newDir=False, threshold=2.0, thetaMargin=np.deg2rad(15.0))
+        thetas = np.full(len(self.cc.goodIdx), np.deg2rad(60))
+        phis = np.full(len(self.cc.goodIdx), np.deg2rad(60))
+
+        cobras = self.cc.allCobras[self.cc.goodIdx]
+        targets = self.cc.pfi.anglesToPositions(cobras, thetas, phis)
+
+        self.cc.pfi.resetMotorScaling()
+        # "homed" should be "goHome". Hack now here, fix there later.
+        dataPath, thetas, phis, moves = eng.moveThetaPhi(self.cc.goodIdx, thetas, phis, 
+                                                         False, False, tolerance=tolerance,
+                                                         tries=8, homed=goHome, newDir=False,
+                                                         threshold=2.0, thetaMargin=np.deg2rad(15.0))
+
+        # Save the moves for record.
+        np.save(dataPath / 'targets', targets)
+        np.save(dataPath / 'moves', moves)
+        np.save(dataPath / 'thetas', thetas)
+        np.save(dataPath / 'phis', phis)
+        cmd.inform(f'text="Data of moves are saved to {dataPath}"')
 
         cmd.finish(f'text="moveToSafePosition is finished"')
 
@@ -1292,7 +1309,7 @@ class FpsCmd(object):
 
     def moveToPfsDesign(self, cmd):
         """ Move cobras to a PFS design. """
-        thetaMarginDeg = 5.0
+        thetaMarginDeg = 15.0
 
         """
         Initialize the cobra control parameters. When moving to a design, these parameters need to be set.
@@ -1355,11 +1372,13 @@ class FpsCmd(object):
         cobras = self.cc.allCobras[goodIdx]
 
         thetaSolution, phiSolution, flags = self.cc.pfi.positionsToAngles(cobras, targets)
-        invalid = flags[:,0] != self.cc.pfi.SOLUTION_OK
+        invalid = (flags[:,0] & self.cc.pfi.SOLUTION_OK) == 0
 
         if not np.all(invalid):
             # raise RuntimeError(f"Given positions are invalid: {np.where(valid)[0]}")
-            cmd.inform(f'text="Given positions are invalid: {goodIdx[np.where(invalid)[0]]}"')
+            cmd.inform(f'text="Given {invalid.sum()} positions are invalid: {goodIdx[np.where(invalid)[0]]}"')
+            for ii in np.where(invalid)[0]:
+                self.logger.info(f'invalid pos: {ii} {flags[ii,0]:08b}')
 
         thetas = thetaSolution[:, 0]
         phis = phiSolution[:, 0]
@@ -1373,7 +1392,7 @@ class FpsCmd(object):
         # Set True for NaN targets (using original indices before goodIdx filtering)
         notMoveMask[isNan] = True
         notMoveMask[interfering_cobra_indices] = True
-        notMoveMask[goodIdx[np.where(invalid)[0]]] = True
+        #notMoveMask[goodIdx[np.where(invalid)[0]]] = True
 
         # Filter goodIdx to exclude cobras that should not move
         filteredGoodIdx = goodIdx[~notMoveMask[goodIdx]]
