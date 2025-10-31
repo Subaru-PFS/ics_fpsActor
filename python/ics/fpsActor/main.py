@@ -15,37 +15,47 @@ class Visitor(object):
         self.visit = None
         self.frameSeq = 0
         self.cmd = self.actor.bcast
+        self.doAutoVisit = False
 
     def getNextFrameNum(self):
         """Get the next full (visit}{frameSeq}. Does increment self.frameSeq. """
 
+        if self.frameSeq >= 100:
+            if not self.doAutoVisit:
+                raise ValueError(f"frameSeq > 100 (would be {self.frameSeq})")
+            self._getNewVisit()
+
         frameSeq = self.frameSeq
         self.frameSeq += 1
-        if frameSeq >= 100:
-            raise ValueError(f"frameSeq > 100 (would be {self.frameSeq})")
-
         frameNum = self.visit * 100 + frameSeq
         return frameNum
 
-    def setOrGetVisit(self, cmd):
+    def forceNewVisit(self):
+        return self._getNewVisit()
+
+    def _getNewVisit(self):
+        """Fetch a new visit from gen2 and reset our frameSeq."""
+        ret = self.actor.cmdr.call(actor='gen2', cmdStr='getVisit caller=fps',
+                                   forUserCmd=self.cmd, timeLim=15.0)
+        if ret.didFail:
+            raise RuntimeError("getNextFilename failed getting a visit number in 15s!")
+        self.visit = self.actor.models['gen2'].keyVarDict['visit'].valueList[0]
+        self.frameSeq = 0
+
+        return self.visit
+
+    def setOrGetVisit(self, cmd, doAutoVisit=False):
         """Set and return the visit passed in the command keys, or fetch one from gen2. """
 
+        self.doAutoVisit = doAutoVisit
         self.cmd = cmd
         cmdKeys = cmd.cmd.keywords
 
-        # When we start a new visit, always reset frame counter.
-        newVisit = 'visit' not in cmdKeys or cmdKeys['visit'].values[0] != self.visit
-        if newVisit:
-            self.frameSeq = 0
-
         if 'visit' in cmdKeys:
             self.visit = cmdKeys['visit'].values[0]
+            self.frameSeq = 0
         else:
-            ret = self.actor.cmdr.call(actor='gen2', cmdStr='getVisit caller=fps',
-                                       forUserCmd=cmd, timeLim=15.0)
-            if ret.didFail:
-                raise RuntimeError("getNextFilename failed getting a visit number in 15s!")
-            self.visit = self.actor.models['gen2'].keyVarDict['visit'].valueList[0]
+            self._getNewVisit()
 
         return self.visit
 
