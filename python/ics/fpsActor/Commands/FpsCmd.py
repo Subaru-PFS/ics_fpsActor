@@ -87,7 +87,7 @@ class FpsCmd(object):
             ('moveToPfsDesign',
              '<designId> [@twoStepsOff] [@shortExpOff] [@goHome] [@noTweak] [<visit>] [<expTime>] [<iteration>] [<tolerance>] [<maskFile>]',
              self.moveToPfsDesign),
-            ('moveToSafePosition', '[<expTime>] [<visit>] [<tolerance>]', self.moveToSafePosition),
+            ('moveToSafePosition', '[<expTime>] [<visit>] [<tolerance>] [@noHome]', self.moveToSafePosition),
             ('makeMotorMap', '@(phi|theta) <stepsize> <repeat> [<totalsteps>] [@slowOnly] [@forceMove] [<visit>]',
              self.makeMotorMap),
             ('makeMotorMapGroups', '@(phi|theta) <stepsize> <repeat> [@slowMap] [@fastMap] [<cobraGroup>] [<visit>]',
@@ -102,7 +102,7 @@ class FpsCmd(object):
             ('expose', '[<visit>] [<expTime>] [<cnt>]', self.testIteration),  # New alias
             ('testLoop', '[<visit>] [<expTime>] [<cnt>] [@noMatching]',
              self.testIteration),  # Historical alias.
-            ('cobraMoveSteps', '@(phi|theta) <stepsize> [<maskFile>] [<applyScaling>]', self.cobraMoveStepsCmd),
+            ('cobraMoveSteps', '@(phi|theta) <stepsize> [<maskFile>] [<applyScaling>] [<cnt>]', self.cobraMoveStepsCmd),
             ('cobraMoveAngles', '@(phi|theta) <angle> [<maskFile>]', self.cobraMoveAngles),
             ('loadDotScales', '[<filename>]', self.loadDotScales),
             ('updateDotLoop', '<filename> [<stepsPerMove>] [@noMove]', self.updateDotLoop),
@@ -636,12 +636,14 @@ class FpsCmd(object):
         maskFile = cmdKeys['maskFile'].values[0] if 'maskFile' in cmdKeys else None
         applyScaling = cmdKeys['applyScaling'].values[0] if 'applyScaling' in cmdKeys else False
         stepsize = cmd.cmd.keywords['stepsize'].values[0]
+        cnt = cmdKeys['cnt'].values[0] if 'cnt' in cmdKeys else 1
 
-        self.cobraMoveSteps(maskFile=maskFile, applyScaling=applyScaling, stepsize=stepsize, theta=theta, phi=phi)
+        self.cobraMoveSteps(maskFile=maskFile, applyScaling=applyScaling, stepsize=stepsize, theta=theta, phi=phi,
+                            nreps=cnt)
 
         cmd.finish(f'text="cobraMoveSteps stepsize = {stepsize} completed"')
 
-    def cobraMoveSteps(self, maskFile, stepsize, applyScaling=None, theta=False, phi=False):
+    def cobraMoveSteps(self, maskFile, stepsize, applyScaling=None, theta=False, phi=False, nreps=1):
         theta = False if phi else theta
         # loading mask file and moving only cobra with bitMask==1
         goodIdx = self.loadGoodIdx(maskFile)
@@ -673,7 +675,12 @@ class FpsCmd(object):
             phiSteps *= (scaling*stepsize)
             phiSteps = phiSteps.round().astype('int32')
 
-        self.cc.pfi.moveSteps(cobras, thetaSteps, phiSteps, thetaFast=False, phiFast=False)
+        t0 = time.time()
+        for i in range(nreps):
+            t1 = time.time()
+            self.cc.pfi.moveSteps(cobras, thetaSteps, phiSteps, thetaFast=False, phiFast=False)
+            t2 = time.time()
+            self.logger.info(f'moveSteps {i+1}/{nreps}: {t2-t1:0.3f} {t2-t0:0.3f}')
 
     def makeMotorMapwithGroups(self, cmd):
         """
@@ -1197,17 +1204,19 @@ class FpsCmd(object):
         visit = self.actor.visitor.setOrGetVisit(cmd)
         expTime = cmdKeys['expTime'].values[0] if 'expTime' in cmdKeys else None
         tolerance = cmdKeys['tolerance'].values[0] if 'tolerance' in cmdKeys else 0.1
+        goHome = 'noHome' not in cmdKeys
 
         thetas = np.full(len(self.cc.goodIdx), np.deg2rad(60))
         phis = np.full(len(self.cc.goodIdx), np.deg2rad(60))
 
         cobras = self.cc.allCobras[self.cc.goodIdx]
-        targets = self.cc.anglesToPositions(cobras, thetas, phis)
+        targets = self.cc.pfi.anglesToPositions(cobras, thetas, phis)
 
         self.cc.pfi.resetMotorScaling()
+        # "homed" should be "goHome". Hack now here, fix there later.
         dataPath, thetas, phis, moves = eng.moveThetaPhi(self.cc.goodIdx, thetas, phis, 
                                                          False, False, tolerance=tolerance,
-                                                         tries=8, homed=False, newDir=False,
+                                                         tries=8, homed=goHome, newDir=False,
                                                          threshold=2.0, thetaMargin=np.deg2rad(15.0))
 
         # Save the moves for record.
