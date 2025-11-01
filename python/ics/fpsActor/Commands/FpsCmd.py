@@ -173,6 +173,8 @@ class FpsCmd(object):
         self.p = None
         self.simDataPath = None
 
+        self.xml = None
+
         if self.cc is not None:
             eng.setCobraCoach(self.cc)
 
@@ -256,15 +258,23 @@ class FpsCmd(object):
         cmdKeys = cmd.cmd.keywords
         xml = cmdKeys['xml'].values[0] if 'xml' in cmdKeys else None
 
-        butlerResource = butler.Butler()
-
-        if xml is None:
+        # Decide which XML to use
+        if xml is not None:
+            # If there is a new XML specified, use it
+            cmd.inform(f'text="Using specified XML file: {xml}"')
+            self.xml = pathlib.Path(xml)
+        elif self.xml is not None:
+            # If no new XML is specified but a previously loaded XML exists, use the loaded one
+            xml = str(self.xml)  # Convert to string for later use
+            cmd.inform(f'text="Using previously loaded XML file: {xml}"')
+        else:
+            # If both are None, load default XML
+            butlerResource = butler.Butler()
             xml = butlerResource.getPath("moduleXml", moduleName="ALL", version="")
+            self.xml = pathlib.Path(xml)
+            cmd.inform(f'text="Loading default XML file: {xml}"')
 
         self.logger.info(f'Input XML file = {xml}')
-        self.xml = pathlib.Path(xml)
-
-        mod = 'ALL'
 
         cmd.inform(f"text='Connecting to %s FPGA'" % ('real' if self.fpgaHost == 'fpga' else 'simulator'))
         if self.simDataPath is None:
@@ -368,7 +378,9 @@ class FpsCmd(object):
         time.sleep(1)
         res = self.cc.pfi.diag()
         cmd.info(f'text="diag = {res}"')
-        self.loadModel()
+        self.loadModel(cmd)
+  
+
         cmd.info(f'text="Reload the XML file and connect to FPGA"')
 
         cmd.finish(f'text="XML = {self.xml}"')
@@ -438,7 +450,8 @@ class FpsCmd(object):
         res = self.cc.pfi.diag()
         cmd.info(f'text="diag = {res}"')
 
-        self.loadModel()
+        self.loadModel(cmd)
+     
         cmd.info(f'text="Reload the XML file and connect to FPGA"')
 
         cmd.finish(f'text="XML = {self.xml}"')
@@ -483,19 +496,20 @@ class FpsCmd(object):
         res = self.cc.pfi.diag()
         cmd.inform(f'text="diag = {res}"')
 
-        butlerResource = butler.Butler()
-        xml = butlerResource.getPath("moduleXml", moduleName="ALL", version="")
+        if self.xml is None:
+            butlerResource = butler.Butler()
+            xml = butlerResource.getPath("moduleXml", moduleName="ALL", version="")
+            self.logger.info(f'Input XML file = {xml}')
+            self.xml = pathlib.Path(xml)
+            self.logger.info(f'Loading default XML file: {self.xml}')
+            cmd.inform(f'text="Using default XML file: {self.xml}"')
+        else:
+            cmd.inform(f'text="Using previously loaded XML file: {self.xml}"')
 
-        self.logger.info(f'Input XML file = {xml}')
-        self.xml = pathlib.Path(xml)
-
-        mod = 'ALL'
-
+        self.logger.info(f'Input XML file = {self.xml}')
         cmd.inform(f"text='Connecting to %s FPGA'" % ('real' if self.fpgaHost == 'fpga' else 'simulator'))
-
         self.cc = cobraCoach.CobraCoach(self.fpgaHost, loadModel=False, actor=self.actor, cmd=cmd)
-
-        self.cc.loadModel(file=pathlib.Path(self.xml))
+        self.cc.loadModel(file=self.xml)
         eng.setCobraCoach(self.cc)
 
         cmd.finish(f"text='FPGA connected with model = {self.xml}'")
