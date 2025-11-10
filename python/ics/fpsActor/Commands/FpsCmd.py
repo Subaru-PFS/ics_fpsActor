@@ -32,6 +32,7 @@ from opdb import opdb
 from pfs.datamodel import FiberStatus
 from pfs.utils import butler
 from pfs.utils.pfsConfigUtils import tweakTargetPosition
+import ics.utils.cmd as cmdUtils
 
 reload(vis)
 
@@ -744,6 +745,14 @@ class FpsCmd(object):
         stepsize = cmd.cmd.keywords['stepsize'].values[0]
         visit = self.actor.visitor.setOrGetVisit(cmd)
 
+        # Setting MCS 'fMethod' to 'previous'
+        cmdString = 'switchFMethod fMethod=previous'
+        cmdVar = self.actor.cmdr.call(actor='mcs', cmdStr=cmdString,
+                                      forUserCmd=cmd, timeLim=60)
+        if cmdVar.didFail:
+            cmd.fail(f'text="Setting MCS fMethod failed: {cmdUtils.interpretFailure(cmdVar)}"')
+            raise RuntimeError(f'FAILED to setting mcs FiberID mode!')
+        
         group = cmd.cmd.keywords['cobraGroup'].values[0]
 
         slowMap = 'slowMap' in cmdKeys
@@ -778,6 +787,16 @@ class FpsCmd(object):
             if fastMap is True:
                 newXml = f'{day}-theta-fast.xml'
                 cmd.inform(f'text="Fast motor map is {newXml}"')
+        
+        # Switching MCS 'fMethod' back to 'previous'
+        cmdString = 'switchFMethod fMethod=previous'
+        cmdVar = self.actor.cmdr.call(actor='mcs', cmdStr=cmdString,
+                                      forUserCmd=cmd, timeLim=60)
+        if cmdVar.didFail:
+            cmd.fail(f'text="Setting MCS fMethod failed: {cmdUtils.interpretFailure(cmdVar)}"')
+            raise RuntimeError(f'FAILED to setting mcs FiberID mode!')
+
+
 
         cmd.finish(f'Motor map sequence finished')
 
