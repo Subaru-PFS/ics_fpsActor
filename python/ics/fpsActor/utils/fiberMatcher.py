@@ -183,9 +183,9 @@ class FiberMatcher:
         merged = matchDf.merge(mcsData, on="spot_id", how="left")
         return merged
 
-    def cobraMatch(self, visit, iteration=0):
+    def cobraMatch(self, visit, iteration=0, searchRadius0=2.0, searchRadius=1.0):
         """Return cobra-only match table with correct columns, padding, and dtypes (like getCobraMatchData)."""
-        matches = self.match(visit, iteration)
+        matches = self.match(visit, iteration, searchRadius0=searchRadius0, searchRadius=searchRadius)
         cobraMatch = matches[matches.fiber_type == "cobra"].copy()
 
         # Add cobra_id

@@ -90,7 +90,7 @@ class FpsCmd(object):
             ('moveToPfsDesign',
              '<designId> [@twoStepsOff] [@shortExpOff] [@goHome] [@noTweak] [<visit>] [<expTime>] [<iteration>] [<tolerance>] [<maskFile>]',
              self.moveToPfsDesign),
-            ('moveToSafePosition', '[<expTime>] [<visit>] [<tolerance>] [@noHome]', self.moveToSafePosition),
+            ('moveToSafePosition', '[<expTime>] [<visit>] [<tolerance>] [<phiAngle>] [<thetaAngle>] [@noHome]', self.moveToSafePosition),
             ('makeMotorMap', '@(phi|theta) <stepsize> <repeat> [<totalsteps>] [@slowOnly] [@forceMove] [<visit>]',
              self.makeMotorMap),
             ('makeMotorMapGroups', '@(phi|theta) <stepsize> <repeat> [@slowMap] [@fastMap] [<cobraGroup>] [<visit>]',
@@ -151,6 +151,8 @@ class FpsCmd(object):
                                         keys.Key("expTime", types.Float(), help="Seconds for exposure"),
                                         keys.Key("theta", types.Float(), help="Distance to move theta"),
                                         keys.Key("phi", types.Float(), help="Distance to move phi"),
+                                        keys.Key("thetaAngle", types.Float(), help="Angle (deg) to move theta to"),
+                                        keys.Key("phiAngle", types.Float(), help="Angle (deg) to move phi to"),
                                         keys.Key("board", types.Int(), help="board index 1-84"),
                                         keys.Key("stepsPerMove", types.Int(),
                                                  help="number of steps per move"),
@@ -753,8 +755,6 @@ class FpsCmd(object):
             cmd.fail(f'text="Setting MCS fMethod failed: {cmdUtils.interpretFailure(cmdVar)}"')
             raise RuntimeError(f'FAILED to setting mcs FiberID mode!')
         
-        group = cmd.cmd.keywords['cobraGroup'].values[0]
-
         slowMap = 'slowMap' in cmdKeys
         fastMap = 'fastMap' in cmdKeys
 
@@ -765,31 +765,34 @@ class FpsCmd(object):
         day = time.strftime('%Y-%m-%d')
         if phi is True:
             cmd.inform(f'text="Build phi motor map AT ONCE for avoiding dots"')
+            eng.setPhiMode()
 
             if slowMap is True:
                 newXml = f'{day}-phi-slow.xml'
                 cmd.inform(f'text="Slow motor map is {newXml}"')
-                eng.buildPhiMotorMaps(newXml, steps=stepsize, repeat=repeat, fast=False, tries=12, homed=True)
+                eng.buildPhiMotorMaps(newXml, steps=stepsize, repeat=repeat, fast=False,
+                                      tries=12, homed=False)
 
             if fastMap is True:
                 newXml = f'{day}-phi-fast.xml'
                 cmd.inform(f'text="Fast motor map is {newXml}"')
 
         if theta is True:
+            group = cmd.cmd.keywords['cobraGroup'].values[0]
             cmd.inform(f'text="Build theta motor map in groups for avoiding dots"')
 
             if slowMap is True:
                 newXml = f'{day}-theta-slow.xml'
                 cmd.inform(f'text="Slow motor map is {newXml}"')
                 eng.buildThetaMotorMaps(newXml, steps=stepsize, group=group, repeat=repeat,
-                                        fast=False, tries=12, homed=True)
+                                        fast=False, tries=12, homed=False)
 
             if fastMap is True:
                 newXml = f'{day}-theta-fast.xml'
                 cmd.inform(f'text="Fast motor map is {newXml}"')
         
         # Switching MCS 'fMethod' back to 'previous'
-        cmdString = 'switchFMethod fMethod=previous'
+        cmdString = 'switchFMethod fMethod=target'
         cmdVar = self.actor.cmdr.call(actor='mcs', cmdStr=cmdString,
                                       forUserCmd=cmd, timeLim=60)
         if cmdVar.didFail:
@@ -1276,10 +1279,12 @@ class FpsCmd(object):
         visit = self.actor.visitor.setOrGetVisit(cmd)
         expTime = cmdKeys['expTime'].values[0] if 'expTime' in cmdKeys else None
         tolerance = cmdKeys['tolerance'].values[0] if 'tolerance' in cmdKeys else 0.1
+        phiAngle = cmdKeys['phiAngle'].values[0] if 'phiAngle' in cmdKeys else 80
+        thetaAngle = cmdKeys['thetaAngle'].values[0] if 'thetaAngle' in cmdKeys else 60
         goHome = 'noHome' not in cmdKeys
 
-        thetas = np.full(len(self.cc.goodIdx), np.deg2rad(60))
-        phis = np.full(len(self.cc.goodIdx), np.deg2rad(60))
+        thetas = np.full(len(self.cc.goodIdx), np.deg2rad(thetaAngle))
+        phis = np.full(len(self.cc.goodIdx), np.deg2rad(phiAngle))
 
         cobras = self.cc.allCobras[self.cc.goodIdx]
         targets = self.cc.pfi.anglesToPositions(cobras, thetas, phis)
