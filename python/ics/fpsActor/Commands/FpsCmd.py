@@ -1536,8 +1536,33 @@ class FpsCmd(object):
         self.cc.connect(False)
 
         # Saving information for book keeping.
-        np.save(f'{self.cc.runManager.dataDir}/targets', filteredTargets)
-        cmd.inform(f'text="Saving targets list to file {self.cc.runManager.dataDir}/targets.npy."')
+        dataPath = pathlib.Path(self.cc.runManager.dataDir)
+        np.save(f'{dataPath}/targets', filteredTargets)
+        cmd.inform(f'text="Saving targets list to file {dataPath}/targets.npy."')
+
+        filtering_records = []
+        for idx in np.setdiff1d(np.arange(len(self.cc.nCobras)), goodIdx):
+            filtering_records.append({'cobra_id': idx, 'step': 'mask file', 'reason': 'excluded_by_mask'})
+        for idx in isNan:
+            filtering_records.append({'cobra_id': idx, 'step': 'Not Assigned', 'reason': 'nan_target'})
+        for idx in invalidOriginalIdx:
+            filtering_records.append({'cobra_id': idx, 'step': 'angle_solve', 'reason': 'no_valid_solution'})
+        for idx in interfering_cobra_indices:
+            filtering_records.append({'cobra_id': idx, 'step': 'fiducial_check', 'reason': 'interference'})
+
+        df_log = pd.DataFrame(filtering_records)
+        df_log.to_csv(f'{dataPath}/cobra_filtering_log.csv', index=False)
+
+        np.savez(f'{dataPath}/cobra_filtering.npz',
+                excluded_by_mask=np.setdiff1d(np.arange(len(self.cc.nCobras)), goodIdx),
+                nan_targets=isNan,
+                invalid_solutions=invalidOriginalIdx,
+                fiducial_interference=interfering_cobra_indices,
+                not_move_mask=notMoveMask,
+                final_moving_cobras=filteredGoodIdx)
+
+        cmd.inform(f'text="Saved filtering data: {len(filtering_records)} exclusions logged"')
+
 
         # adjust theta angles that is too closed to the CCW hard stops
         thetaMarginCCW = 0.1
