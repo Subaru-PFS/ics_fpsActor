@@ -1524,7 +1524,7 @@ class FpsCmd(object):
         self.cc.connect(False)
 
         # Saving information for book keeping.
-        np.save(f'{self.cc.runManager.dataDir}/targets', targets)
+        np.save(f'{self.cc.runManager.dataDir}/targets', filteredTargets)
         cmd.inform(f'text="Saving targets list to file {self.cc.runManager.dataDir}/targets.npy."')
 
         # adjust theta angles that is too closed to the CCW hard stops
