@@ -1440,16 +1440,21 @@ class FpsCmd(object):
         targets, isNan = pfsConfigUtils.makeTargetsArray(pfsConfig)
         # setting NaN targets to centers 
         targets[isNan] = self.cc.calibModel.centers[isNan] 
-
-        cmd.inform(f'text="Setting good cobra index"')
+        cmd.inform(f'text="There are {len(isNan)} NaN targets in the design."')
+        
         # loading mask file and moving only cobra with bitMask==1
+        cmd.inform(f'text="Setting good cobra index"')
         goodIdx = self.loadGoodIdx(maskFile)
-
         targets = targets[goodIdx]
         cobras = self.cc.allCobras[goodIdx]
+        excludedByMask = np.setdiff1d(np.arange(self.cc.nCobra), goodIdx)
+        cmd.inform(f'text="Filtering: {len(excludedByMask)} cobras excluded by mask file, {len(goodIdx)} remaining"')
+       
 
         thetaSolution, phiSolution, flags = self.cc.pfi.positionsToAngles(cobras, targets)
         invalid = (flags[:,0] & self.cc.pfi.SOLUTION_OK) == 0
+        invalidGoodIdx = np.where(invalid)[0]         # in the range of  goodIdx
+        invalidOriginalIdx = goodIdx[invalidGoodIdx]   # mapping to total cobra index
 
         if not np.all(invalid):
             # raise RuntimeError(f"Given positions are invalid: {np.where(valid)[0]}")
@@ -1462,6 +1467,7 @@ class FpsCmd(object):
 
         # Checking the interference with the fiducial fiber
         interfering_cobra_indices = self.cc.checkFiducialInterference(thetas, phis)
+        cmd.inform(f'text="{len(interfering_cobra_indices)} cobras interfere with fiducial fibers"')
 
         # Combine isNan indices and interfering cobra indices to create notMoveMask
         notMoveMask = np.zeros(len(self.cc.allCobras), dtype=bool)
@@ -1478,7 +1484,15 @@ class FpsCmd(object):
         filteredThetas = thetas[~notMoveMask[goodIdx]]
         filteredPhis = phis[~notMoveMask[goodIdx]]
 
-        cmd.inform(f'text="Created notMoveMask: {np.sum(isNan)} NaN targets + {len(interfering_cobra_indices)} interfering cobras = {np.sum(notMoveMask)} total cobras to exclude"')
+        # Detailed statistics of filtered cobra
+        cmd.inform(f'text="=== Filtering Summary ==="')
+        cmd.inform(f'text="  After mask filtering: {len(goodIdx)}"')
+        cmd.inform(f'text="  NaN targets: {len(isNan)}"')
+        cmd.inform(f'text="  Invalid solutions: {len(invalidOriginalIdx)}"')
+        cmd.inform(f'text="  Fiducial interference: {len(interfering_cobra_indices)}"')
+        cmd.inform(f'text="  Final cobras to move: {len(filteredGoodIdx)}"')
+        cmd.inform(f'text="========================"')
+
 
         # Here we start to deal with target table
         cmd.inform(f'text="Handling the cobra target table."')
@@ -1512,11 +1526,9 @@ class FpsCmd(object):
             cobraTargetTable = najaVenator.CobraTargetTable(visit, iteration, self.cc.calibModel, designId, goHome=False)
 
 
-        #targetTable = traj.calculateFiberPositions(self.cc)
 
         cobraTargetTable.makeTargetTable(moves, self.cc, goodIdx)
         cobraTargetTable.writeTargetTable()
-
 
 
         # Getting a new directory for this operation by running PFI connection using cobraCoach.
