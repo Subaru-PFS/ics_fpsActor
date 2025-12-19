@@ -7,7 +7,7 @@ import pfs.utils.coordinates.updateTargetPosition as updateTargetPosition
 import pfs.utils.ingestPfsDesign as ingestPfsDesign
 import pfs.utils.pfsConfigUtils as pfsConfigUtils
 import pfs.utils.pfsDesignUtils as pfsDesignUtils
-from opdb import opdb
+from pfs.utils.database import opdb
 from pfs.datamodel import PfsConfig, FiberStatus, TargetType
 from pfs.utils.fiberids import FiberIds
 from pfs.utils.versions import getVersion
@@ -88,8 +88,8 @@ def finalize(pfsConfig, calibModel, cmd=None, noMatchStatus=FiberStatus.BLACKSPO
               f'WHERE cobra_match.pfs_visit_id={visitId} AND iteration=(select max(cm2.iteration) from cobra_match cm2 WHERE cm2.pfs_visit_id = {visitId}) ' \
               'order by cobra_id asc'
 
-        db = opdb.OpDB(hostname="db-ics", username="pfs", dbname="opdb")
-        lastIteration = db.fetch_query(sql)
+        db = opdb.OpDB()
+        lastIteration = db.query_dataframe(sql)
         return lastIteration
 
     logger = logging.getLogger('pfsConfig')

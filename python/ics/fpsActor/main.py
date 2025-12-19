@@ -54,6 +54,7 @@ class Visitor(object):
         if 'visit' in cmdKeys:
             self.visit = cmdKeys['visit'].values[0]
             self.frameSeq = 0
+            cmd.warn(f'text="using visit {self.visit} from command"')
         else:
             self._getNewVisit()
 

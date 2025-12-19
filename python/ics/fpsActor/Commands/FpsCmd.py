@@ -28,7 +28,7 @@ from ics.fpsActor import najaVenator
 from ics.fpsActor.utils import display as vis
 from ics.fpsActor.utils.hotRoach import HotRoachDriver
 from ics.fpsActor.utils.fiberMatcher import FiberMatcher
-from opdb import opdb
+from pfs.utils.database import opdb
 from pfs.datamodel import FiberStatus
 from pfs.utils import butler
 from pfs.utils.pfsConfigUtils import tweakTargetPosition
@@ -112,7 +112,8 @@ class FpsCmd(object):
             ('testDotMove', '[<stepsPerMove>]', self.testDotMove),
             ('hideCobras', '[<visit>] [<nMcsIteration>] [<nSpsIteration>] [<stepSizeForScaling>]', self.driveHotRoach),
             ('driveHotRoachOpenLoop', '<nSpsIteration>', self.driveHotRoachOpenLoop),
-            ('driveHotRoachCloseLoop', '<maskFile> <nSpsIteration>', self.driveHotRoachCloseLoop)
+            ('driveHotRoachCloseLoop', '<maskFile> <nSpsIteration>', self.driveHotRoachCloseLoop),
+            ('setDb', '[<host>] [<user>] [<port>] [<dbname>]', self.setDb),
         ]
 
         # Define typed command arguments for the above commands.
@@ -166,7 +167,13 @@ class FpsCmd(object):
                                                  help="number of mcsIteration for finding edge of the dot"),
                                         keys.Key("nSpsIteration", types.Int(),
                                                  help="number of spsIteration for finding center of the dot"),
-                                        keys.Key("applyScaling", types.String(), help="scaling filename for cobra"),
+                                        keys.Key("applyScaling", types.String(),
+                                                 help="scaling filename for cobra"),
+
+                                        keys.Key("host", types.String(), help="opdb hostname"),
+                                        keys.Key("user", types.String(), help="opdb user name"),
+                                        keys.Key("dbname", types.String(), help="opdb db name"),
+                                        keys.Key("port", types.Int(), help="opdb port"),
                                         )
 
         self.logger = logging.getLogger('fps')
@@ -175,12 +182,12 @@ class FpsCmd(object):
         self.fpgaHost = 'fpga'
         self.p = None
         self.simDataPath = None
+        self._db = None
 
         self.xml = None
 
         if self.cc is not None:
             eng.setCobraCoach(self.cc)
-
 
         self.atPhis = None
         self.atThetas = None
@@ -194,36 +201,63 @@ class FpsCmd(object):
     def cc(self, newValue):
         self.actor.cc = newValue
 
-    @property
-    def db(self):
-        return self.actor.db
+    def setDb(self, cmd):
+        """Set parts of the db URI.
 
-    @db.setter
-    def db(self, newValue):
-        self.actor.db = newValue
+        Override the pfs_instadata config parts of the db URI. If not are set
+        reverts to the default values.
+        """
+        config = self.actor.actorConfig
+        cmdKeys = cmd.cmd.keywords
 
-    def connectToDB(self, cmd):
-        """connect to the database if not already connected"""
+        if 'user' in cmdKeys:
+            user = str(cmdKeys['user'].values[0])
+        else:
+            user = config['db']['user']
 
-        if self.db is not None:
-            return self.db
+        if 'host' in cmdKeys:
+            host = str(cmdKeys['host'].values[0])
+        else:
+            host = config['db']['host']
+
+        if 'port' in cmdKeys:
+            port = int(cmdKeys['port'].values[0])
+        else:
+            port = config['db']['port']
+
+        if 'dbname' in cmdKeys:
+            dbname = str(cmdKeys['dbname'].values[0])
+        else:
+            dbname = config['db']['dbname']
+
+        opdb.OpDB.set_default_connection(host=host,
+                                         user=user,
+                                         port=port,
+                                         dbname=dbname)
+        dbConfig = (user, host, port, dbname)
+
+        cmd.finish(f'text="set db config to {dbConfig}')
+
+    def connectToDB(self, cmd=None):
+        """connect to the database if not already connected.
+
+        ALL code should use this method to connect to the database."""
+
+        if self._db is not None:
+            return self._db
+
+        if cmd is None:
+            cmd = self.actor.bcast
 
         try:
-            dbConfig = self.actor.actorConfig['opdb']
-        except KeyError:
-            dbConfig = dict()
-
-        try:
-            _db = opdb.OpDB(hostname='db-ics',port='5432',dbname='opdb',username='pfs')
-            _db.connect()
-        except:
-            raise RuntimeError("unable to connect to the database")
+            self._db = opdb.OpDB()
+        except Exception as e:
+            raise RuntimeError(f"unable to connect to the database: {e}")
 
         if cmd is not None:
-            cmd.inform('text="Connected to Database"')
+            cmd.inform(f'text="Connected to Database at {self._db.dsn}"')
 
-        self.db = _db
-        return self.db
+        return self._db
 
     def fpgaSim(self, cmd):
         """Turn on/off simulalation mode of FPGA"""
@@ -279,7 +313,8 @@ class FpsCmd(object):
 
         self.logger.info(f'Input XML file = {xml}')
 
-        cmd.inform(f"text='Connecting to %s FPGA'" % ('real' if self.fpgaHost == 'fpga' else 'simulator'))
+        cmd.inform(f"text='Connecting to %s FPGA, simDataPath=%s'" % ('real' if self.fpgaHost == 'fpga' else 'simulator',
+                                                                      self.simDataPath))
         if self.simDataPath is None:
             self.cc = cobraCoach.CobraCoach(self.fpgaHost, loadModel=False, actor=self.actor, cmd=cmd)
         else:
@@ -1422,7 +1457,6 @@ class FpsCmd(object):
         cmd.inform(f'text="Running moveToPfsDesign with tolerance={tolerance} iteration={iteration} "')
         cmd.inform(f'text="moveToPfsDesign with twoSteps={twoSteps} goHome={goHome}"')
 
-        # import pdb; pdb.set_trace()
         visit = self.actor.visitor.setOrGetVisit(cmd)
 
         # Loading pfsDesign file.
@@ -1603,8 +1637,10 @@ class FpsCmd(object):
         cmd.inform(f'text="maxIteration from cobra_match : {int(maxIteration)}"')
 
         # write pfsConfig to disk.
-        pfsConfigUtils.writePfsConfig(pfsConfig, cmd=cmd)
-
+        if not self.cc.simMode:
+            pfsConfigUtils.writePfsConfig(pfsConfig, cmd=cmd)
+        else:
+            cmd.warn('text="in simulation mode so not writing pfsConfig file"')
         # insert into opdb.
         pfsConfigUtils.ingestPfsConfig(pfsConfig,
                                        allocated_at='now',
