@@ -1440,14 +1440,16 @@ class FpsCmd(object):
         targets, isNan = pfsConfigUtils.makeTargetsArray(pfsConfig)
         # setting NaN targets to centers 
         targets[isNan] = self.cc.calibModel.centers[isNan] 
-        cmd.inform(f'text="There are {len(isNan)} NaN targets in the design."')
+        print(len(isNan), type(isNan))
+        print(isNan)
+        cmd.inform(f'text="There are {np.sum(isNan)} NaN targets in the design."')
         
         # loading mask file and moving only cobra with bitMask==1
         cmd.inform(f'text="Setting good cobra index"')
         goodIdx = self.loadGoodIdx(maskFile)
         targets = targets[goodIdx]
         cobras = self.cc.allCobras[goodIdx]
-        excludedByMask = np.setdiff1d(np.arange(self.cc.nCobra), goodIdx)
+        excludedByMask = np.setdiff1d(np.arange(self.cc.nCobras), goodIdx)
         cmd.inform(f'text="Filtering: {len(excludedByMask)} cobras excluded by mask file, {len(goodIdx)} remaining"')
        
 
@@ -1487,7 +1489,7 @@ class FpsCmd(object):
         # Detailed statistics of filtered cobra
         cmd.inform(f'text="=== Filtering Summary ==="')
         cmd.inform(f'text="  After mask filtering: {len(goodIdx)}"')
-        cmd.inform(f'text="  NaN targets: {len(isNan)}"')
+        cmd.inform(f'text="  NaN targets: {np.sum(isNan)}"')
         cmd.inform(f'text="  Invalid solutions: {len(invalidOriginalIdx)}"')
         cmd.inform(f'text="  Fiducial interference: {len(interfering_cobra_indices)}"')
         cmd.inform(f'text="  Final cobras to move: {len(filteredGoodIdx)}"')
@@ -1541,7 +1543,7 @@ class FpsCmd(object):
         cmd.inform(f'text="Saving targets list to file {dataPath}/targets.npy."')
 
         filtering_records = []
-        for idx in np.setdiff1d(np.arange(len(self.cc.nCobras)), goodIdx):
+        for idx in np.setdiff1d(np.arange(self.cc.nCobras), goodIdx):
             filtering_records.append({'cobra_id': idx, 'step': 'mask file', 'reason': 'excluded_by_mask'})
         for idx in isNan:
             filtering_records.append({'cobra_id': idx, 'step': 'Not Assigned', 'reason': 'nan_target'})
@@ -1553,8 +1555,10 @@ class FpsCmd(object):
         df_log = pd.DataFrame(filtering_records)
         df_log.to_csv(f'{dataPath}/cobra_filtering_log.csv', index=False)
 
+        # The notDoneMask is selected based on goodIdx. Has to involve self.cc.badIdx
+        notMoveMask[self.cc.badIdx] = True
         np.savez(f'{dataPath}/cobra_filtering.npz',
-                excluded_by_mask=np.setdiff1d(np.arange(len(self.cc.nCobras)), goodIdx),
+                excluded_by_mask=np.setdiff1d(np.arange(self.cc.nCobras), goodIdx),
                 nan_targets=isNan,
                 invalid_solutions=invalidOriginalIdx,
                 fiducial_interference=interfering_cobra_indices,
