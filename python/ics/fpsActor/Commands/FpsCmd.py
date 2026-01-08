@@ -1440,6 +1440,7 @@ class FpsCmd(object):
         maskFile = cmdKeys['maskFile'].values[0] if 'maskFile' in cmdKeys else None
         iteration = cmdKeys['iteration'].values[0] if 'iteration' in cmdKeys else 12
         tolerance = cmdKeys['tolerance'].values[0] if 'tolerance' in cmdKeys else 0.01
+        fastThreshold = cmdKeys['fastThreshold'].values[0] if 'fastThreshold' in cmdKeys else 99.9
         try:
             notConvergedDistanceThreshold = self.actor.actorConfig['pfsConfig']['notConvergedDistanceThreshold']
             # Just in case, we use large tolerance.
@@ -1534,7 +1535,7 @@ class FpsCmd(object):
         cmd.inform(f'text="Handling the cobra target table."')
         self.cc.trajectoryMode = True
         traj, moves = eng.createTrajectory(goodIdx, thetas, phis,
-                                           tries=iteration, twoSteps=True, threshold=2.0, timeStep=500)
+                                           tries=iteration, twoSteps=True, threshold=fastThreshold, timeStep=500)
         moves[:,2]['position'] = targets
 
         cmd.inform(f'text="Reset the current angles for cobra arms."')
@@ -1644,7 +1645,7 @@ class FpsCmd(object):
             dataPath, atThetas, atPhis, moves[0, :, :2] = \
                 eng.moveThetaPhi(cIds, thetasVia, phisVia, relative=False, local=True, tolerance=tolerance,
                                  tries=2, homed=goHome, newDir=False, thetaFast=True, phiFast=True,
-                                 threshold=2.0, thetaMargin=np.deg2rad(thetaMarginDeg))
+                                 threshold=fastThreshold, thetaMargin=np.deg2rad(thetaMarginDeg))
 
             self.cc.expTime = expTime
             self.cc.useScaling, self.cc.maxSegments, self.cc.maxTotalSteps = _useScaling, _maxSegments, _maxTotalSteps
@@ -1654,7 +1655,7 @@ class FpsCmd(object):
                 eng.moveThetaPhi(cIds, filteredThetas, filteredPhis, relative=False, local=True, tolerance=tolerance,  # Changed from thetas, phis
                                  tries=iteration - 2,
                                  homed=False,
-                                 newDir=False, thetaFast=True, phiFast=True, threshold=2.0,
+                                 newDir=False, thetaFast=True, phiFast=True, threshold=fastThreshold,
                                  thetaMargin=np.deg2rad(thetaMarginDeg))
 
         else:
@@ -1662,7 +1663,7 @@ class FpsCmd(object):
             dataPath, atThetas, atPhis, moves = eng.moveThetaPhi(cIds, filteredThetas, filteredPhis, 
                                                          relative=False, local=True, tolerance=tolerance,
                                                          tries=iteration, homed=goHome, newDir=False, 
-                                                         thetaFast=False, phiFast=False, threshold=2.0,
+                                                         thetaFast=False, phiFast=False, threshold=fastThreshold,
                                                          thetaMargin=np.deg2rad(thetaMarginDeg))
         self.atThetas = atThetas
         self.atPhis = atPhis
