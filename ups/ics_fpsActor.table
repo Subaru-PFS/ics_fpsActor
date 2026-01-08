@@ -1,6 +1,5 @@
 setupRequired(ics_actorkeys)
 setupRequired(ics_cobraCharmer)
-setupRequired(spt_operational_database)
 setupRequired(datamodel)
 setupRequired(pfs_utils)
 
