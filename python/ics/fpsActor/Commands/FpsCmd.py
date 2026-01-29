@@ -957,7 +957,6 @@ class FpsCmd(object):
 
         # making base pfsConfig from design file, fetching additional keys from gen2.
         pfsConfig = self.getPfsConfig(cmd, visit=visit, pfsDesign=pfsDesign)
-        cmd.inform(f'pfsConfig=0x{pfsDesign.pfsDesignId:016x},{visit},inProgress')
 
         maxIteration = pfsConfigUtils.finalize(pfsConfig, self.cc.calibModel, cmd=cmd)
 
@@ -1006,6 +1005,9 @@ class FpsCmd(object):
         # Only grab a visit if we need one for the PFSC and pfsConfig files
         if useMCS:
             visit = self.actor.visitor.setOrGetVisit(cmd)
+            cmd.inform(f'pfsConfig=0x{pfsDesign.pfsDesignId:016x},{visit},inProgress')
+        else:
+            cmd.inform(f'pfsConfig=0x{pfsDesign.pfsDesignId:016x},{-1},inProgress')
 
         start = time.time()
 
@@ -1037,7 +1039,6 @@ class FpsCmd(object):
         if useMCS:
             # making base pfsConfig from design file, fetching additional keys from gen2.
             pfsConfig = self.getPfsConfig(cmd, visit=visit, pfsDesign=pfsDesign)
-            cmd.inform(f'pfsConfig=0x{pfsDesign.pfsDesignId:016x},{visit},inProgress')
 
             maxIteration = pfsConfigUtils.finalize(pfsConfig, self.cc.calibModel, cmd=cmd,
                                                    atThetas=self.atThetas, atPhis=self.atPhis)
@@ -1610,8 +1611,10 @@ class FpsCmd(object):
         cmd.inform(f'text="Reset the motor scaling factor."')
         self.cc.pfi.resetMotorScaling(self.cc.allCobras)
 
+        # Convergence is in progress.
+        cmd.inform(f'pfsConfig=0x{designId:016x},{visit},inProgress')
+
         if twoSteps:
-            cmd.inform(f'pfsConfig=0x{designId:016x},{visit},inProgress')
             cIds = filteredGoodIdx  # Changed from goodIdx to filteredGoodIdx
 
             moves = np.zeros((1, len(cIds), iteration), dtype=eng.moveDtype)
