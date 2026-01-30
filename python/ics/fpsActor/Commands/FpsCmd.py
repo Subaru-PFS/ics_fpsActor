@@ -1011,29 +1011,39 @@ class FpsCmd(object):
 
         start = time.time()
 
+        # Deactivating both theta and phi.
+        thetaEnable = phiEnable = False
+        thetaAngles = phiAngles = None
+
         if phi:
             eng.setPhiMode()
-            self.cc.moveToHome(goodCobra, phiEnable=True, noMCS=noMCSexposure, thetaCCW=thetaCCW)
+            phiEnable = True
 
         elif theta:
             eng.setThetaMode()
-            self.cc.moveToHome(goodCobra, thetaEnable=True, noMCS=noMCSexposure, thetaCCW=thetaCCW)
+            thetaEnable = True
 
         elif allfiber:
             eng.setNormalMode()
-            diff = self.cc.moveToHome(goodCobra, thetaEnable=True, phiEnable=True,
-                                      thetaCCW=thetaCCW, noMCS=noMCSexposure)
-            if useMCS:
-                self.logger.info(f'Averaged position offset compared with cobra center = {np.mean(diff)}')
+            thetaEnable = phiEnable = True
 
-        # Since the cobra is commanded to be at home.  We need to set the atThetas and atPhis.
-        thetaHome = ((self.cc.calibModel.tht1 - self.cc.calibModel.tht0 + np.pi) % (np.pi * 2) + np.pi)
-        self.atThetas = np.zeros(len(self.cc.allCobras)) + thetaHome
-        self.atPhis = np.zeros(len(self.cc.allCobras))
+        diff = self.cc.moveToHome(goodCobra, thetaEnable=thetaEnable, phiEnable=phiEnable,
+                                  thetaCCW=thetaCCW, noMCS=noMCSexposure)
 
-        # Set the atThetas and atPhis to the home position.
-        self.cc.setCurrentAngles(self.cc.allCobras, thetaAngles=thetaHome, phiAngles=0)
-        cmd.inform(f'text="Setting the thetaAngle and phiAngle to the home position."')
+        if useMCS and thetaEnable and phiEnable and diff is not None:
+            self.logger.info(f'Averaged position offset compared with cobra center = {np.mean(diff)}')
+
+        if phiEnable:
+            phiAngles = np.zeros(len(self.cc.allCobras))
+            self.atPhis = phiAngles.copy()
+            cmd.inform(f'text="Setting phiAngle to the home position."')
+
+        if thetaEnable:
+            thetaAngles = ((self.cc.calibModel.tht1 - self.cc.calibModel.tht0 + np.pi) % (np.pi * 2) + np.pi)
+            self.atThetas = thetaAngles.copy()
+            cmd.inform(f'text="Setting thetaAngle to the home position."')
+
+        self.cc.setCurrentAngles(self.cc.allCobras, thetaAngles=thetaAngles, phiAngles=phiAngles)
 
         # Only generate pfsConfigs if we take an image which needs them.
         if useMCS:
