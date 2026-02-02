@@ -7,8 +7,8 @@ import pfs.utils.coordinates.updateTargetPosition as updateTargetPosition
 import pfs.utils.ingestPfsDesign as ingestPfsDesign
 import pfs.utils.pfsConfigUtils as pfsConfigUtils
 import pfs.utils.pfsDesignUtils as pfsDesignUtils
+from pfs.datamodel import PfsConfig, FiberStatus, TargetType, InstrumentStatusFlag
 from pfs.utils.database import opdb
-from pfs.datamodel import PfsConfig, FiberStatus, TargetType
 from pfs.utils.fiberids import FiberIds
 from pfs.utils.versions import getVersion
 from scipy.interpolate import griddata
@@ -72,7 +72,7 @@ def tweakTargetPosition(pfsConfig, cmd=None):
 
 
 def finalize(pfsConfig, calibModel, cmd=None, notConvergedDistanceThreshold=None,
-             NOT_MOVE_MASK=None, atThetas=None, atPhis=None):
+             NOT_MOVE_MASK=None, atThetas=None, atPhis=None, convergenceFailed=False):
     """Finalize pfsConfig after converging, updating pfiCenter, fiberStatus, ra, dec"""
 
     def fetchFinalConvergence(visitId):
@@ -98,9 +98,13 @@ def finalize(pfsConfig, calibModel, cmd=None, notConvergedDistanceThreshold=None
     lastIteration = fetchFinalConvergence(pfsConfig.visit)
 
     if not len(lastIteration):
+        raise RuntimeError(f"could not find cobra_match data for {pfsConfig.filename}")
+
+    # setting CONVERGENCE_FAILED bit.
+    if convergenceFailed:
+        pfsConfig.setInstrumentStatusFlag(InstrumentStatusFlag.CONVERGENCE_FAILED)
         if cmd:
-            cmd.warn(f'text="could not find cobra_match data for {pfsConfig.filename}"')
-        return None
+            cmd.warn('text="Convergence failed; Setting pfsConfig with CONVERGENCE_FAILED flag"')
 
     # Setting missing matches to NaNs.
     NO_MATCH_MASK = lastIteration.spot_id == -1
@@ -204,7 +208,7 @@ def writePfsConfig(pfsConfig, cmd=None):
     ret = pfsConfigUtils.writePfsConfig(pfsConfig)
 
     if cmd:
-        cmd.inform(f'text="{pfsConfig.filename} written to disk')
+        cmd.inform(f'text="{pfsConfig.filename} written to disk"')
 
     return ret
 

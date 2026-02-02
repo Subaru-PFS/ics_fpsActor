@@ -1595,70 +1595,80 @@ class FpsCmd(object):
 
         # Convergence is in progress.
         cmd.inform(f'pfsConfig=0x{designId:016x},{visit},inProgress')
+        try:
+            if twoSteps:
+                cIds = filteredGoodIdx  # Changed from goodIdx to filteredGoodIdx
 
-        if twoSteps:
-            cIds = filteredGoodIdx  # Changed from goodIdx to filteredGoodIdx
+                moves = np.zeros((1, len(cIds), iteration), dtype=eng.moveDtype)
 
-            moves = np.zeros((1, len(cIds), iteration), dtype=eng.moveDtype)
+                thetaRange = ((self.cc.calibModel.tht1 - self.cc.calibModel.tht0 + np.pi) % (np.pi * 2) + np.pi)[cIds]
+                phiRange = ((self.cc.calibModel.phiOut - self.cc.calibModel.phiIn) % (np.pi * 2))[cIds]
 
-            thetaRange = ((self.cc.calibModel.tht1 - self.cc.calibModel.tht0 + np.pi) % (np.pi * 2) + np.pi)[cIds]
-            phiRange = ((self.cc.calibModel.phiOut - self.cc.calibModel.phiIn) % (np.pi * 2))[cIds]
+                # limit phi angle for first two tries
+                limitPhi = np.pi / 3 - self.cc.calibModel.phiIn[cIds] - np.pi
+                thetasVia = np.copy(filteredThetas)  # Changed from thetas to filteredThetas
+                phisVia = np.copy(filteredPhis)  # Changed from phis to filteredPhis
+                for c in range(len(cIds)):
+                    if filteredPhis[c] > limitPhi[c]:  # Changed from phis[c] to filteredPhis[c]
+                        phisVia[c] = limitPhi[c]
+                        thetasVia[c] = filteredThetas[c] + (filteredPhis[c] - limitPhi[c]) / 2  # Changed accordingly
+                        if thetasVia[c] > thetaRange[c]:
+                            thetasVia[c] = thetaRange[c]
 
-            # limit phi angle for first two tries
-            limitPhi = np.pi / 3 - self.cc.calibModel.phiIn[cIds] - np.pi
-            thetasVia = np.copy(filteredThetas)  # Changed from thetas to filteredThetas
-            phisVia = np.copy(filteredPhis)  # Changed from phis to filteredPhis
-            for c in range(len(cIds)):
-                if filteredPhis[c] > limitPhi[c]:  # Changed from phis[c] to filteredPhis[c]
-                    phisVia[c] = limitPhi[c]
-                    thetasVia[c] = filteredThetas[c] + (filteredPhis[c] - limitPhi[c]) / 2  # Changed accordingly
-                    if thetasVia[c] > thetaRange[c]:
-                        thetasVia[c] = thetaRange[c]
+                _useScaling, _maxSegments, _maxTotalSteps = self.cc.useScaling, self.cc.maxSegments, self.cc.maxTotalSteps
+                self.cc.useScaling, self.cc.maxSegments, self.cc.maxTotalSteps = False, _maxSegments * 2, _maxTotalSteps * 2
+                cmd.inform(
+                    f'text="useScaling={self.cc.useScaling}, maxSegments={self.cc.maxSegments}, maxTotalSteps={self.cc.maxTotalSteps}"')
 
-            _useScaling, _maxSegments, _maxTotalSteps = self.cc.useScaling, self.cc.maxSegments, self.cc.maxTotalSteps
-            self.cc.useScaling, self.cc.maxSegments, self.cc.maxTotalSteps = False, _maxSegments * 2, _maxTotalSteps * 2
-            cmd.inform(
-                f'text="useScaling={self.cc.useScaling}, maxSegments={self.cc.maxSegments}, maxTotalSteps={self.cc.maxTotalSteps}"')
+                if shortExp is True:
+                    cmd.inform(f'text="Using 0.8 second exposure time for first three iteration."')
+                    self.cc.expTime = 0.8
+                else:
+                    cmd.inform(f'text="Using {expTime} second exposure time for first three iteration."')
+                    self.cc.expTime = expTime
 
-            if shortExp is True:
-                cmd.inform(f'text="Using 0.8 second exposure time for first three iteration."')
-                self.cc.expTime = 0.8
-            else:
-                cmd.inform(f'text="Using {expTime} second exposure time for first three iteration."')
+                cmd.inform(f'text="Cobra goHome is set to be {goHome}"')
+                dataPath, atThetas, atPhis, moves[0, :, :2] = \
+                    eng.moveThetaPhi(cIds, thetasVia, phisVia, relative=False, local=True, tolerance=tolerance,
+                                     tries=2, homed=goHome, newDir=False, thetaFast=True, phiFast=True,
+                                     threshold=fastThreshold, thetaMargin=np.deg2rad(thetaMarginDeg))
+
                 self.cc.expTime = expTime
+                self.cc.useScaling, self.cc.maxSegments, self.cc.maxTotalSteps = _useScaling, _maxSegments, _maxTotalSteps
+                cmd.inform(
+                    f'text="useScaling={self.cc.useScaling}, maxSegments={self.cc.maxSegments}, maxTotalSteps={self.cc.maxTotalSteps}"')
 
-            cmd.inform(f'text="Cobra goHome is set to be {goHome}"')
-            dataPath, atThetas, atPhis, moves[0, :, :2] = \
-                eng.moveThetaPhi(cIds, thetasVia, phisVia, relative=False, local=True, tolerance=tolerance,
-                                 tries=2, homed=goHome, newDir=False, thetaFast=True, phiFast=True,
-                                 threshold=fastThreshold, thetaMargin=np.deg2rad(thetaMarginDeg))
+                dataPath, atThetas, atPhis, moves[0, :, 2:] = \
+                    eng.moveThetaPhi(cIds, filteredThetas, filteredPhis, relative=False, local=True,
+                                     tolerance=tolerance,
+                                     # Changed from thetas, phis
+                                     tries=iteration - 2,
+                                     homed=False,
+                                     newDir=False, thetaFast=True, phiFast=True, threshold=fastThreshold,
+                                     thetaMargin=np.deg2rad(thetaMarginDeg))
 
-            self.cc.expTime = expTime
-            self.cc.useScaling, self.cc.maxSegments, self.cc.maxTotalSteps = _useScaling, _maxSegments, _maxTotalSteps
-            cmd.inform(
-                f'text="useScaling={self.cc.useScaling}, maxSegments={self.cc.maxSegments}, maxTotalSteps={self.cc.maxTotalSteps}"')
+            else:
+                cIds = filteredGoodIdx
+                dataPath, atThetas, atPhis, moves = eng.moveThetaPhi(cIds, filteredThetas, filteredPhis,
+                                                                     relative=False, local=True, tolerance=tolerance,
+                                                                     tries=iteration, homed=goHome, newDir=False,
+                                                                     thetaFast=False, phiFast=False,
+                                                                     threshold=fastThreshold,
+                                                                     thetaMargin=np.deg2rad(thetaMarginDeg))
+            self.atThetas = atThetas
+            self.atPhis = atPhis
 
-            dataPath, atThetas, atPhis, moves[0, :, 2:] = \
-                eng.moveThetaPhi(cIds, filteredThetas, filteredPhis, relative=False, local=True, tolerance=tolerance,
-                                 # Changed from thetas, phis
-                                 tries=iteration - 2,
-                                 homed=False,
-                                 newDir=False, thetaFast=True, phiFast=True, threshold=fastThreshold,
-                                 thetaMargin=np.deg2rad(thetaMarginDeg))
-
-        else:
-            cIds = filteredGoodIdx
-            dataPath, atThetas, atPhis, moves = eng.moveThetaPhi(cIds, filteredThetas, filteredPhis,
-                                                                 relative=False, local=True, tolerance=tolerance,
-                                                                 tries=iteration, homed=goHome, newDir=False,
-                                                                 thetaFast=False, phiFast=False,
-                                                                 threshold=fastThreshold,
-                                                                 thetaMargin=np.deg2rad(thetaMarginDeg))
-        self.atThetas = atThetas
-        self.atPhis = atPhis
-
-        # Saving moves array
-        np.save(dataPath / 'moves', moves)
+            # Saving moves array
+            np.save(dataPath / 'moves', moves)
+        except Exception:
+            self._finalizeWriteIngestPfsConfig(pfsConfig, cmd=cmd,
+                                               convergenceFailed=True,
+                                               notConvergedDistanceThreshold=notConvergedDistanceThreshold,
+                                               NOT_MOVE_MASK=notMoveMask,
+                                               converg_num_iter=iteration,
+                                               converg_elapsed_time=round(time.time() - start, 3),
+                                               converg_tolerance=tolerance)
+            raise
 
         self._finalizeWriteIngestPfsConfig(pfsConfig, cmd=cmd,
                                            notConvergedDistanceThreshold=notConvergedDistanceThreshold,
@@ -1670,12 +1680,24 @@ class FpsCmd(object):
         cmd.finish(f'text="We are at design position in {round(time.time() - start, 3)} seconds."')
 
     def _finalizeWriteIngestPfsConfig(self, pfsConfig, cmd,
-                                      notConvergedDistanceThreshold=None, NOT_MOVE_MASK=None,
+                                      convergenceFailed=False, notConvergedDistanceThreshold=None, NOT_MOVE_MASK=None,
                                       converg_num_iter=None, converg_elapsed_time=None, converg_tolerance=None):
         """Finalize pfsConfig, write to disk, ingest into opdb, and generate pfsConfig keyword."""
-        maxIteration = pfsConfigUtils.finalize(pfsConfig, self.cc.calibModel, cmd=cmd,
-                                               notConvergedDistanceThreshold=notConvergedDistanceThreshold,
-                                               NOT_MOVE_MASK=NOT_MOVE_MASK, atThetas=self.atThetas, atPhis=self.atPhis)
+        atThetas = None if convergenceFailed else self.atThetas
+        atPhis = None if convergenceFailed else self.atPhis
+
+        try:
+            maxIteration = pfsConfigUtils.finalize(pfsConfig, self.cc.calibModel, cmd=cmd,
+                                                   notConvergedDistanceThreshold=notConvergedDistanceThreshold,
+                                                   NOT_MOVE_MASK=NOT_MOVE_MASK,
+                                                   atThetas=atThetas, atPhis=atPhis,
+                                                   convergenceFailed=convergenceFailed)
+        except Exception as e:
+            if convergenceFailed:
+                cmd.warn(f'text="pfsConfigUtils.finalize failed with: {e}"')
+                return
+            raise
+
         # write pfsConfig to disk.
         if not self.cc.simMode:
             pfsConfigUtils.writePfsConfig(pfsConfig, cmd=cmd)
