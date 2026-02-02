@@ -71,7 +71,7 @@ def tweakTargetPosition(pfsConfig, cmd=None):
     return pfsConfig
 
 
-def finalize(pfsConfig, calibModel, cmd=None, noMatchStatus=FiberStatus.BLACKSPOT, notConvergedDistanceThreshold=None,
+def finalize(pfsConfig, calibModel, cmd=None, notConvergedDistanceThreshold=None,
              NOT_MOVE_MASK=None, atThetas=None, atPhis=None):
     """Finalize pfsConfig after converging, updating pfiCenter, fiberStatus, ra, dec"""
 
@@ -100,7 +100,7 @@ def finalize(pfsConfig, calibModel, cmd=None, noMatchStatus=FiberStatus.BLACKSPO
     if not len(lastIteration):
         if cmd:
             cmd.warn(f'text="could not find cobra_match data for {pfsConfig.filename}"')
-        return 0
+        return None
 
     # Setting missing matches to NaNs.
     NO_MATCH_MASK = lastIteration.spot_id == -1
@@ -150,8 +150,8 @@ def finalize(pfsConfig, calibModel, cmd=None, noMatchStatus=FiberStatus.BLACKSPO
     WITH_TARGET_MASK = lastIteration.targetType.isin([TargetType.SCIENCE, TargetType.SKY, TargetType.FLUXSTD])
     UNASSIGNED_TARGET_MASK = lastIteration.targetType == TargetType.UNASSIGNED
 
-    # Set fiberStatus for the not matched cobras, BLACKSPOT or NOTCONVERGED.
-    lastIteration.loc[FIBER_GOOD_MASK & NO_MATCH_MASK, 'fiberStatus'] = noMatchStatus
+    # Set fiberStatus to BLACKSPOT for the not matched cobras.
+    lastIteration.loc[FIBER_GOOD_MASK & NO_MATCH_MASK, 'fiberStatus'] = FiberStatus.BLACKSPOT
 
     # setting MASKED fiberStatus
     if NOT_MOVE_MASK is not None:
