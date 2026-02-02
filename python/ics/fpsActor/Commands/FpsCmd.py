@@ -958,18 +958,8 @@ class FpsCmd(object):
         # making base pfsConfig from design file, fetching additional keys from gen2.
         pfsConfig = self.getPfsConfig(cmd, visit=visit, pfsDesign=pfsDesign)
 
-        maxIteration = pfsConfigUtils.finalize(pfsConfig, self.cc.calibModel, cmd=cmd)
-
-        # write pfsConfig to disk.
-        pfsConfigUtils.writePfsConfig(pfsConfig, cmd=cmd)
-        # insert into opdb.
-        pfsConfigUtils.ingestPfsConfig(pfsConfig,
-                                       allocated_at='now',
-                                       converg_num_iter=maxIteration,
-                                       converg_elapsed_time=0,
-                                       cmd=cmd)
-
-        cmd.finish(f'pfsConfig=0x{pfsConfig.pfsDesignId:016x},{visit},Done')
+        self._finalizeWriteIngestPfsConfig(pfsConfig, cmd=cmd)
+        cmd.finish()
 
     def moveToHome(self, cmd):
         cmdKeys = cmd.cmd.keywords
@@ -1049,20 +1039,8 @@ class FpsCmd(object):
         if useMCS:
             # making base pfsConfig from design file, fetching additional keys from gen2.
             pfsConfig = self.getPfsConfig(cmd, visit=visit, pfsDesign=pfsDesign)
-
-            maxIteration = pfsConfigUtils.finalize(pfsConfig, self.cc.calibModel, cmd=cmd,
-                                                   atThetas=self.atThetas, atPhis=self.atPhis)
-
-            # write pfsConfig to disk.
-            pfsConfigUtils.writePfsConfig(pfsConfig, cmd=cmd)
-            # insert into opdb.
-            pfsConfigUtils.ingestPfsConfig(pfsConfig,
-                                        allocated_at='now',
-                                        converg_num_iter=maxIteration,
-                                        converg_elapsed_time=round(time.time() - start, 3),
-                                        cmd=cmd)
-
-            cmd.inform(f'pfsConfig=0x{pfsConfig.pfsDesignId:016x},{visit},Done')
+            self._finalizeWriteIngestPfsConfig(pfsConfig, cmd=cmd,
+                                               converg_elapsed_time=round(time.time() - start, 3))
 
         cmd.finish(f'text="Moved all arms back to home"')
 
@@ -1429,7 +1407,6 @@ class FpsCmd(object):
         cards = fits.getPfsConfigCards(self.actor, cmd, visit, expType='acquisition')
         return pfsConfigUtils.pfsConfigFromDesign(pfsDesign, visit, header=cards, maskFile=maskFile)
 
-
     def moveToPfsDesign(self, cmd):
         """ Move cobras to a PFS design. """
         thetaMarginDeg = 15.0
@@ -1455,7 +1432,7 @@ class FpsCmd(object):
         try:
             notConvergedDistanceThreshold = self.actor.actorConfig['pfsConfig']['notConvergedDistanceThreshold']
             # Just in case, we use large tolerance.
-            notConvergedDistanceThreshold = max(notConvergedDistanceThreshold, 5*tolerance)
+            notConvergedDistanceThreshold = max(notConvergedDistanceThreshold, 5 * tolerance)
         except KeyError:
             notConvergedDistanceThreshold = None
 
@@ -1484,12 +1461,12 @@ class FpsCmd(object):
             tweakTargetPosition(pfsConfig)
 
         targets, isNan = pfsConfigUtils.makeTargetsArray(pfsConfig)
-        # setting NaN targets to centers 
-        targets[isNan] = self.cc.calibModel.centers[isNan] 
+        # setting NaN targets to centers
+        targets[isNan] = self.cc.calibModel.centers[isNan]
         print(len(isNan), type(isNan))
         print(isNan)
         cmd.inform(f'text="There are {np.sum(isNan)} NaN targets in the design."')
-        
+
         # loading mask file and moving only cobra with bitMask==1
         cmd.inform(f'text="Setting good cobra index"')
         goodIdx = self.loadGoodIdx(maskFile)
@@ -1497,18 +1474,17 @@ class FpsCmd(object):
         cobras = self.cc.allCobras[goodIdx]
         excludedByMask = np.setdiff1d(np.arange(self.cc.nCobras), goodIdx)
         cmd.inform(f'text="Filtering: {len(excludedByMask)} cobras excluded by mask file, {len(goodIdx)} remaining"')
-       
 
         thetaSolution, phiSolution, flags = self.cc.pfi.positionsToAngles(cobras, targets)
-        invalid = (flags[:,0] & self.cc.pfi.SOLUTION_OK) == 0
-        invalidGoodIdx = np.where(invalid)[0]         # in the range of  goodIdx
-        invalidOriginalIdx = goodIdx[invalidGoodIdx]   # mapping to total cobra index
+        invalid = (flags[:, 0] & self.cc.pfi.SOLUTION_OK) == 0
+        invalidGoodIdx = np.where(invalid)[0]  # in the range of  goodIdx
+        invalidOriginalIdx = goodIdx[invalidGoodIdx]  # mapping to total cobra index
 
         if not np.all(invalid):
             # raise RuntimeError(f"Given positions are invalid: {np.where(valid)[0]}")
             cmd.inform(f'text="Given {invalid.sum()} positions are invalid: {goodIdx[np.where(invalid)[0]]}"')
             for ii in np.where(invalid)[0]:
-                self.logger.info(f'invalid pos: {ii} {flags[ii,0]:08b}')
+                self.logger.info(f'invalid pos: {ii} {flags[ii, 0]:08b}')
 
         thetas = thetaSolution[:, 0]
         phis = phiSolution[:, 0]
@@ -1523,7 +1499,7 @@ class FpsCmd(object):
         # Set True for NaN targets (using original indices before goodIdx filtering)
         notMoveMask[isNan] = True
         notMoveMask[interfering_cobra_indices] = True
-        #notMoveMask[goodIdx[np.where(invalid)[0]]] = True
+        # notMoveMask[goodIdx[np.where(invalid)[0]]] = True
 
         # Filter goodIdx to exclude cobras that should not move
         filteredGoodIdx = goodIdx[~notMoveMask[goodIdx]]
@@ -1541,18 +1517,16 @@ class FpsCmd(object):
         cmd.inform(f'text="  Final cobras to move: {len(filteredGoodIdx)}"')
         cmd.inform(f'text="========================"')
 
-
         # Here we start to deal with target table
         cmd.inform(f'text="Handling the cobra target table."')
         self.cc.trajectoryMode = True
         traj, moves = eng.createTrajectory(goodIdx, thetas, phis,
                                            tries=iteration, twoSteps=True, threshold=fastThreshold, timeStep=500)
-        moves[:,2]['position'] = targets
+        moves[:, 2]['position'] = targets
 
         cmd.inform(f'text="Reset the current angles for cobra arms."')
         self.cc.trajectoryMode = False
         thetaHome = ((self.cc.calibModel.tht1 - self.cc.calibModel.tht0 + np.pi) % (np.pi * 2) + np.pi)
-
 
         if goHome:
             cmd.inform(f'text="Setting ThetaAngle = Home and phiAngle = 0."')
@@ -1563,7 +1537,8 @@ class FpsCmd(object):
         else:
             # Check if we have atThetas and atPhis. If not, we cannot proceed.
             if hasattr(self, 'atThetas') is False:
-                cmd.fail('text="We are asking to move to a deisgn without cobra information.  Please use goHome option."')
+                cmd.fail(
+                    'text="We are asking to move to a deisgn without cobra information.  Please use goHome option."')
                 return
 
             cmd.inform(f'text="Number of cobras = {len(goodIdx)} Number of angles = {len(self.atThetas[goodIdx])}."')
@@ -1571,16 +1546,14 @@ class FpsCmd(object):
             self.cc.setCurrentAngles(self.cc.allCobras[goodIdx],
                                      thetaAngles=self.atThetas[goodIdx], phiAngles=self.atPhis[goodIdx])
 
-            cobraTargetTable = najaVenator.CobraTargetTable(visit, iteration, self.cc.calibModel, designId, goHome=False)
-
-
+            cobraTargetTable = najaVenator.CobraTargetTable(visit, iteration, self.cc.calibModel, designId,
+                                                            goHome=False)
 
         cobraTargetTable.makeTargetTable(moves, self.cc, goodIdx)
         cobraTargetTable.writeTargetTable()
 
-
         # Getting a new directory for this operation by running PFI connection using cobraCoach.
-        # This operation will update dataDir for both PFI and camera.  So that we can keep information correctly. 
+        # This operation will update dataDir for both PFI and camera.  So that we can keep information correctly.
         self.cc.connect(False)
 
         # Saving information for book keeping.
@@ -1604,15 +1577,14 @@ class FpsCmd(object):
         # The notDoneMask is selected based on goodIdx. Has to involve self.cc.badIdx
         notMoveMask[self.cc.badIdx] = True
         np.savez(f'{dataPath}/cobra_filtering.npz',
-                excluded_by_mask=np.setdiff1d(np.arange(self.cc.nCobras), goodIdx),
-                nan_targets=isNan,
-                invalid_solutions=invalidOriginalIdx,
-                fiducial_interference=interfering_cobra_indices,
-                not_move_mask=notMoveMask,
-                final_moving_cobras=filteredGoodIdx)
+                 excluded_by_mask=np.setdiff1d(np.arange(self.cc.nCobras), goodIdx),
+                 nan_targets=isNan,
+                 invalid_solutions=invalidOriginalIdx,
+                 fiducial_interference=interfering_cobra_indices,
+                 not_move_mask=notMoveMask,
+                 final_moving_cobras=filteredGoodIdx)
 
         cmd.inform(f'text="Saved filtering data: {len(filtering_records)} exclusions logged"')
-
 
         # adjust theta angles that is too closed to the CCW hard stops
         thetaMarginCCW = 0.1
@@ -1623,89 +1595,126 @@ class FpsCmd(object):
 
         # Convergence is in progress.
         cmd.inform(f'pfsConfig=0x{designId:016x},{visit},inProgress')
+        try:
+            if twoSteps:
+                cIds = filteredGoodIdx  # Changed from goodIdx to filteredGoodIdx
 
-        if twoSteps:
-            cIds = filteredGoodIdx  # Changed from goodIdx to filteredGoodIdx
+                moves = np.zeros((1, len(cIds), iteration), dtype=eng.moveDtype)
 
-            moves = np.zeros((1, len(cIds), iteration), dtype=eng.moveDtype)
+                thetaRange = ((self.cc.calibModel.tht1 - self.cc.calibModel.tht0 + np.pi) % (np.pi * 2) + np.pi)[cIds]
+                phiRange = ((self.cc.calibModel.phiOut - self.cc.calibModel.phiIn) % (np.pi * 2))[cIds]
 
-            thetaRange = ((self.cc.calibModel.tht1 - self.cc.calibModel.tht0 + np.pi) % (np.pi * 2) + np.pi)[cIds]
-            phiRange = ((self.cc.calibModel.phiOut - self.cc.calibModel.phiIn) % (np.pi * 2))[cIds]
+                # limit phi angle for first two tries
+                limitPhi = np.pi / 3 - self.cc.calibModel.phiIn[cIds] - np.pi
+                thetasVia = np.copy(filteredThetas)  # Changed from thetas to filteredThetas
+                phisVia = np.copy(filteredPhis)  # Changed from phis to filteredPhis
+                for c in range(len(cIds)):
+                    if filteredPhis[c] > limitPhi[c]:  # Changed from phis[c] to filteredPhis[c]
+                        phisVia[c] = limitPhi[c]
+                        thetasVia[c] = filteredThetas[c] + (filteredPhis[c] - limitPhi[c]) / 2  # Changed accordingly
+                        if thetasVia[c] > thetaRange[c]:
+                            thetasVia[c] = thetaRange[c]
 
-            # limit phi angle for first two tries
-            limitPhi = np.pi / 3 - self.cc.calibModel.phiIn[cIds] - np.pi
-            thetasVia = np.copy(filteredThetas)  # Changed from thetas to filteredThetas
-            phisVia = np.copy(filteredPhis)     # Changed from phis to filteredPhis
-            for c in range(len(cIds)):
-                if filteredPhis[c] > limitPhi[c]:  # Changed from phis[c] to filteredPhis[c]
-                    phisVia[c] = limitPhi[c]
-                    thetasVia[c] = filteredThetas[c] + (filteredPhis[c] - limitPhi[c]) / 2  # Changed accordingly
-                    if thetasVia[c] > thetaRange[c]:
-                        thetasVia[c] = thetaRange[c]
+                _useScaling, _maxSegments, _maxTotalSteps = self.cc.useScaling, self.cc.maxSegments, self.cc.maxTotalSteps
+                self.cc.useScaling, self.cc.maxSegments, self.cc.maxTotalSteps = False, _maxSegments * 2, _maxTotalSteps * 2
+                cmd.inform(
+                    f'text="useScaling={self.cc.useScaling}, maxSegments={self.cc.maxSegments}, maxTotalSteps={self.cc.maxTotalSteps}"')
 
-            _useScaling, _maxSegments, _maxTotalSteps = self.cc.useScaling, self.cc.maxSegments, self.cc.maxTotalSteps
-            self.cc.useScaling, self.cc.maxSegments, self.cc.maxTotalSteps = False, _maxSegments * 2, _maxTotalSteps * 2
-            cmd.inform(f'text="useScaling={self.cc.useScaling}, maxSegments={self.cc.maxSegments}, maxTotalSteps={self.cc.maxTotalSteps}"')
+                if shortExp is True:
+                    cmd.inform(f'text="Using 0.8 second exposure time for first three iteration."')
+                    self.cc.expTime = 0.8
+                else:
+                    cmd.inform(f'text="Using {expTime} second exposure time for first three iteration."')
+                    self.cc.expTime = expTime
 
-            if shortExp is True:
-                cmd.inform(f'text="Using 0.8 second exposure time for first three iteration."')
-                self.cc.expTime = 0.8
-            else:
-                cmd.inform(f'text="Using {expTime} second exposure time for first three iteration."')
+                cmd.inform(f'text="Cobra goHome is set to be {goHome}"')
+                dataPath, atThetas, atPhis, moves[0, :, :2] = \
+                    eng.moveThetaPhi(cIds, thetasVia, phisVia, relative=False, local=True, tolerance=tolerance,
+                                     tries=2, homed=goHome, newDir=False, thetaFast=True, phiFast=True,
+                                     threshold=fastThreshold, thetaMargin=np.deg2rad(thetaMarginDeg))
+
                 self.cc.expTime = expTime
+                self.cc.useScaling, self.cc.maxSegments, self.cc.maxTotalSteps = _useScaling, _maxSegments, _maxTotalSteps
+                cmd.inform(
+                    f'text="useScaling={self.cc.useScaling}, maxSegments={self.cc.maxSegments}, maxTotalSteps={self.cc.maxTotalSteps}"')
 
-            cmd.inform(f'text="Cobra goHome is set to be {goHome}"')
-            dataPath, atThetas, atPhis, moves[0, :, :2] = \
-                eng.moveThetaPhi(cIds, thetasVia, phisVia, relative=False, local=True, tolerance=tolerance,
-                                 tries=2, homed=goHome, newDir=False, thetaFast=True, phiFast=True,
-                                 threshold=fastThreshold, thetaMargin=np.deg2rad(thetaMarginDeg))
+                dataPath, atThetas, atPhis, moves[0, :, 2:] = \
+                    eng.moveThetaPhi(cIds, filteredThetas, filteredPhis, relative=False, local=True,
+                                     tolerance=tolerance,
+                                     # Changed from thetas, phis
+                                     tries=iteration - 2,
+                                     homed=False,
+                                     newDir=False, thetaFast=True, phiFast=True, threshold=fastThreshold,
+                                     thetaMargin=np.deg2rad(thetaMarginDeg))
 
-            self.cc.expTime = expTime
-            self.cc.useScaling, self.cc.maxSegments, self.cc.maxTotalSteps = _useScaling, _maxSegments, _maxTotalSteps
-            cmd.inform(f'text="useScaling={self.cc.useScaling}, maxSegments={self.cc.maxSegments}, maxTotalSteps={self.cc.maxTotalSteps}"')
+            else:
+                cIds = filteredGoodIdx
+                dataPath, atThetas, atPhis, moves = eng.moveThetaPhi(cIds, filteredThetas, filteredPhis,
+                                                                     relative=False, local=True, tolerance=tolerance,
+                                                                     tries=iteration, homed=goHome, newDir=False,
+                                                                     thetaFast=False, phiFast=False,
+                                                                     threshold=fastThreshold,
+                                                                     thetaMargin=np.deg2rad(thetaMarginDeg))
+            self.atThetas = atThetas
+            self.atPhis = atPhis
 
-            dataPath, atThetas, atPhis, moves[0, :, 2:] = \
-                eng.moveThetaPhi(cIds, filteredThetas, filteredPhis, relative=False, local=True, tolerance=tolerance,  # Changed from thetas, phis
-                                 tries=iteration - 2,
-                                 homed=False,
-                                 newDir=False, thetaFast=True, phiFast=True, threshold=fastThreshold,
-                                 thetaMargin=np.deg2rad(thetaMarginDeg))
-
-        else:
-            cIds = filteredGoodIdx
-            dataPath, atThetas, atPhis, moves = eng.moveThetaPhi(cIds, filteredThetas, filteredPhis, 
-                                                         relative=False, local=True, tolerance=tolerance,
-                                                         tries=iteration, homed=goHome, newDir=False, 
-                                                         thetaFast=False, phiFast=False, threshold=fastThreshold,
-                                                         thetaMargin=np.deg2rad(thetaMarginDeg))
-        self.atThetas = atThetas
-        self.atPhis = atPhis
-
-        # Saving moves array
-        np.save(dataPath / 'moves', moves)
-
-        # update pfiCenter, cobra which are not matched will be set to NOTCONVERGED.
-        maxIteration = pfsConfigUtils.finalize(pfsConfig, self.cc.calibModel, cmd=cmd,
-                                               noMatchStatus=FiberStatus.BLACKSPOT,
+            # Saving moves array
+            np.save(dataPath / 'moves', moves)
+        except Exception:
+            self._finalizeWriteIngestPfsConfig(pfsConfig, cmd=cmd,
+                                               convergenceFailed=True,
                                                notConvergedDistanceThreshold=notConvergedDistanceThreshold,
-                                               NOT_MOVE_MASK=notMoveMask, atThetas=atThetas, atPhis=atPhis)
-        cmd.inform(f'text="maxIteration from cobra_match : {int(maxIteration)}"')
+                                               NOT_MOVE_MASK=notMoveMask,
+                                               converg_num_iter=iteration,
+                                               converg_elapsed_time=round(time.time() - start, 3),
+                                               converg_tolerance=tolerance)
+            raise
+
+        self._finalizeWriteIngestPfsConfig(pfsConfig, cmd=cmd,
+                                           notConvergedDistanceThreshold=notConvergedDistanceThreshold,
+                                           NOT_MOVE_MASK=notMoveMask,
+                                           converg_num_iter=iteration,
+                                           converg_elapsed_time=round(time.time() - start, 3),
+                                           converg_tolerance=tolerance)
+
+        cmd.finish(f'text="We are at design position in {round(time.time() - start, 3)} seconds."')
+
+    def _finalizeWriteIngestPfsConfig(self, pfsConfig, cmd,
+                                      convergenceFailed=False, notConvergedDistanceThreshold=None, NOT_MOVE_MASK=None,
+                                      converg_num_iter=None, converg_elapsed_time=None, converg_tolerance=None):
+        """Finalize pfsConfig, write to disk, ingest into opdb, and generate pfsConfig keyword."""
+        atThetas = None if convergenceFailed else self.atThetas
+        atPhis = None if convergenceFailed else self.atPhis
+
+        try:
+            maxIteration = pfsConfigUtils.finalize(pfsConfig, self.cc.calibModel, cmd=cmd,
+                                                   notConvergedDistanceThreshold=notConvergedDistanceThreshold,
+                                                   NOT_MOVE_MASK=NOT_MOVE_MASK,
+                                                   atThetas=atThetas, atPhis=atPhis,
+                                                   convergenceFailed=convergenceFailed)
+        except Exception as e:
+            if convergenceFailed:
+                cmd.warn(f'text="pfsConfigUtils.finalize failed with: {e}"')
+                return
+            raise
 
         # write pfsConfig to disk.
         if not self.cc.simMode:
             pfsConfigUtils.writePfsConfig(pfsConfig, cmd=cmd)
         else:
             cmd.warn('text="in simulation mode so not writing pfsConfig file"')
-        # insert into opdb.
-        pfsConfigUtils.ingestPfsConfig(pfsConfig,
-                                       allocated_at='now',
-                                       converg_num_iter=iteration,
-                                       converg_elapsed_time=round(time.time() - start, 3),
-                                       converg_tolerance=tolerance,
-                                       cmd=cmd)
 
-        cmd.inform(f'pfsConfig=0x{designId:016x},{visit},Done')
-        cmd.finish(f'text="We are at design position in {round(time.time() - start, 3)} seconds."')
+        pfsConfigUtils.ingestPfsConfig(
+            pfsConfig,
+            allocated_at="now",
+            converg_num_iter=converg_num_iter,
+            converg_elapsed_time=converg_elapsed_time,
+            converg_tolerance=converg_tolerance,
+            cmd=cmd)
+
+        cmd.inform(f'pfsConfig=0x{pfsConfig.pfsDesignId:016x},{pfsConfig.visit0},Done')
+
+        return maxIteration
 
     def hideCobras(self, cmd):
         """"""
