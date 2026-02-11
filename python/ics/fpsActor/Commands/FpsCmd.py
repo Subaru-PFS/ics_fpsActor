@@ -1013,7 +1013,7 @@ class FpsCmd(object):
             eng.setThetaMode()
             thetaEnable = True
 
-        elif allfiber:
+        else:
             eng.setNormalMode()
             thetaEnable = phiEnable = True
 
@@ -1042,6 +1042,7 @@ class FpsCmd(object):
             self._finalizeWriteIngestPfsConfig(pfsConfig, cmd=cmd,
                                                converg_elapsed_time=round(time.time() - start, 3))
 
+        eng.setNormalMode()
         cmd.finish(f'text="Moved all arms back to home"')
 
     def cobraAndDotRecenter(self, cmd):
