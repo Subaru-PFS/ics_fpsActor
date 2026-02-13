@@ -79,7 +79,7 @@ class FpsCmd(object):
             ('movePhiForDots', '<angle> <iteration> [<visit>]', self.movePhiForDots),
             ('movePhiToAngle', '<angle> <iteration> [<visit>]', self.movePhiToAngle),
 
-            ('createHomeDesign', '[<maskFile>]', self.createHomeDesign),
+            ('createHomeDesign', '@(phi|theta|all) [<maskFile>]', self.createHomeDesign),
             ('createBlackDotDesign', '[<maskFile>]', self.createBlackDotDesign),
             ('genPfsConfigFromMcs', '<visit> <designId>', self.genPfsConfigFromMcs),
             ('moveToHome', '@(phi|theta|all) [<expTime>] [@noMCSexposure] [<visit>] [<maskFile>] '
@@ -916,14 +916,35 @@ class FpsCmd(object):
 
         cmd.finish(f'Motor map sequence finished')
 
-    def createHomeDesign(self, cmd):
+    def _createHomeDesign(self, cmd):
         cmdKeys = cmd.cmd.keywords
 
+        if 'theta' in cmdKeys:
+            homingType = 'thetaHome'
+        elif 'phi' in cmdKeys:
+            homingType = 'phiHome'
+        else:
+            homingType = 'cobraHome'
+
+        thetaEnable = homingType != 'phiHome'
+        phiEnable = homingType != 'thetaHome'
         # making home pfsDesign.
         maskFile = cmdKeys['maskFile'].values[0] if 'maskFile' in cmdKeys else None
         goodIdx = self.loadGoodIdx(maskFile)
 
-        pfsDesign = pfsDesignUtils.createHomeDesign(self.cc.calibModel, goodIdx, maskFile)
+        thetaHome = ((self.cc.calibModel.tht1 - self.cc.calibModel.tht0 + np.pi) % (np.pi * 2) + np.pi)
+        phiHome = np.zeros_like(thetaHome)
+
+        thetaAngles = thetaHome if thetaEnable else self.cc.cobraInfo['thetaAngle']
+        phiAngles = phiHome if phiEnable else self.cc.cobraInfo['phiAngle']
+
+        positions = self.cc.pfi.anglesToPositions(self.cc.allCobras, thetaAngles, phiAngles)
+
+        return pfsDesignUtils.createHomeDesign(self.cc.calibModel, positions, goodIdx, homingType, maskFile)
+
+    def createHomeDesign(self, cmd):
+
+        pfsDesign = self._createHomeDesign(cmd)
 
         doWrite, fullPath = pfsDesignUtils.writeDesign(pfsDesign)
         if doWrite:
@@ -968,7 +989,6 @@ class FpsCmd(object):
         maskFile = cmdKeys['maskFile'].values[0] if 'maskFile' in cmdKeys else None
         phi = 'phi' in cmdKeys
         theta = 'theta' in cmdKeys
-        allfiber = 'all' in cmdKeys
         noMCSexposure = 'noMCSexposure' in cmdKeys
         useMCS = not noMCSexposure
         designId = cmdKeys['designId'].values[0] if 'designId' in cmdKeys else None
@@ -987,7 +1007,7 @@ class FpsCmd(object):
             cmd.inform(f'text="maskFile = {maskFile}"')
             # loading mask file and moving only cobra with bitMask==1
             goodIdx = self.loadGoodIdx(maskFile)
-            pfsDesign = pfsDesignUtils.createHomeDesign(self.cc.calibModel, goodIdx, maskFile=False)
+            pfsDesign = self._createHomeDesign(cmd)
 
         cmd.inform(f'text="Getting all avaliable cobra arms."')
         goodCobra = self.cc.allCobras[goodIdx]
