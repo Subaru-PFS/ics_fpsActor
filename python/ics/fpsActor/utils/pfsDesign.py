@@ -36,13 +36,13 @@ def writeDesign(pfsDesign):
     return doWrite, fullPath
 
 
-def createHomeDesign(calibModel, goodIdx, maskFile):
+def createHomeDesign(calibModel, positions, goodIdx, homingType, maskFile):
     """Create home design from current calibModel, ra and dec are faked."""
     gfm = pd.DataFrame(FiberIds().data)
-    
+
     sgfm = gfm.set_index('scienceFiberId').loc[np.arange(2394) + 1].reset_index().sort_values('cobraId')
-    sgfm['x'] = np.real(calibModel.centers)
-    sgfm['y'] = np.imag(calibModel.centers)
+    sgfm['x'] = np.real(positions)
+    sgfm['y'] = np.imag(positions)
 
     # setting targetType.
     MOVE_MASK = np.isin(sgfm.cobraId - 1, goodIdx)
@@ -59,7 +59,7 @@ def createHomeDesign(calibModel, goodIdx, maskFile):
     ra, dec = fakeRaDecFromPfiNominal(pfiNominal)
 
     # setting designName.
-    designName = makeDesignName('cobraHome', maskFile)
+    designName = makeDesignName(homingType, maskFile)
 
     pfsDesign = pfsDesignUtils.makePfsDesign(pfiNominal=pfiNominal, ra=ra, dec=dec, targetType=targetType,
                                              arms='brnm', designName=designName)
