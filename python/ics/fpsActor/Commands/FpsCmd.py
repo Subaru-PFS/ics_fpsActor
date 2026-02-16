@@ -79,7 +79,7 @@ class FpsCmd(object):
             ('movePhiForDots', '<angle> <iteration> [<visit>]', self.movePhiForDots),
             ('movePhiToAngle', '<angle> <iteration> [<visit>]', self.movePhiToAngle),
 
-            ('createHomeDesign', '@(phi|theta|all) [<maskFile>]', self.createHomeDesign),
+            ('createHomeDesign', '[@(phi|theta|all)] [<maskFile>]', self.createHomeDesign),
             ('createBlackDotDesign', '[<maskFile>]', self.createBlackDotDesign),
             ('genPfsConfigFromMcs', '<visit> <designId>', self.genPfsConfigFromMcs),
             ('moveToHome', '@(phi|theta|all) [<expTime>] [@noMCSexposure] [<visit>] [<maskFile>] '
@@ -1429,7 +1429,10 @@ class FpsCmd(object):
     def getPfsConfig(self, cmd, visit, pfsDesign, maskFile=None):
         """Get pfsConfig from pfsDesign, adding additional gen2 keys."""
         cards = fits.getPfsConfigCards(self.actor, cmd, visit, expType='acquisition')
-        return pfsConfigUtils.pfsConfigFromDesign(pfsDesign, visit, header=cards, maskFile=maskFile)
+        return pfsConfigUtils.pfsConfigFromDesign(pfsDesign, visit,
+                                                  calibModel=self.cc.calibModel,
+                                                  header=cards,
+                                                  maskFile=maskFile)
 
     def moveToPfsDesign(self, cmd):
         """ Move cobras to a PFS design. """
@@ -1710,7 +1713,9 @@ class FpsCmd(object):
         atPhis = None if convergenceFailed else self.atPhis
 
         try:
-            maxIteration = pfsConfigUtils.finalize(pfsConfig, self.cc.calibModel, cmd=cmd,
+            maxIteration = pfsConfigUtils.finalize(pfsConfig,
+                                                   nIteration=self.actor.visitor.frameSeq - 1,
+                                                   cmd=cmd,
                                                    notConvergedDistanceThreshold=notConvergedDistanceThreshold,
                                                    NOT_MOVE_MASK=NOT_MOVE_MASK,
                                                    atThetas=atThetas, atPhis=atPhis,

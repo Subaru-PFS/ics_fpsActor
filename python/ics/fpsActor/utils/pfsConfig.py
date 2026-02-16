@@ -17,7 +17,7 @@ __all__ = ["pfsConfigFromDesign", "makeTargetsArray", "tweakTargetPosition",
            "finalize", "writePfsConfig", "ingestPfsConfig"]
 
 
-def pfsConfigFromDesign(pfsDesign, visit0, header=None, maskFile=None):
+def pfsConfigFromDesign(pfsDesign, visit0, calibModel=None, header=None, maskFile=None):
     """Just make a PfsConfig file identical to PfsDesign."""
     if maskFile:
         # retrieving masked cobras/fibers.
@@ -28,7 +28,12 @@ def pfsConfigFromDesign(pfsDesign, visit0, header=None, maskFile=None):
         noTargetMask = np.logical_and(noEng, np.isin(pfsDesign.fiberId, noTarget.fiberId))
         pfsDesign.targetType[noTargetMask] = TargetType.UNASSIGNED
 
-    return PfsConfig.fromPfsDesign(pfsDesign, visit0, pfsDesign.pfiNominal, header=header, visit0=visit0)
+    pfiCenter = np.full(pfsDesign.pfiNominal.shape, np.nan, dtype=pfsDesign.pfiNominal.dtype)
+    # Create pfsConfig with pfiCenter as nan.
+    pfsConfig = PfsConfig.fromPfsDesign(pfsDesign, visit0, pfiCenter, header=header, visit0=visit0)
+    # Set BROKENFIBER, BROKENCOBRA, BLOCKED fiberStatus.
+    return pfsDesignUtils.setFiberStatus(pfsConfig, calibModel=calibModel)
+
 
 
 def makeTargetsArray(pfsConfig):
@@ -71,11 +76,11 @@ def tweakTargetPosition(pfsConfig, cmd=None):
     return pfsConfig
 
 
-def finalize(pfsConfig, calibModel, cmd=None, notConvergedDistanceThreshold=None,
+def finalize(pfsConfig, nIteration, cmd=None, notConvergedDistanceThreshold=None,
              NOT_MOVE_MASK=None, atThetas=None, atPhis=None, convergenceFailed=False):
     """Finalize pfsConfig after converging, updating pfiCenter, fiberStatus, ra, dec"""
 
-    def fetchFinalConvergence(visitId):
+    def fetchFinalConvergence(pfs_visit_id, iteration):
         """Retrieve final cobra position in mm.
 
         Parameters
@@ -83,22 +88,46 @@ def finalize(pfsConfig, calibModel, cmd=None, notConvergedDistanceThreshold=None
         visitId : `int`
             Convergence identifier.
         """
-        sql = 'SELECT pfs_visit_id, iteration, cobra_id, cobra_match.spot_id, pfi_center_x_mm, pfi_center_y_mm ' \
-              'FROM mcs_data LEFT OUTER JOIN cobra_match ON mcs_data.spot_id = cobra_match.spot_id AND mcs_data.mcs_frame_id = cobra_match.mcs_frame_id ' \
-              f'WHERE cobra_match.pfs_visit_id={visitId} AND iteration=(select max(cm2.iteration) from cobra_match cm2 WHERE cm2.pfs_visit_id = {visitId}) ' \
-              'order by cobra_id asc'
+        sql = ('SELECT cm.pfs_visit_id, cm.iteration, cm.cobra_id, cm.spot_id, cm.pfi_center_x_mm, cm.pfi_center_y_mm '
+               'FROM cobra_match cm LEFT OUTER JOIN mcs_data m '
+               'ON m.spot_id = cm.spot_id AND m.mcs_frame_id = cm.mcs_frame_id '
+               f'WHERE cm.pfs_visit_id = {pfs_visit_id} AND cm.iteration = {iteration} '
+               'ORDER BY cm.cobra_id ASC')
 
         db = opdb.OpDB()
         lastIteration = db.query_dataframe(sql)
         return lastIteration
 
+    def _fakeFinalConvergence(pfs_visit_id, iteration, nCobras=2394):
+        """Create deterministic fake convergence dataframe."""
+
+        cobraId = np.arange(1, nCobras + 1, dtype=np.int64)
+
+        df = pd.DataFrame({
+            'pfs_visit_id': np.full(nCobras, pfs_visit_id, dtype=np.int64),
+            'iteration': np.full(nCobras, iteration, dtype=np.int64),
+            'cobra_id': cobraId,
+            'spot_id': np.full(nCobras, -1, dtype=np.int64),
+            'pfi_center_x_mm': np.full(nCobras, np.nan, dtype=np.float64),
+            'pfi_center_y_mm': np.full(nCobras, np.nan, dtype=np.float64)
+        })
+
+        return df
     logger = logging.getLogger('pfsConfig')
 
     # Retrieve dataset
-    lastIteration = fetchFinalConvergence(pfsConfig.visit)
+    lastIteration = fetchFinalConvergence(pfsConfig.visit, nIteration)
 
-    if not len(lastIteration):
-        raise RuntimeError(f"could not find cobra_match data for {pfsConfig.filename}")
+    if lastIteration is None or not len(lastIteration):
+        if cmd:
+            cmd.warn(f'text="Could not find cobra_match data for {pfsConfig.visit} iteration={nIteration}."')
+
+        lastIteration = _fakeFinalConvergence(pfsConfig.visit, nIteration)
+        atThetas = atPhis = None
+        NO_MATCH_STATUS = FiberStatus.UNKNOWN
+
+    else:
+        NO_MATCH_STATUS = FiberStatus.BLACKSPOT
 
     # setting CONVERGENCE_FAILED bit.
     if convergenceFailed:
@@ -111,10 +140,6 @@ def finalize(pfsConfig, calibModel, cmd=None, notConvergedDistanceThreshold=None
     lastIteration.loc[NO_MATCH_MASK, 'pfi_center_x_mm'] = np.nan
     lastIteration.loc[NO_MATCH_MASK, 'pfi_center_y_mm'] = np.nan
 
-    # Fill final position with NaNs.
-    pfiCenter = np.empty(pfsConfig.pfiNominal.shape, dtype=pfsConfig.pfiNominal.dtype)
-    pfiCenter[:] = np.nan
-
     # Construct the index.
     fiberId = FiberIds().cobraIdToFiberId(lastIteration.cobra_id.to_numpy())
     lastIteration['fiberId'] = fiberId
@@ -122,9 +147,8 @@ def finalize(pfsConfig, calibModel, cmd=None, notConvergedDistanceThreshold=None
     fiberIndex = fiberIndex.set_index('fiberId').loc[fiberId].tindex.to_numpy()
 
     # Set final cobra position.
-    pfiCenter[fiberIndex, 0] = lastIteration.pfi_center_x_mm.to_numpy()
-    pfiCenter[fiberIndex, 1] = lastIteration.pfi_center_y_mm.to_numpy()
-    pfsConfig.pfiCenter = pfiCenter
+    pfsConfig.pfiCenter[fiberIndex, 0] = lastIteration.pfi_center_x_mm.to_numpy()
+    pfsConfig.pfiCenter[fiberIndex, 1] = lastIteration.pfi_center_y_mm.to_numpy()
     logger.info(f'{pfsConfig.filename} pfiCenter updated successfully...')
 
     # Set cobraTheta, cobraPhi in degrees.
@@ -137,9 +161,6 @@ def finalize(pfsConfig, calibModel, cmd=None, notConvergedDistanceThreshold=None
     # Calculate distance to target.
     distanceToTarget = np.hypot(pfsConfig.pfiNominal[:, 0] - pfsConfig.pfiCenter[:, 0],
                                 pfsConfig.pfiNominal[:, 1] - pfsConfig.pfiCenter[:, 1])
-
-    # Set BROKENFIBER, BROKENCOBRA, BLOCKED fiberStatus.
-    pfsConfig = pfsDesignUtils.setFiberStatus(pfsConfig, calibModel=calibModel)
 
     # Populating the dataframe for convenience.
     lastIteration['fiberStatus'] = pfsConfig.fiberStatus[fiberIndex]
@@ -155,19 +176,19 @@ def finalize(pfsConfig, calibModel, cmd=None, notConvergedDistanceThreshold=None
     UNASSIGNED_TARGET_MASK = lastIteration.targetType == TargetType.UNASSIGNED
 
     # Set fiberStatus to BLACKSPOT for the not matched cobras.
-    lastIteration.loc[FIBER_GOOD_MASK & NO_MATCH_MASK, 'fiberStatus'] = FiberStatus.BLACKSPOT
+    lastIteration.loc[FIBER_GOOD_MASK & NO_MATCH_MASK, 'fiberStatus'] = NO_MATCH_STATUS
 
     # setting MASKED fiberStatus
     if NOT_MOVE_MASK is not None:
-        lastIteration.loc[FIBER_GOOD_MASK & ~NO_MATCH_MASK & NOT_MOVE_MASK, 'fiberStatus'] = FiberStatus.MASKED
+        lastIteration.loc[FIBER_GOOD_MASK & NOT_MOVE_MASK, 'fiberStatus'] = FiberStatus.MASKED
     else:
         NOT_MOVE_MASK = np.zeros(len(lastIteration), dtype='bool')
 
     # setting NOTCONVERGED fiberStatus for cobra above distance threshold.
-    if notConvergedDistanceThreshold:
-        aboveThreshold = lastIteration.distanceToTarget.to_numpy() > notConvergedDistanceThreshold
-        cobraMask = aboveThreshold & WITH_TARGET_MASK & FIBER_GOOD_MASK & ~NO_MATCH_MASK & ~NOT_MOVE_MASK
-        lastIteration.loc[cobraMask, 'fiberStatus'] = FiberStatus.NOTCONVERGED
+    if notConvergedDistanceThreshold is not None:
+        ABOVE_THRESH_MASK = lastIteration.distanceToTarget.to_numpy() > notConvergedDistanceThreshold
+        NOT_CONVERGED_MASK = ABOVE_THRESH_MASK & WITH_TARGET_MASK & FIBER_GOOD_MASK & ~NO_MATCH_MASK & ~NOT_MOVE_MASK
+        lastIteration.loc[NOT_CONVERGED_MASK, 'fiberStatus'] = FiberStatus.NOTCONVERGED
 
     pfsConfig.fiberStatus[fiberIndex] = lastIteration.fiberStatus.to_numpy()
     logger.info(f'{pfsConfig.filename} fiberStatus updated successfully...')
