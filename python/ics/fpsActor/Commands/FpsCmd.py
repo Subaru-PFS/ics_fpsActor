@@ -935,8 +935,11 @@ class FpsCmd(object):
         thetaHome = ((self.cc.calibModel.tht1 - self.cc.calibModel.tht0 + np.pi) % (np.pi * 2) + np.pi)
         phiHome = np.zeros_like(thetaHome)
 
-        thetaAngles = thetaHome if thetaEnable else self.cc.cobraInfo['thetaAngle']
-        phiAngles = phiHome if phiEnable else self.cc.cobraInfo['phiAngle']
+        thetaAngles = thetaHome if thetaEnable else self.atThetas
+        phiAngles = phiHome if phiEnable else self.atPhis
+
+        if thetaAngles is None or phiAngles is None:
+            cmd.fail('text="Cannot create HOME PfsDesign without cobra information.  Please go to home."')
 
         positions = self.cc.pfi.anglesToPositions(self.cc.allCobras, thetaAngles, phiAngles)
 
@@ -1557,9 +1560,8 @@ class FpsCmd(object):
 
         else:
             # Check if we have atThetas and atPhis. If not, we cannot proceed.
-            if hasattr(self, 'atThetas') is False:
-                cmd.fail(
-                    'text="We are asking to move to a deisgn without cobra information.  Please use goHome option."')
+            if self.atThetas is None or self.atPhis is None:
+                cmd.fail('text="Cannot move to PfsDesign without cobra information.  Please use goHome option."')
                 return
 
             cmd.inform(f'text="Number of cobras = {len(goodIdx)} Number of angles = {len(self.atThetas[goodIdx])}."')
