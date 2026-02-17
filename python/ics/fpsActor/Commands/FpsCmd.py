@@ -1020,7 +1020,7 @@ class FpsCmd(object):
         goodCobra = self.cc.allCobras[goodIdx]
 
         # Only grab a visit if we need one for the PFSC and pfsConfig files
-        visit = self.actor.visitor.setOrGetVisit(cmd) if useMCS else -1
+        visit = self.actor.visitor.setOrGetVisit(cmd) if (useMCS or 'visit' in cmdKeys) else -1
 
         # Making base pfsConfig from design file, fetching additional keys from gen2.
         pfsConfig = self.getPfsConfig(cmd, visit=visit, pfsDesign=pfsDesign)
@@ -1069,8 +1069,8 @@ class FpsCmd(object):
         finally:
             eng.setNormalMode()
             # Only generate pfsConfigs if we take an image which needs them.
-            if useMCS:
-                self._finalizeWriteIngestPfsConfig(pfsConfig, cmd,
+            if visit !=-1:
+                self._finalizeWriteIngestPfsConfig(pfsConfig, cmd=cmd,
                                                    convergenceFailed=convergenceFailed,
                                                    converg_elapsed_time=round(time.time() - start, 3))
 
