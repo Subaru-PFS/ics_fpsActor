@@ -35,7 +35,6 @@ def pfsConfigFromDesign(pfsDesign, visit0, calibModel=None, header=None, maskFil
     return pfsDesignUtils.setFiberStatus(pfsConfig, calibModel=calibModel)
 
 
-
 def makeTargetsArray(pfsConfig):
     """Construct target array from pfsConfig file."""
     allCobraIds = np.arange(2394, dtype='int32') + 1
@@ -76,7 +75,7 @@ def tweakTargetPosition(pfsConfig, cmd=None):
     return pfsConfig
 
 
-def finalize(pfsConfig, nIteration, notConvergedDistanceThreshold=None,
+def finalize(pfsConfig, finalIteration, notConvergedDistanceThreshold=None,
              NOT_MOVE_MASK=None, atThetas=None, atPhis=None, convergenceFailed=False):
     """Finalize pfsConfig after converging, updating pfiCenter, fiberStatus, ra, dec"""
 
@@ -113,36 +112,41 @@ def finalize(pfsConfig, nIteration, notConvergedDistanceThreshold=None,
         })
 
         return df
+
     logger = logging.getLogger('pfsConfig')
 
-    # Retrieve dataset
-    lastIteration = fetchFinalConvergence(pfsConfig.visit, nIteration)
+    # Retrieve cobra_match dataset.
+    lastIteration = fetchFinalConvergence(pfsConfig.visit, finalIteration)
 
     if lastIteration is None or not len(lastIteration):
-        logger.warning(f'Could not find cobra_match data for {pfsConfig.visit} iteration={nIteration}.')
-
-        lastIteration = _fakeFinalConvergence(pfsConfig.visit, nIteration)
-        atThetas = atPhis = None
+        logger.warning(f'Could not find cobra_match data for {pfsConfig.visit} iteration={finalIteration}.')
+        lastIteration = _fakeFinalConvergence(pfsConfig.visit, finalIteration)
         NO_MATCH_STATUS = FiberStatus.UNKNOWN
-
     else:
         NO_MATCH_STATUS = FiberStatus.BLACKSPOT
 
-    # setting CONVERGENCE_FAILED bit.
+    # Setting CONVERGENCE_FAILED bit.
     if convergenceFailed:
         pfsConfig.setInstrumentStatusFlag(InstrumentStatusFlag.CONVERGENCE_FAILED)
-        logger.warning(f'Convergence failed; Setting pfsConfig with CONVERGENCE_FAILED flag')
-
-    # Setting missing matches to NaNs.
-    NO_MATCH_MASK = lastIteration.spot_id == -1
-    lastIteration.loc[NO_MATCH_MASK, 'pfi_center_x_mm'] = np.nan
-    lastIteration.loc[NO_MATCH_MASK, 'pfi_center_y_mm'] = np.nan
+        logger.warning('Convergence failed; Setting pfsConfig with CONVERGENCE_FAILED flag')
 
     # Construct the index.
-    fiberId = FiberIds().cobraIdToFiberId(lastIteration.cobra_id.to_numpy())
+    cobraId = lastIteration.cobra_id.to_numpy()
+    fiberId = FiberIds().cobraIdToFiberId(cobraId)
     lastIteration['fiberId'] = fiberId
     fiberIndex = pd.DataFrame(dict(fiberId=pfsConfig.fiberId, tindex=np.arange(len(pfsConfig.fiberId))))
     fiberIndex = fiberIndex.set_index('fiberId').loc[fiberId].tindex.to_numpy()
+
+    # Compute cobraTheta, cobraPhi in degrees and attach to the dataframe.
+    atThetas = np.full(len(lastIteration), np.nan, dtype=np.float32) if atThetas is None else atThetas
+    atPhis = np.full(len(lastIteration), np.nan, dtype=np.float32) if atPhis is None else atPhis
+    lastIteration['cobraTheta'] = np.rad2deg(atThetas)
+    lastIteration['cobraPhi'] = np.rad2deg(atPhis)
+
+    # Setting missing matches to NaNs.
+    NO_MATCH_MASK = lastIteration.spot_id.to_numpy() == -1
+    colsToNan = ['pfi_center_x_mm', 'pfi_center_y_mm', 'cobraTheta', 'cobraPhi']
+    lastIteration.loc[NO_MATCH_MASK, colsToNan] = np.nan
 
     # Set final cobra position.
     pfsConfig.pfiCenter[fiberIndex, 0] = lastIteration.pfi_center_x_mm.to_numpy()
@@ -150,11 +154,13 @@ def finalize(pfsConfig, nIteration, notConvergedDistanceThreshold=None,
     logger.info(f'{pfsConfig.filename} pfiCenter updated successfully...')
 
     # Set cobraTheta, cobraPhi in degrees.
-    atThetas = np.full(len(lastIteration), np.nan, dtype=np.float32) if atThetas is None else atThetas
-    atPhis = np.full(len(lastIteration), np.nan, dtype=np.float32) if atPhis is None else atPhis
-    pfsConfig.cobraTheta[fiberIndex] = np.rad2deg(atThetas)
-    pfsConfig.cobraPhi[fiberIndex] = np.rad2deg(atPhis)
-    logger.info(f'{pfsConfig.filename} atThetas atPhis updated successfully...')
+    pfsConfig.cobraTheta[fiberIndex] = lastIteration.cobraTheta.to_numpy()
+    pfsConfig.cobraPhi[fiberIndex] = lastIteration.cobraPhi.to_numpy()
+    logger.info(f'{pfsConfig.filename} cobraTheta cobraPhi updated successfully...')
+
+    # overriding cobraId
+    pfsConfig.cobraId[fiberIndex] = cobraId
+    logger.info(f'{pfsConfig.filename} cobraId updated successfully...')
 
     # Calculate distance to target.
     distanceToTarget = np.hypot(pfsConfig.pfiNominal[:, 0] - pfsConfig.pfiCenter[:, 0],
@@ -190,10 +196,6 @@ def finalize(pfsConfig, nIteration, notConvergedDistanceThreshold=None,
 
     pfsConfig.fiberStatus[fiberIndex] = lastIteration.fiberStatus.to_numpy()
     logger.info(f'{pfsConfig.filename} fiberStatus updated successfully...')
-
-    # overriding cobraId
-    pfsConfig.cobraId[fiberIndex] = lastIteration.cobra_id.to_numpy()
-    logger.info(f'{pfsConfig.filename} cobraId updated successfully...')
 
     # Setting ra,dec for UNASSIGNED target.
     try:

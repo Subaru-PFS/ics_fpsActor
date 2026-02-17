@@ -1720,7 +1720,7 @@ class FpsCmd(object):
         cmd = cmd if cmd.isAlive() else self.actor.bcast
         try:
             maxIteration = pfsConfigUtils.finalize(pfsConfig,
-                                                   nIteration=self.actor.visitor.frameSeq - 1,
+                                                   finalIteration=self.actor.visitor.frameSeq - 1,
                                                    notConvergedDistanceThreshold=notConvergedDistanceThreshold,
                                                    NOT_MOVE_MASK=NOT_MOVE_MASK,
                                                    atThetas=atThetas, atPhis=atPhis,
