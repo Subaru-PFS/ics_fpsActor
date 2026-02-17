@@ -79,7 +79,7 @@ class FpsCmd(object):
             ('movePhiForDots', '<angle> <iteration> [<visit>]', self.movePhiForDots),
             ('movePhiToAngle', '<angle> <iteration> [<visit>]', self.movePhiToAngle),
 
-            ('createHomeDesign', '@(phi|theta|all) [<maskFile>]', self.createHomeDesign),
+            ('createHomeDesign', '[@(phi|theta|all)] [<maskFile>]', self.createHomeDesign),
             ('createBlackDotDesign', '[<maskFile>]', self.createBlackDotDesign),
             ('genPfsConfigFromMcs', '<visit> <designId>', self.genPfsConfigFromMcs),
             ('moveToHome', '@(phi|theta|all) [<expTime>] [@noMCSexposure] [<visit>] [<maskFile>] '
@@ -988,6 +988,10 @@ class FpsCmd(object):
     def moveToHome(self, cmd):
         cmdKeys = cmd.cmd.keywords
 
+        start = time.time()
+        convergenceFailed = False
+        pfsConfig = None
+
         expTime = cmdKeys['expTime'].values[0] if 'expTime' in cmdKeys else None
         maskFile = cmdKeys['maskFile'].values[0] if 'maskFile' in cmdKeys else None
         phi = 'phi' in cmdKeys
@@ -1016,13 +1020,10 @@ class FpsCmd(object):
         goodCobra = self.cc.allCobras[goodIdx]
 
         # Only grab a visit if we need one for the PFSC and pfsConfig files
-        if useMCS:
-            visit = self.actor.visitor.setOrGetVisit(cmd)
-            cmd.inform(f'pfsConfig=0x{pfsDesign.pfsDesignId:016x},{visit},inProgress')
-        else:
-            cmd.inform(f'pfsConfig=0x{pfsDesign.pfsDesignId:016x},{-1},inProgress')
+        visit = self.actor.visitor.setOrGetVisit(cmd) if (useMCS or 'visit' in cmdKeys) else -1
 
-        start = time.time()
+        # Making base pfsConfig from design file, fetching additional keys from gen2.
+        pfsConfig = self.getPfsConfig(cmd, visit=visit, pfsDesign=pfsDesign)
 
         # Deactivating both theta and phi.
         thetaEnable = phiEnable = False
@@ -1040,32 +1041,39 @@ class FpsCmd(object):
             eng.setNormalMode()
             thetaEnable = phiEnable = True
 
-        diff = self.cc.moveToHome(goodCobra, thetaEnable=thetaEnable, phiEnable=phiEnable,
+        # Invalidating previous pfsConfig.
+        cmd.inform(f'pfsConfig=0x{pfsDesign.pfsDesignId:016x},{visit},inProgress')
+
+        try:
+            diff = self.cc.moveToHome(goodCobra, thetaEnable=thetaEnable, phiEnable=phiEnable,
                                   thetaCCW=thetaCCW, noMCS=noMCSexposure)
 
-        if useMCS and thetaEnable and phiEnable and diff is not None:
-            self.logger.info(f'Averaged position offset compared with cobra center = {np.mean(diff)}')
+            if useMCS and thetaEnable and phiEnable and diff is not None:
+                self.logger.info(f'Averaged position offset compared with cobra center = {np.mean(diff)}')
 
-        if phiEnable:
-            phiAngles = np.zeros(len(self.cc.allCobras))
-            self.atPhis = phiAngles.copy()
-            cmd.inform(f'text="Setting phiAngle to the home position."')
+            if phiEnable:
+                phiAngles = np.zeros(len(self.cc.allCobras))
+                self.atPhis = phiAngles.copy()
+                cmd.inform(f'text="Setting phiAngle to the home position."')
 
-        if thetaEnable:
-            thetaAngles = ((self.cc.calibModel.tht1 - self.cc.calibModel.tht0 + np.pi) % (np.pi * 2) + np.pi)
-            self.atThetas = thetaAngles.copy()
-            cmd.inform(f'text="Setting thetaAngle to the home position."')
+            if thetaEnable:
+                thetaAngles = ((self.cc.calibModel.tht1 - self.cc.calibModel.tht0 + np.pi) % (np.pi * 2) + np.pi)
+                self.atThetas = thetaAngles.copy()
+                cmd.inform(f'text="Setting thetaAngle to the home position."')
 
-        self.cc.setCurrentAngles(self.cc.allCobras, thetaAngles=thetaAngles, phiAngles=phiAngles)
+            self.cc.setCurrentAngles(self.cc.allCobras, thetaAngles=thetaAngles, phiAngles=phiAngles)
 
-        # Only generate pfsConfigs if we take an image which needs them.
-        if useMCS:
-            # making base pfsConfig from design file, fetching additional keys from gen2.
-            pfsConfig = self.getPfsConfig(cmd, visit=visit, pfsDesign=pfsDesign)
-            self._finalizeWriteIngestPfsConfig(pfsConfig, cmd=cmd,
-                                               converg_elapsed_time=round(time.time() - start, 3))
+        except Exception:
+            convergenceFailed = True
+            raise
+        finally:
+            eng.setNormalMode()
+            # Only generate pfsConfigs if we take an image which needs them.
+            if visit !=-1:
+                self._finalizeWriteIngestPfsConfig(pfsConfig, cmd=cmd,
+                                                   convergenceFailed=convergenceFailed,
+                                                   converg_elapsed_time=round(time.time() - start, 3))
 
-        eng.setNormalMode()
         cmd.finish(f'text="Moved all arms back to home"')
 
     def cobraAndDotRecenter(self, cmd):
@@ -1415,10 +1423,10 @@ class FpsCmd(object):
             doMoveCobraIds = df[df.bitMask.astype('bool')].cobraId.to_numpy()
             return doMoveCobraIds - 1
 
-        #self.logger.info(f"loadGoodIdx maskfile = {maskFile}")
+        # self.logger.info(f"loadGoodIdx maskfile = {maskFile}")
 
-        #doMove = self.cc.goodIdx if maskFile is None else loadMaskFile()
-        #doMove = self.cc.goodIdx if maskFile is None else self.logger.info(f"loadGoodIdx maskfile = {maskFile}")
+        # doMove = self.cc.goodIdx if maskFile is None else loadMaskFile()
+        # doMove = self.cc.goodIdx if maskFile is None else self.logger.info(f"loadGoodIdx maskfile = {maskFile}")
         if maskFile is None:
             doMove = self.cc.goodIdx
         else:
@@ -1429,7 +1437,10 @@ class FpsCmd(object):
     def getPfsConfig(self, cmd, visit, pfsDesign, maskFile=None):
         """Get pfsConfig from pfsDesign, adding additional gen2 keys."""
         cards = fits.getPfsConfigCards(self.actor, cmd, visit, expType='acquisition')
-        return pfsConfigUtils.pfsConfigFromDesign(pfsDesign, visit, header=cards, maskFile=maskFile)
+        return pfsConfigUtils.pfsConfigFromDesign(pfsDesign, visit,
+                                                  calibModel=self.cc.calibModel,
+                                                  header=cards,
+                                                  maskFile=maskFile)
 
     def moveToPfsDesign(self, cmd):
         """ Move cobras to a PFS design. """
@@ -1445,6 +1456,7 @@ class FpsCmd(object):
         self.cc.maxTotalSteps = 2000
 
         start = time.time()
+        convergenceFailed = False
         cmdKeys = cmd.cmd.keywords
 
         designId = cmdKeys['designId'].values[0]
@@ -1616,8 +1628,8 @@ class FpsCmd(object):
         cmd.inform(f'text="Reset the motor scaling factor."')
         self.cc.pfi.resetMotorScaling(self.cc.allCobras)
 
-        # Convergence is in progress.
-        cmd.inform(f'pfsConfig=0x{designId:016x},{visit},inProgress')
+        # Invalidating previous pfsConfig.
+        cmd.inform(f'pfsConfig=0x{pfsDesign.pfsDesignId:016x},{visit},inProgress')
         try:
             if twoSteps:
                 cIds = filteredGoodIdx  # Changed from goodIdx to filteredGoodIdx
@@ -1683,22 +1695,19 @@ class FpsCmd(object):
 
             # Saving moves array
             np.save(dataPath / 'moves', moves)
+
         except Exception:
+            convergenceFailed = True
+            raise
+
+        finally:
             self._finalizeWriteIngestPfsConfig(pfsConfig, cmd=cmd,
-                                               convergenceFailed=True,
+                                               convergenceFailed=convergenceFailed,
                                                notConvergedDistanceThreshold=notConvergedDistanceThreshold,
                                                NOT_MOVE_MASK=notMoveMask,
                                                converg_num_iter=iteration,
                                                converg_elapsed_time=round(time.time() - start, 3),
                                                converg_tolerance=tolerance)
-            raise
-
-        self._finalizeWriteIngestPfsConfig(pfsConfig, cmd=cmd,
-                                           notConvergedDistanceThreshold=notConvergedDistanceThreshold,
-                                           NOT_MOVE_MASK=notMoveMask,
-                                           converg_num_iter=iteration,
-                                           converg_elapsed_time=round(time.time() - start, 3),
-                                           converg_tolerance=tolerance)
 
         cmd.finish(f'text="We are at design position in {round(time.time() - start, 3)} seconds."')
 
@@ -1708,9 +1717,10 @@ class FpsCmd(object):
         """Finalize pfsConfig, write to disk, ingest into opdb, and generate pfsConfig keyword."""
         atThetas = None if convergenceFailed else self.atThetas
         atPhis = None if convergenceFailed else self.atPhis
-
+        cmd = cmd if cmd.isAlive() else self.actor.bcast
         try:
-            maxIteration = pfsConfigUtils.finalize(pfsConfig, self.cc.calibModel, cmd=cmd,
+            maxIteration = pfsConfigUtils.finalize(pfsConfig,
+                                                   nIteration=self.actor.visitor.frameSeq - 1,
                                                    notConvergedDistanceThreshold=notConvergedDistanceThreshold,
                                                    NOT_MOVE_MASK=NOT_MOVE_MASK,
                                                    atThetas=atThetas, atPhis=atPhis,
@@ -1720,6 +1730,9 @@ class FpsCmd(object):
                 cmd.warn(f'text="pfsConfigUtils.finalize failed with: {e}"')
                 return
             raise
+
+        # So far so good.
+        cmd.inform('text="pfsConfig updated successfully."')
 
         # write pfsConfig to disk.
         if not self.cc.simMode:
