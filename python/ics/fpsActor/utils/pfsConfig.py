@@ -76,7 +76,7 @@ def tweakTargetPosition(pfsConfig, cmd=None):
     return pfsConfig
 
 
-def finalize(pfsConfig, nIteration, cmd=None, notConvergedDistanceThreshold=None,
+def finalize(pfsConfig, nIteration, notConvergedDistanceThreshold=None,
              NOT_MOVE_MASK=None, atThetas=None, atPhis=None, convergenceFailed=False):
     """Finalize pfsConfig after converging, updating pfiCenter, fiberStatus, ra, dec"""
 
@@ -119,8 +119,7 @@ def finalize(pfsConfig, nIteration, cmd=None, notConvergedDistanceThreshold=None
     lastIteration = fetchFinalConvergence(pfsConfig.visit, nIteration)
 
     if lastIteration is None or not len(lastIteration):
-        if cmd:
-            cmd.warn(f'text="Could not find cobra_match data for {pfsConfig.visit} iteration={nIteration}."')
+        logger.warning(f'Could not find cobra_match data for {pfsConfig.visit} iteration={nIteration}.')
 
         lastIteration = _fakeFinalConvergence(pfsConfig.visit, nIteration)
         atThetas = atPhis = None
@@ -132,8 +131,7 @@ def finalize(pfsConfig, nIteration, cmd=None, notConvergedDistanceThreshold=None
     # setting CONVERGENCE_FAILED bit.
     if convergenceFailed:
         pfsConfig.setInstrumentStatusFlag(InstrumentStatusFlag.CONVERGENCE_FAILED)
-        if cmd:
-            cmd.warn('text="Convergence failed; Setting pfsConfig with CONVERGENCE_FAILED flag"')
+        logger.warning(f'Convergence failed; Setting pfsConfig with CONVERGENCE_FAILED flag')
 
     # Setting missing matches to NaNs.
     NO_MATCH_MASK = lastIteration.spot_id == -1
@@ -217,9 +215,6 @@ def finalize(pfsConfig, nIteration, cmd=None, notConvergedDistanceThreshold=None
     if any(~np.isnan(radec.ravel())):
         nRa, nDec = np.sum(~np.isnan(radec), axis=0)
         logger.info(f'{pfsConfig.filename} successfully recovered nRa({nRa}) nDec({nDec}) for UNASSIGNED target...')
-
-    if cmd:
-        cmd.inform('text="pfsConfig updated successfully."')
 
     return lastIteration.iteration.max()
 
