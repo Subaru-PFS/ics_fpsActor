@@ -9,6 +9,7 @@ from pfs.utils.pfsDesignUtils import fakeRaDecFromPfiNominal
 
 pfsDesignDir = '/data/pfsDesign'
 from pfs.utils import butler
+from ics.fpsActor.utils.alfUtils import sgfm, dots
 
 
 def makeDesignName(flavour, maskFile):
@@ -36,72 +37,58 @@ def writeDesign(pfsDesign):
     return doWrite, fullPath
 
 
-def createHomeDesign(calibModel, positions, goodIdx, homingType, maskFile):
-    """Create home design from current calibModel, ra and dec are faked."""
-    gfm = pd.DataFrame(FiberIds().data)
+def createPfsDesign(calibModel, xy, moveTargetType, MOVE_MASK=None, designName=''):
+    """Create a PfsDesign from xy positions, applying mask/targetType and faking ra/dec."""
+    cobraMapping = sgfm.copy()
+    MOVE_MASK = cobraMapping.COBRA_OK_MASK.to_numpy() if MOVE_MASK is None else np.asarray(MOVE_MASK, dtype=bool)
 
-    sgfm = gfm.set_index('scienceFiberId').loc[np.arange(2394) + 1].reset_index().sort_values('cobraId')
-    sgfm['x'] = np.real(positions)
-    sgfm['y'] = np.imag(positions)
+    if xy.shape[0] != len(cobraMapping) or xy.shape[1] != 2:
+        raise ValueError(f'xy must have shape ({len(cobraMapping)}, 2), got {xy.shape}')
+
+    if MOVE_MASK.shape[0] != len(cobraMapping):
+        raise ValueError(f'MOVE_MASK must have length {len(cobraMapping)}, got {MOVE_MASK.shape[0]}')
+
+    # setting positions.
+    cobraMapping['x'] = xy[:, 0]
+    cobraMapping['y'] = xy[:, 1]
 
     # setting targetType.
-    MOVE_MASK = np.isin(sgfm.cobraId - 1, goodIdx)
-    sgfm['targetType'] = TargetType.UNASSIGNED
-    sgfm.loc[MOVE_MASK, 'targetType'] = TargetType.HOME
-    targetType = sgfm.sort_values('fiberId').targetType.to_numpy()
+    cobraMapping['targetType'] = TargetType.UNASSIGNED
+    cobraMapping.loc[MOVE_MASK, 'targetType'] = moveTargetType
+    targetType = cobraMapping.sort_values('fiberId').targetType.to_numpy()
 
     # setting position to NaN where no target.
-    sgfm.loc[~MOVE_MASK, 'x'] = np.nan
-    sgfm.loc[~MOVE_MASK, 'y'] = np.nan
+    cobraMapping.loc[~MOVE_MASK, 'x'] = np.nan
+    cobraMapping.loc[~MOVE_MASK, 'y'] = np.nan
 
     # faking ra and dec.
-    pfiNominal = sgfm.sort_values('fiberId')[['x', 'y']].to_numpy()
+    pfiNominal = cobraMapping.sort_values('fiberId')[['x', 'y']].to_numpy()
     ra, dec = fakeRaDecFromPfiNominal(pfiNominal)
 
-    # setting designName.
+    pfsDesign = pfsDesignUtils.makePfsDesign(pfiNominal=pfiNominal, ra=ra, dec=dec, targetType=targetType,
+                                             arms='brnm', designName=designName)
+    # Set BROKENFIBER, BROKENCOBRA, BLOCKED fiberStatus.
+    pfsDesign = pfsDesignUtils.setFiberStatus(pfsDesign, calibModel=calibModel)
+
+    return pfsDesign
+
+
+def createHomeDesign(calibModel, positions, movingIdx, homingType, maskFile):
+    """Create home design from current calibModel, ra and dec are faked."""
+    xy = np.column_stack((np.real(positions), np.imag(positions)))
+    MOVE_MASK = np.isin(sgfm.cobraId.to_numpy() - 1, movingIdx)
     designName = makeDesignName(homingType, maskFile)
 
-    pfsDesign = pfsDesignUtils.makePfsDesign(pfiNominal=pfiNominal, ra=ra, dec=dec, targetType=targetType,
-                                             arms='brnm', designName=designName)
-    # Set BROKENFIBER, BROKENCOBRA, BLOCKED fiberStatus.
-    pfsDesign = pfsDesignUtils.setFiberStatus(pfsDesign, calibModel=calibModel)
-
-    return pfsDesign
+    return createPfsDesign(calibModel, xy, TargetType.HOME, MOVE_MASK=MOVE_MASK, designName=designName)
 
 
-def createBlackDotDesign(calibModel, goodIdx, maskFile):
-    """Create blac dots design from current dots position, ra and dec are faked."""
-    nestor = butler.Butler()
-    dots = nestor.get('black_dots')
-
-    gfm = pd.DataFrame(FiberIds().data)
-    sgfm = gfm.set_index('scienceFiberId').loc[np.arange(2394) + 1].reset_index().sort_values('cobraId')
-    sgfm['x'] = dots.x.to_numpy()
-    sgfm['y'] = dots.y.to_numpy()
-
-    # setting targetType.
-    MOVE_MASK = np.isin(sgfm.cobraId - 1, goodIdx)
-    sgfm['targetType'] = TargetType.UNASSIGNED
-    sgfm.loc[MOVE_MASK, 'targetType'] = TargetType.BLACKSPOT
-    targetType = sgfm.sort_values('fiberId').targetType.to_numpy()
-
-    # setting position to NaN where no target.
-    sgfm.loc[~MOVE_MASK, 'x'] = np.nan
-    sgfm.loc[~MOVE_MASK, 'y'] = np.nan
-
-    # faking ra and dec.
-    pfiNominal = sgfm.sort_values('fiberId')[['x', 'y']].to_numpy()
-    ra, dec = fakeRaDecFromPfiNominal(pfiNominal)
-
-    # setting designName.
+def createBlackDotDesign(calibModel, movingIdx, maskFile):
+    """Create black dots design from current dots position, ra and dec are faked."""
+    xy = np.column_stack((dots.x.to_numpy(), dots.y.to_numpy()))
+    MOVE_MASK = np.isin(sgfm.cobraId.to_numpy() - 1, movingIdx)
     designName = makeDesignName('blackDots', maskFile)
 
-    pfsDesign = pfsDesignUtils.makePfsDesign(pfiNominal=pfiNominal, ra=ra, dec=dec, targetType=targetType,
-                                             arms='brnm', designName=designName)
-    # Set BROKENFIBER, BROKENCOBRA, BLOCKED fiberStatus.
-    pfsDesign = pfsDesignUtils.setFiberStatus(pfsDesign, calibModel=calibModel)
-
-    return pfsDesign
+    return createPfsDesign(calibModel, xy, TargetType.BLACKSPOT, MOVE_MASK=MOVE_MASK, designName=designName)
 
 
 def homeMaskFromDesign(pfsDesign):

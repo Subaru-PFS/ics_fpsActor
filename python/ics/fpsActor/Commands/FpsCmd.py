@@ -930,7 +930,7 @@ class FpsCmd(object):
         phiEnable = homingType != 'thetaHome'
         # making home pfsDesign.
         maskFile = cmdKeys['maskFile'].values[0] if 'maskFile' in cmdKeys else None
-        goodIdx = self.loadGoodIdx(maskFile)
+        movingIdx = self.loadGoodIdx(maskFile)
 
         thetaHome = ((self.cc.calibModel.tht1 - self.cc.calibModel.tht0 + np.pi) % (np.pi * 2) + np.pi)
         phiHome = np.zeros_like(thetaHome)
@@ -943,7 +943,7 @@ class FpsCmd(object):
 
         positions = self.cc.pfi.anglesToPositions(self.cc.allCobras, thetaAngles, phiAngles)
 
-        return pfsDesignUtils.createHomeDesign(self.cc.calibModel, positions, goodIdx, homingType, maskFile)
+        return pfsDesignUtils.createHomeDesign(self.cc.calibModel, positions, movingIdx, homingType, maskFile)
 
     def createHomeDesign(self, cmd):
 
@@ -960,9 +960,9 @@ class FpsCmd(object):
 
         # making home pfsDesign.
         maskFile = cmdKeys['maskFile'].values[0] if 'maskFile' in cmdKeys else None
-        goodIdx = self.loadGoodIdx(maskFile)
+        movingIdx = self.loadGoodIdx(maskFile)
 
-        pfsDesign = pfsDesignUtils.createBlackDotDesign(self.cc.calibModel, goodIdx, maskFile)
+        pfsDesign = pfsDesignUtils.createBlackDotDesign(self.cc.calibModel, movingIdx, maskFile)
 
         doWrite, fullPath = pfsDesignUtils.writeDesign(pfsDesign)
         if doWrite:
