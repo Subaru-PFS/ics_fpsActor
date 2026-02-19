@@ -33,6 +33,7 @@ from pfs.datamodel import FiberStatus
 from pfs.utils import butler
 from pfs.utils.pfsConfigUtils import tweakTargetPosition
 import ics.utils.cmd as cmdUtils
+from pfs.datamodel import TargetType
 
 reload(vis)
 
@@ -79,8 +80,9 @@ class FpsCmd(object):
             ('movePhiForDots', '<angle> <iteration> [<visit>]', self.movePhiForDots),
             ('movePhiToAngle', '<angle> <iteration> [<visit>]', self.movePhiToAngle),
 
-            ('createHomeDesign', '[@(phi|theta|all)] [<maskFile>]', self.createHomeDesign),
-            ('createBlackDotDesign', '[<maskFile>]', self.createBlackDotDesign),
+            ('createHomeDesign', '[@(phi|theta|all)] [<maskFile>] [<designName>]', self.createHomeDesign),
+            ('createBlackDotDesign', '[<maskFile>] [<designName>]', self.createBlackDotDesign),
+            ('createThetaPhiScanDesign', '<thetaAngle> <phiAngle> [<designName>]', self.createThetaPhiScanDesign),
             ('genPfsConfigFromMcs', '<visit> <designId>', self.genPfsConfigFromMcs),
             ('moveToHome', '@(phi|theta|all) [<expTime>] [@noMCSexposure] [<visit>] [<maskFile>] '
                            '[<designId>] [@thetaCCW]', self.moveToHome),
@@ -174,6 +176,11 @@ class FpsCmd(object):
                                         keys.Key("user", types.String(), help="opdb user name"),
                                         keys.Key("dbname", types.String(), help="opdb db name"),
                                         keys.Key("port", types.Int(), help="opdb port"),
+                                        keys.Key("thetaAngle", types.Int(), units='deg',
+                                                 help="Designed theta angle (deg)"),
+                                        keys.Key("phiAngle", types.Int(), units='deg',
+                                                 help="Designed phi angle (deg)"),
+                                        keys.Key("designName", types.String(), help="pfsDesign name"),
                                         )
 
         self.logger = logging.getLogger('fps')
@@ -415,11 +422,10 @@ class FpsCmd(object):
         self.cc.pfi.reset(resetMask)
         time.sleep(1)
         res = self.cc.pfi.diag()
-        cmd.info(f'text="diag = {res}"')
-        self.loadModel(cmd)
-  
+        cmd.inform(f'text="diag = {res}"')
 
-        cmd.info(f'text="Reload the XML file and connect to FPGA"')
+        self.loadModel(cmd)
+        cmd.inform(f'text="Reload the XML file and connect to FPGA"')
 
         cmd.finish(f'text="XML = {self.xml}"')
 
@@ -486,11 +492,11 @@ class FpsCmd(object):
         self.cc.pfi.reset()
         time.sleep(1)
         res = self.cc.pfi.diag()
-        cmd.info(f'text="diag = {res}"')
+        cmd.inform(f'text="diag = {res}"')
 
         self.loadModel(cmd)
-     
-        cmd.info(f'text="Reload the XML file and connect to FPGA"')
+
+        cmd.inform(f'text="Reload the XML file and connect to FPGA"')
 
         cmd.finish(f'text="XML = {self.xml}"')
 
@@ -789,7 +795,7 @@ class FpsCmd(object):
         if cmdVar.didFail:
             cmd.fail(f'text="Setting MCS fMethod failed: {cmdUtils.interpretFailure(cmdVar)}"')
             raise RuntimeError(f'FAILED to setting mcs FiberID mode!')
-        
+
         slowMap = 'slowMap' in cmdKeys
         fastMap = 'fastMap' in cmdKeys
 
@@ -825,7 +831,7 @@ class FpsCmd(object):
             if fastMap is True:
                 newXml = f'{day}-theta-fast.xml'
                 cmd.inform(f'text="Fast motor map is {newXml}"')
-        
+
         # Switching MCS 'fMethod' back to 'previous'
         cmdString = 'switchFMethod fMethod=target'
         cmdVar = self.actor.cmdr.call(actor='mcs', cmdStr=cmdString,
@@ -916,7 +922,16 @@ class FpsCmd(object):
 
         cmd.finish(f'Motor map sequence finished')
 
+    def _makeDesignName(self, flavour, maskFile):
+        """Construct pfsDesign name."""
+        if not maskFile:
+            return flavour
+
+        _, maskFileName = os.path.split(os.path.splitext(maskFile)[0])
+        return f'{flavour}-{maskFileName}'
+
     def _createHomeDesign(self, cmd):
+        """Constructing home pfsDesign."""
         cmdKeys = cmd.cmd.keywords
 
         if 'theta' in cmdKeys:
@@ -928,9 +943,16 @@ class FpsCmd(object):
 
         thetaEnable = homingType != 'phiHome'
         phiEnable = homingType != 'thetaHome'
-        # making home pfsDesign.
+
+        # Getting the index of commanded cobras.
         maskFile = cmdKeys['maskFile'].values[0] if 'maskFile' in cmdKeys else None
         movingIdx = self.loadGoodIdx(maskFile)
+
+        # Making or getting pfsDesign name.
+        if 'designName' in cmdKeys:
+            designName = cmdKeys['designName'].values[0]
+        else:
+            designName = self._makeDesignName(homingType, maskFile)
 
         thetaHome = ((self.cc.calibModel.tht1 - self.cc.calibModel.tht0 + np.pi) % (np.pi * 2) + np.pi)
         phiHome = np.zeros_like(thetaHome)
@@ -943,10 +965,10 @@ class FpsCmd(object):
 
         positions = self.cc.pfi.anglesToPositions(self.cc.allCobras, thetaAngles, phiAngles)
 
-        return pfsDesignUtils.createHomeDesign(self.cc.calibModel, positions, movingIdx, homingType, maskFile)
+        return pfsDesignUtils.createHomeDesign(self.cc.calibModel, positions, movingIdx, designName=designName)
 
     def createHomeDesign(self, cmd):
-
+        """Generating and writing home pfsDesign."""
         pfsDesign = self._createHomeDesign(cmd)
 
         doWrite, fullPath = pfsDesignUtils.writeDesign(pfsDesign)
@@ -956,13 +978,48 @@ class FpsCmd(object):
         cmd.finish(f'fpsDesignId=0x{pfsDesign.pfsDesignId:016x}')
 
     def createBlackDotDesign(self, cmd):
+        """Generating and writing blackDots pfsDesign."""
         cmdKeys = cmd.cmd.keywords
 
-        # making home pfsDesign.
+        # Getting the index of commanded cobras.
         maskFile = cmdKeys['maskFile'].values[0] if 'maskFile' in cmdKeys else None
         movingIdx = self.loadGoodIdx(maskFile)
 
-        pfsDesign = pfsDesignUtils.createBlackDotDesign(self.cc.calibModel, movingIdx, maskFile)
+        # Making or getting pfsDesign name.
+        if 'designName' in cmdKeys:
+            designName = cmdKeys['designName'].values[0]
+        else:
+            designName = self._makeDesignName('blackDots', maskFile)
+
+        pfsDesign = pfsDesignUtils.createBlackDotDesign(self.cc.calibModel, movingIdx, designName=designName)
+
+        doWrite, fullPath = pfsDesignUtils.writeDesign(pfsDesign)
+        if doWrite:
+            cmd.inform(f'text="wrote {fullPath} to disk !"')
+
+        cmd.finish(f'fpsDesignId=0x{pfsDesign.pfsDesignId:016x}')
+
+    def createThetaPhiScanDesign(self, cmd):
+        cmdKeys = cmd.cmd.keywords
+
+        thetaAngle = cmdKeys['thetaAngle'].values[0]
+        phiAngle = cmdKeys['phiAngle'].values[0]
+
+        # Making or getting pfsDesign name.
+        if 'designName' in cmdKeys:
+            designName = cmdKeys['designName'].values[0]
+        else:
+            designName = f'thetaPhiScan_{thetaAngle:03d}_{phiAngle:03d}'
+
+        cobras = self.cc.allCobras
+        thetaAngles = (np.deg2rad(thetaAngle) - self.cc.pfi.calibModel.tht0) % (2 * np.pi)
+        phiAngles = np.full_like(thetaAngles, np.deg2rad(phiAngle))
+
+        positions = self.cc.pfi.anglesToPositions(cobras, thetaAngles, phiAngles)
+        xy = np.vstack((np.real(positions), np.imag(positions))).T
+
+        pfsDesign = pfsDesignUtils.createPfsDesign(self.cc.calibModel, xy, moveTargetType=TargetType.SCIENCE,
+                                                   designName=designName)
 
         doWrite, fullPath = pfsDesignUtils.writeDesign(pfsDesign)
         if doWrite:
@@ -1327,7 +1384,7 @@ class FpsCmd(object):
         cmd.finish(f'text="PHI is now at {angle} degrees!"')
 
     def moveToSafePosition(self, cmd):
-        
+
         """ Move cobras to nominal safe position: thetas OUT, phis in.
         Assumes phi is at 60deg and that we know thetaPositions.
         """
@@ -1347,7 +1404,7 @@ class FpsCmd(object):
 
         self.cc.pfi.resetMotorScaling()
         # "homed" should be "goHome". Hack now here, fix there later.
-        dataPath, thetas, phis, moves = eng.moveThetaPhi(self.cc.goodIdx, thetas, phis, 
+        dataPath, thetas, phis, moves = eng.moveThetaPhi(self.cc.goodIdx, thetas, phis,
                                                          False, False, tolerance=tolerance,
                                                          tries=8, homed=goHome, newDir=False,
                                                          threshold=2.0, thetaMargin=np.deg2rad(15.0))
