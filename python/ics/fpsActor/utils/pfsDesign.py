@@ -12,15 +12,6 @@ from pfs.utils import butler
 from ics.fpsActor.utils.alfUtils import sgfm, dots
 
 
-def makeDesignName(flavour, maskFile):
-    """construct pfsDesign name."""
-    if not maskFile:
-        return flavour
-
-    _, maskFileName = os.path.split(os.path.splitext(maskFile)[0])
-    return f'{flavour}-{maskFileName}'
-
-
 def readDesign(pfsDesignId):
     """Read PfsDesign from pfsDesignDir."""
     return PfsDesign.read(pfsDesignId=pfsDesignId, dirName=pfsDesignDir)
@@ -73,20 +64,18 @@ def createPfsDesign(calibModel, xy, moveTargetType, MOVE_MASK=None, designName='
     return pfsDesign
 
 
-def createHomeDesign(calibModel, positions, movingIdx, homingType, maskFile):
+def createHomeDesign(calibModel, positions, movingIdx, designName=''):
     """Create home design from current calibModel, ra and dec are faked."""
     xy = np.column_stack((np.real(positions), np.imag(positions)))
     MOVE_MASK = np.isin(sgfm.cobraId.to_numpy() - 1, movingIdx)
-    designName = makeDesignName(homingType, maskFile)
 
     return createPfsDesign(calibModel, xy, TargetType.HOME, MOVE_MASK=MOVE_MASK, designName=designName)
 
 
-def createBlackDotDesign(calibModel, movingIdx, maskFile):
+def createBlackDotDesign(calibModel, movingIdx, designName=''):
     """Create black dots design from current dots position, ra and dec are faked."""
     xy = np.column_stack((dots.x.to_numpy(), dots.y.to_numpy()))
     MOVE_MASK = np.isin(sgfm.cobraId.to_numpy() - 1, movingIdx)
-    designName = makeDesignName('blackDots', maskFile)
 
     return createPfsDesign(calibModel, xy, TargetType.BLACKSPOT, MOVE_MASK=MOVE_MASK, designName=designName)
 
