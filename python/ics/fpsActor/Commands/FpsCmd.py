@@ -952,7 +952,7 @@ class FpsCmd(object):
         else:
             designName = self._makeDesignName(homingType, maskFile)
 
-        thetaHome = ((self.cc.calibModel.tht1 - self.cc.calibModel.tht0 + np.pi) % (np.pi * 2) + np.pi)
+        thetaHome = ((self.cc.calibModel.tht1) % (np.pi * 2))
         phiHome = np.zeros_like(thetaHome)
 
         thetaAngles = thetaHome if thetaEnable else self.atThetas
@@ -1617,7 +1617,7 @@ class FpsCmd(object):
 
         cmd.inform(f'text="Reset the current angles for cobra arms."')
         self.cc.trajectoryMode = False
-        thetaHome = ((self.cc.calibModel.tht1 - self.cc.calibModel.tht0 + np.pi) % (np.pi * 2) + np.pi)
+        thetaHome = ((self.cc.calibModel.tht1) % (np.pi * 2))
 
         if goHome:
             cmd.inform(f'text="Setting ThetaAngle = Home and phiAngle = 0."')
