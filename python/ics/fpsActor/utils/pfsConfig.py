@@ -10,6 +10,7 @@ import pfs.utils.pfsDesignUtils as pfsDesignUtils
 from pfs.datamodel import PfsConfig, FiberStatus, TargetType, InstrumentStatusFlag
 from pfs.utils.database import opdb
 from pfs.utils.fiberids import FiberIds
+from pfs.utils.versions import collectVersions
 from pfs.utils.versions import getVersion
 from scipy.interpolate import griddata
 
@@ -17,7 +18,7 @@ __all__ = ["pfsConfigFromDesign", "makeTargetsArray", "tweakTargetPosition",
            "finalize", "writePfsConfig", "ingestPfsConfig"]
 
 
-def pfsConfigFromDesign(pfsDesign, visit0, calibModel=None, header=None, maskFile=None):
+def pfsConfigFromDesign(pfsDesign, visit0, calibModel=None, header=None, maskFile=None, versions=None):
     """Just make a PfsConfig file identical to PfsDesign."""
     if maskFile:
         # retrieving masked cobras/fibers.
@@ -28,9 +29,9 @@ def pfsConfigFromDesign(pfsDesign, visit0, calibModel=None, header=None, maskFil
         noTargetMask = np.logical_and(noEng, np.isin(pfsDesign.fiberId, noTarget.fiberId))
         pfsDesign.targetType[noTargetMask] = TargetType.UNASSIGNED
 
-    pfiCenter = np.full(pfsDesign.pfiNominal.shape, np.nan, dtype=pfsDesign.pfiNominal.dtype)
     # Create pfsConfig with pfiCenter as nan.
-    pfsConfig = PfsConfig.fromPfsDesign(pfsDesign, visit0, pfiCenter, header=header, visit0=visit0)
+    pfiCenter = np.full(pfsDesign.pfiNominal.shape, np.nan, dtype=pfsDesign.pfiNominal.dtype)
+    pfsConfig = PfsConfig.fromPfsDesign(pfsDesign, visit0, pfiCenter, header=header, visit0=visit0, versions0=versions)
     # Set BROKENFIBER, BROKENCOBRA, BLOCKED fiberStatus.
     return pfsDesignUtils.setFiberStatus(pfsConfig, calibModel=calibModel)
 
