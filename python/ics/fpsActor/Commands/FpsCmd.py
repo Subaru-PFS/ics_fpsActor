@@ -95,7 +95,7 @@ class FpsCmd(object):
             ('moveToSafePosition', '[<expTime>] [<visit>] [<tolerance>] [<phiAngle>] [<thetaAngle>] [@noHome]', self.moveToSafePosition),
             ('makeMotorMap', '@(phi|theta) <stepsize> <repeat> [<totalsteps>] [@slowOnly] [@forceMove] [<visit>]',
              self.makeMotorMap),
-            ('makeMotorMapGroups', '@(phi|theta) <stepsize> <repeat> [@slowMap] [@fastMap] [<cobraGroup>] [<visit>]',
+            ('makeMotorMapGroups', '@(phi|theta) <stepsize> <repeat> @(slowMap|fastMap) [<cobraGroup>] [<visit>]',
              self.makeMotorMapwithGroups),
             ('makeOntimeMap', '@(phi|theta) [<visit>]', self.makeOntimeMap),
             ('angleConverge', '@(phi|theta) <angleTargets> [<visit>]', self.angleConverge),
@@ -295,7 +295,7 @@ class FpsCmd(object):
 
         cmd.finish(f"text='fpgaSim command finished.'")
 
-    def loadModel(self, cmd):
+    def loadModel(self, cmd, doFinish=True):
         """ Loading cobra Model"""
         cmdKeys = cmd.cmd.keywords
         xml = cmdKeys['xml'].values[0] if 'xml' in cmdKeys else None
@@ -329,7 +329,8 @@ class FpsCmd(object):
         self.cc.loadModel(file=pathlib.Path(self.xml))
         eng.setCobraCoach(self.cc)
 
-        cmd.finish(f"text='Loaded model = {self.xml}'")
+        diag = cmd.finish if doFinish else cmd.inform
+        diag(f"text='Loaded model = {self.xml}'")
 
     def writeModel(self, cmd):
         """Save current model to XML file"""
@@ -802,33 +803,36 @@ class FpsCmd(object):
         theta = 'theta' in cmdKeys
 
         day = time.strftime('%Y-%m-%d')
-        if phi is True:
+        if phi:
             cmd.inform(f'text="Build phi motor map AT ONCE for avoiding dots"')
             eng.setPhiMode()
 
-            if slowMap is True:
+            if slowMap:
                 newXml = f'{day}-phi-slow.xml'
                 cmd.inform(f'text="Slow motor map is {newXml}"')
-                eng.buildPhiMotorMaps(newXml, steps=stepsize, repeat=repeat, fast=False,
-                                      tries=12, homed=False)
 
-            if fastMap is True:
+            elif fastMap:
                 newXml = f'{day}-phi-fast.xml'
                 cmd.inform(f'text="Fast motor map is {newXml}"')
 
-        if theta is True:
+            eng.buildPhiMotorMaps(newXml, steps=stepsize, repeat=repeat, fast=fastMap,
+                                      tries=12, homed=False)
+
+        elif theta:
             group = cmd.cmd.keywords['cobraGroup'].values[0]
             cmd.inform(f'text="Build theta motor map in groups for avoiding dots"')
 
-            if slowMap is True:
+            if slowMap:
                 newXml = f'{day}-theta-slow.xml'
                 cmd.inform(f'text="Slow motor map is {newXml}"')
-                eng.buildThetaMotorMaps(newXml, steps=stepsize, group=group, repeat=repeat,
-                                        fast=False, tries=12, homed=False)
-
-            if fastMap is True:
+                
+            elif fastMap:
                 newXml = f'{day}-theta-fast.xml'
                 cmd.inform(f'text="Fast motor map is {newXml}"')
+
+            eng.buildThetaMotorMaps(newXml, steps=stepsize, group=group, repeat=repeat,
+                                        fast=fastMap, tries=12, homed=False)
+
 
         # Switching MCS 'fMethod' back to 'previous'
         cmdString = 'switchFMethod fMethod=target'
@@ -838,8 +842,8 @@ class FpsCmd(object):
             cmd.fail(f'text="Setting MCS fMethod failed: {cmdUtils.interpretFailure(cmdVar)}"')
             raise RuntimeError(f'FAILED to setting mcs FiberID mode!')
 
-
-
+        # reloading default xml file
+        self.loadModel(cmd, doFinish=False)
         cmd.finish(f'Motor map sequence finished')
 
     def makeMotorMap(self, cmd):
