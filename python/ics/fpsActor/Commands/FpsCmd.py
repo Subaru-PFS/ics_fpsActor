@@ -95,7 +95,7 @@ class FpsCmd(object):
             ('moveToSafePosition', '[<expTime>] [<visit>] [<tolerance>] [<phiAngle>] [<thetaAngle>] [@noHome]', self.moveToSafePosition),
             ('makeMotorMap', '@(phi|theta) <stepsize> <repeat> [<totalsteps>] [@slowOnly] [@forceMove] [<visit>]',
              self.makeMotorMap),
-            ('makeMotorMapGroups', '@(phi|theta) <stepsize> <repeat> @(slowMap|fastMap) [<cobraGroup>] [<visit>]',
+            ('makeMotorMapGroups', '@(phi|theta) <stepsize> <repeat> [@(slowMap|fastMap)] [<cobraGroup>] [<visit>]',
              self.makeMotorMapwithGroups),
             ('makeOntimeMap', '@(phi|theta) [<visit>]', self.makeOntimeMap),
             ('angleConverge', '@(phi|theta) <angleTargets> [<visit>]', self.angleConverge),
@@ -793,10 +793,13 @@ class FpsCmd(object):
                                       forUserCmd=cmd, timeLim=60)
         if cmdVar.didFail:
             cmd.fail(f'text="Setting MCS fMethod failed: {cmdUtils.interpretFailure(cmdVar)}"')
-            raise RuntimeError(f'FAILED to setting mcs FiberID mode!')
+            return
 
         slowMap = 'slowMap' in cmdKeys
         fastMap = 'fastMap' in cmdKeys
+
+        if not (slowMap or fastMap):
+            raise RuntimeError('slowMap or fastMap argument needs to be provided')
 
         # Switch from default no centroids to default do centroids
         phi = 'phi' in cmdKeys
@@ -844,7 +847,7 @@ class FpsCmd(object):
 
         # reloading default xml file
         self.loadModel(cmd, doFinish=False)
-        cmd.finish(f'Motor map sequence finished')
+        cmd.finish(f'text="Motor map sequence finished"')
 
     def makeMotorMap(self, cmd):
         """ Making motor map. """
