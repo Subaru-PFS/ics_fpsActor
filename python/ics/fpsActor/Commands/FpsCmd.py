@@ -32,6 +32,7 @@ from pfs.utils.database import opdb
 from pfs.datamodel import FiberStatus
 from pfs.utils import butler
 from pfs.utils.pfsConfigUtils import tweakTargetPosition
+from pfs.utils.versions import collectVersions
 import ics.utils.cmd as cmdUtils
 from pfs.datamodel import TargetType
 
@@ -927,6 +928,20 @@ class FpsCmd(object):
 
         cmd.finish(f'Motor map sequence finished')
 
+    def _collectVersions(self):
+        """Collect package version"""
+        versions = collectVersions(['ics_cobraCharmer', 'ics_fpsActor', 'pfs_instdata', 'pfs_utils', 'datamodel'])
+        try:
+            mcsVersion = self.actor.models['mcs'].keyVarDict['version'].getValue()
+        except ValueError:
+            mcsVersion = None
+
+        versions['ics_mcsActor'] = mcsVersion
+        versions['moduleXml'] = self.xml
+        versions['author'] = "fps"
+
+        return versions
+
     def _makeDesignName(self, flavour, maskFile):
         """Construct pfsDesign name."""
         if not maskFile:
@@ -969,8 +984,11 @@ class FpsCmd(object):
             cmd.fail('text="Cannot create HOME PfsDesign without cobra information.  Please go to home."')
 
         positions = self.cc.pfi.anglesToPositions(self.cc.allCobras, thetaAngles, phiAngles)
+        versions = self._collectVersions()
 
-        return pfsDesignUtils.createHomeDesign(self.cc.calibModel, positions, movingIdx, designName=designName)
+        return pfsDesignUtils.createHomeDesign(self.cc.calibModel, positions, movingIdx,
+                                               designName=designName,
+                                               versions=versions)
 
     def createHomeDesign(self, cmd):
         """Generating and writing home pfsDesign."""
@@ -996,8 +1014,10 @@ class FpsCmd(object):
         else:
             designName = self._makeDesignName('blackDots', maskFile)
 
-        pfsDesign = pfsDesignUtils.createBlackDotDesign(self.cc.calibModel, movingIdx, designName=designName)
-
+        versions = self._collectVersions()
+        pfsDesign = pfsDesignUtils.createBlackDotDesign(self.cc.calibModel, movingIdx,
+                                                        designName=designName,
+                                                        versions=versions)
         doWrite, fullPath = pfsDesignUtils.writeDesign(pfsDesign)
         if doWrite:
             cmd.inform(f'text="wrote {fullPath} to disk !"')
@@ -1022,9 +1042,12 @@ class FpsCmd(object):
 
         positions = self.cc.pfi.anglesToPositions(cobras, thetaAngles, phiAngles)
         xy = np.vstack((np.real(positions), np.imag(positions))).T
+        versions = self._collectVersions()
 
-        pfsDesign = pfsDesignUtils.createPfsDesign(self.cc.calibModel, xy, moveTargetType=TargetType.SCIENCE,
-                                                   designName=designName)
+        pfsDesign = pfsDesignUtils.createPfsDesign(self.cc.calibModel, xy,
+                                                   moveTargetType=TargetType.SCIENCE,
+                                                   designName=designName,
+                                                   versions=versions)
 
         doWrite, fullPath = pfsDesignUtils.writeDesign(pfsDesign)
         if doWrite:
@@ -1499,10 +1522,12 @@ class FpsCmd(object):
     def getPfsConfig(self, cmd, visit, pfsDesign, maskFile=None):
         """Get pfsConfig from pfsDesign, adding additional gen2 keys."""
         cards = fits.getPfsConfigCards(self.actor, cmd, visit, expType='acquisition')
+        versions = self._collectVersions()
         return pfsConfigUtils.pfsConfigFromDesign(pfsDesign, visit,
                                                   calibModel=self.cc.calibModel,
                                                   header=cards,
-                                                  maskFile=maskFile)
+                                                  maskFile=maskFile,
+                                                  versions=versions)
 
     def moveToPfsDesign(self, cmd):
         """ Move cobras to a PFS design. """

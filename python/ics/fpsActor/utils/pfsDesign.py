@@ -10,6 +10,7 @@ from pfs.utils.pfsDesignUtils import fakeRaDecFromPfiNominal
 pfsDesignDir = '/data/pfsDesign'
 from pfs.utils import butler
 from ics.fpsActor.utils.alfUtils import sgfm, dots
+from pfs.utils.versions import collectVersions
 
 
 def readDesign(pfsDesignId):
@@ -28,7 +29,7 @@ def writeDesign(pfsDesign):
     return doWrite, fullPath
 
 
-def createPfsDesign(calibModel, xy, moveTargetType, MOVE_MASK=None, designName=''):
+def createPfsDesign(calibModel, xy, moveTargetType, MOVE_MASK=None, designName='', versions=None):
     """Create a PfsDesign from xy positions, applying mask/targetType and faking ra/dec."""
     cobraMapping = sgfm.copy()
     MOVE_MASK = cobraMapping.COBRA_OK_MASK.to_numpy() if MOVE_MASK is None else np.asarray(MOVE_MASK, dtype=bool)
@@ -57,27 +58,33 @@ def createPfsDesign(calibModel, xy, moveTargetType, MOVE_MASK=None, designName='
     ra, dec = fakeRaDecFromPfiNominal(pfiNominal)
 
     pfsDesign = pfsDesignUtils.makePfsDesign(pfiNominal=pfiNominal, ra=ra, dec=dec, targetType=targetType,
-                                             arms='brnm', designName=designName)
+                                             arms='brnm', designName=designName, versions=versions)
     # Set BROKENFIBER, BROKENCOBRA, BLOCKED fiberStatus.
     pfsDesign = pfsDesignUtils.setFiberStatus(pfsDesign, calibModel=calibModel)
 
     return pfsDesign
 
 
-def createHomeDesign(calibModel, positions, movingIdx, designName=''):
+def createHomeDesign(calibModel, positions, movingIdx, designName='', versions=None):
     """Create home design from current calibModel, ra and dec are faked."""
     xy = np.column_stack((np.real(positions), np.imag(positions)))
     MOVE_MASK = np.isin(sgfm.cobraId.to_numpy() - 1, movingIdx)
 
-    return createPfsDesign(calibModel, xy, TargetType.HOME, MOVE_MASK=MOVE_MASK, designName=designName)
+    return createPfsDesign(calibModel, xy, TargetType.HOME,
+                           MOVE_MASK=MOVE_MASK,
+                           designName=designName,
+                           versions=versions)
 
 
-def createBlackDotDesign(calibModel, movingIdx, designName=''):
+def createBlackDotDesign(calibModel, movingIdx, designName='', versions=None):
     """Create black dots design from current dots position, ra and dec are faked."""
     xy = np.column_stack((dots.x.to_numpy(), dots.y.to_numpy()))
     MOVE_MASK = np.isin(sgfm.cobraId.to_numpy() - 1, movingIdx)
 
-    return createPfsDesign(calibModel, xy, TargetType.BLACKSPOT, MOVE_MASK=MOVE_MASK, designName=designName)
+    return createPfsDesign(calibModel, xy, TargetType.BLACKSPOT,
+                           MOVE_MASK=MOVE_MASK,
+                           designName=designName,
+                           versions=versions)
 
 
 def homeMaskFromDesign(pfsDesign):
