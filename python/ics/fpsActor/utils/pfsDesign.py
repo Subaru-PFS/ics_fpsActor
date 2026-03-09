@@ -1,4 +1,5 @@
 import os
+from datetime import datetime, timezone
 
 import numpy as np
 import pandas as pd
@@ -29,7 +30,7 @@ def writeDesign(pfsDesign):
     return doWrite, fullPath
 
 
-def createPfsDesign(calibModel, xy, moveTargetType, MOVE_MASK=None, designName='', versions=None):
+def createPfsDesign(calibModel, xy, moveTargetType, MOVE_MASK=None, designName='', versions=None, obstime=None):
     """Create a PfsDesign from xy positions, applying mask/targetType and faking ra/dec."""
     cobraMapping = sgfm.copy()
     MOVE_MASK = cobraMapping.COBRA_OK_MASK.to_numpy() if MOVE_MASK is None else np.asarray(MOVE_MASK, dtype=bool)
@@ -53,12 +54,15 @@ def createPfsDesign(calibModel, xy, moveTargetType, MOVE_MASK=None, designName='
     cobraMapping.loc[~MOVE_MASK, 'x'] = np.nan
     cobraMapping.loc[~MOVE_MASK, 'y'] = np.nan
 
-    # faking ra and dec.
+    # faking ra and dec.    
     pfiNominal = cobraMapping.sort_values('fiberId')[['x', 'y']].to_numpy()
     ra, dec = fakeRaDecFromPfiNominal(pfiNominal)
 
+    if obstime is None:
+        obstime = datetime.now(timezone.utc).isoformat()
+
     pfsDesign = pfsDesignUtils.makePfsDesign(pfiNominal=pfiNominal, ra=ra, dec=dec, targetType=targetType,
-                                             arms='brnm', designName=designName, versions=versions)
+                                             arms='brnm', designName=designName, versions=versions, obstime=obstime)
     # Set BROKENFIBER, BROKENCOBRA, BLOCKED fiberStatus.
     pfsDesign = pfsDesignUtils.setFiberStatus(pfsDesign, calibModel=calibModel)
 
