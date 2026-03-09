@@ -91,7 +91,7 @@ class FpsCmd(object):
             ('setCobraMode', '@(phi|theta|normal)', self.setCobraMode),
             ('setGeometry', '@(phi|theta) <runDir>', self.setGeometry),
             ('moveToPfsDesign',
-             '<designId> [@twoStepsOff] [@shortExpOff] [@goHome] [@noTweak] [<visit>] [<expTime>] [<iteration>] [<tolerance>] [<maskFile>]',
+             '<designId> [@twoStepsOff] [@shortExpOff] [@goHome] [@noTweak] [@skipFiducialInterferenceCheck] [<visit>] [<expTime>] [<iteration>] [<tolerance>] [<maskFile>]',
              self.moveToPfsDesign),
             ('moveToSafePosition', '[<expTime>] [<visit>] [<tolerance>] [<phiAngle>] [<thetaAngle>] [@noHome]', self.moveToSafePosition),
             ('makeMotorMap', '@(phi|theta) <stepsize> <repeat> [<totalsteps>] [@slowOnly] [@forceMove] [<visit>]',
@@ -1563,6 +1563,7 @@ class FpsCmd(object):
         twoSteps = 'twoStepsOff' not in cmdKeys
         goHome = 'goHome' in cmdKeys
         doTweak = 'noTweak' not in cmdKeys
+        skipFiducialInterferenceCheck = 'skipFiducialInterferenceCheck' in cmdKeys
 
         self.cc.expTime = expTime
         cmd.inform(f'text="Setting moveToPfsDesign expTime={expTime}"')
@@ -1613,8 +1614,12 @@ class FpsCmd(object):
         phis = phiSolution[:, 0]
 
         # Checking the interference with the fiducial fiber
-        interfering_cobra_indices = self.cc.checkFiducialInterference(thetas, phis)
-        cmd.inform(f'text="{len(interfering_cobra_indices)} cobras interfere with fiducial fibers"')
+        if skipFiducialInterferenceCheck:
+            cmd.inform(f'text="Skipping fiducial interference check"')
+            interfering_cobra_indices = []
+        else:
+            interfering_cobra_indices = self.cc.checkFiducialInterference(thetas, phis)
+            cmd.inform(f'text="{len(interfering_cobra_indices)} cobras interfere with fiducial fibers"')
 
         # Combine isNan indices and interfering cobra indices to create notMoveMask
         notMoveMask = np.zeros(len(self.cc.allCobras), dtype=bool)
