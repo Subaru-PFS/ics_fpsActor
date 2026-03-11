@@ -117,6 +117,8 @@ class FpsCmd(object):
             ('driveHotRoachOpenLoop', '<nSpsIteration>', self.driveHotRoachOpenLoop),
             ('driveHotRoachCloseLoop', '<maskFile> <nSpsIteration>', self.driveHotRoachCloseLoop),
             ('setDb', '[<host>] [<user>] [<port>] [<dbname>]', self.setDb),
+            ('moveToDot', '', self.moveToDot),
+            ('moveToDot2', '<dotTarget> [<iteration>]', self.moveToDot2)
         ]
 
         # Define typed command arguments for the above commands.
@@ -180,6 +182,7 @@ class FpsCmd(object):
                                         keys.Key("dbname", types.String(), help="opdb db name"),
                                         keys.Key("port", types.Int(), help="opdb port"),
                                         keys.Key("designName", types.String(), help="pfsDesign name"),
+                                        keys.Key("dotTarget", types.String(), help="dotTarget"),
                                         )
 
         self.logger = logging.getLogger('fps')
@@ -1847,6 +1850,63 @@ class FpsCmd(object):
         cmd.inform(f'pfsConfig=0x{pfsConfig.pfsDesignId:016x},{pfsConfig.visit0},Done')
 
         return maxIteration
+
+    def moveToDot(self, cmd):
+        """Move detected cobras one step toward the dot center position."""
+        from ics.fpsActor.utils.dotConvergence import DotConverger
+
+        converger = DotConverger(self.cc, self.atThetas, self.atPhis)
+
+        # Only move cobras detected in the last MCS frame.
+        activeIdx = converger.getDetectedIdx()
+
+        dotPos = converger.getDotPosition()
+        thetas, phis, _ = self.cc.pfi.positionsToAngles(self.cc.allCobras, dotPos)
+
+        deltaThetas = np.clip(thetas[:, 0] - self.atThetas, -np.deg2rad(15), np.deg2rad(15))
+        deltaPhis = np.clip(phis[:, 0] - self.atPhis, -np.deg2rad(45), np.deg2rad(45))
+
+        cmd.inform(f'text="moveToDot: moving {len(activeIdx)} detected cobras"')
+        self.cc.moveDeltaAngles(self.cc.allCobras[activeIdx], deltaThetas[activeIdx], deltaPhis[activeIdx],
+                                thetaFast=False, phiFast=False)
+
+        cmd.finish('text="cobraMoveAngles completed"')
+
+    def moveToDot2(self, cmd):
+        """Move cobras to a dot target position using a two-phase approach.
+
+        Phase 1: retract any overshot cobras to phi home.
+        Phase 2: closed-loop iterative convergence toward the target.
+
+        target : dotEdge — nearest dot edge (smallest phi movement)
+                 dotCenter — dot center position
+        """
+        from ics.fpsActor.utils.dotConvergence import DotConverger
+
+        cmdKeys = cmd.cmd.keywords
+        iteration = cmdKeys['iteration'].values[0] if 'iteration' in cmdKeys else 12
+        target = cmdKeys['dotTarget'].values[0]
+
+        validTargets = ('dotEdge', 'dotCenter')
+        if target not in validTargets:
+            cmd.fail(f'text="Invalid target {target!r}, must be one of {validTargets}"')
+            return
+
+        converger = DotConverger(self.cc, self.atThetas, self.atPhis)
+
+        thetaEdge, phiEdge = converger.computeDotEdgeTargets()
+        eng.setPhiMode()
+        converger.retractOvershotCobras(cmd, phiEdge)
+        eng.setNormalMode()
+
+        if target == 'dotEdge':
+            thetaTarget, phiTarget = thetaEdge, phiEdge
+        else:
+            thetaTarget, phiTarget = converger.computeDotCenterTargets()
+
+        converger.convergeToDotTarget(cmd, thetaTarget, phiTarget, nIteration=iteration)
+        cmd.finish('text="moveToDot2 completed"')
+
 
     def hideCobras(self, cmd):
         """"""
