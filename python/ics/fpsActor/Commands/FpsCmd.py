@@ -1112,7 +1112,6 @@ class FpsCmd(object):
 
         # Deactivating both theta and phi.
         thetaEnable = phiEnable = False
-        thetaAngles = phiAngles = None
 
         if phi:
             eng.setPhiMode()
@@ -1136,17 +1135,22 @@ class FpsCmd(object):
             if useMCS and thetaEnable and phiEnable and diff is not None:
                 self.logger.info(f'Averaged position offset compared with cobra center = {np.mean(diff)}')
 
+            thetaHome = ((self.cc.calibModel.tht1 - self.cc.calibModel.tht0 + np.pi) % (np.pi * 2) + np.pi)
+
+            if self.atThetas is None:
+                self.atThetas = thetaHome.copy()
+            if self.atPhis is None:
+                self.atPhis = np.zeros(len(self.cc.allCobras))
+
             if phiEnable:
-                phiAngles = np.zeros(len(self.cc.allCobras))
-                self.atPhis = phiAngles.copy()
+                self.atPhis[goodIdx] = 0
                 cmd.inform(f'text="Setting phiAngle to the home position."')
 
             if thetaEnable:
-                thetaAngles = ((self.cc.calibModel.tht1 - self.cc.calibModel.tht0 + np.pi) % (np.pi * 2) + np.pi)
-                self.atThetas = thetaAngles.copy()
+                self.atThetas[goodIdx] = thetaHome[goodIdx]
                 cmd.inform(f'text="Setting thetaAngle to the home position."')
 
-            self.cc.setCurrentAngles(self.cc.allCobras, thetaAngles=thetaAngles, phiAngles=phiAngles)
+            self.cc.setCurrentAngles(goodCobra, thetaAngles=self.atThetas[goodIdx], phiAngles=self.atPhis[goodIdx])
 
         except Exception:
             convergenceFailed = True
