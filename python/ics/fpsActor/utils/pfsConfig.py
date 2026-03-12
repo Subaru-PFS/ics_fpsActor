@@ -88,15 +88,21 @@ def finalize(pfsConfig, finalIteration, notConvergedDistanceThreshold=None,
         visitId : `int`
             Convergence identifier.
         """
+        db = opdb.OpDB()
+
+        if iteration == -1:
+            iteration = db.query_dataframe(f'select max(iteration) from cobra_match where pfs_visit_id = {pfs_visit_id}').squeeze()
+
+            if iteration is None:
+                return None
+
         sql = ('SELECT cm.pfs_visit_id, cm.iteration, cm.cobra_id, cm.spot_id, cm.pfi_center_x_mm, cm.pfi_center_y_mm '
                'FROM cobra_match cm LEFT OUTER JOIN mcs_data m '
                'ON m.spot_id = cm.spot_id AND m.mcs_frame_id = cm.mcs_frame_id '
                f'WHERE cm.pfs_visit_id = {pfs_visit_id} AND cm.iteration = {iteration} '
                'ORDER BY cm.cobra_id ASC')
 
-        db = opdb.OpDB()
-        lastIteration = db.query_dataframe(sql)
-        return lastIteration
+        return db.query_dataframe(sql)
 
     def _fakeFinalConvergence(pfs_visit_id, iteration, nCobras=2394):
         """Create deterministic fake convergence dataframe."""
