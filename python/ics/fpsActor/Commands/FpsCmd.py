@@ -28,6 +28,7 @@ from ics.fpsActor import najaVenator
 from ics.fpsActor.utils import display as vis
 from ics.fpsActor.utils.hotRoach import HotRoachDriver
 from ics.fpsActor.utils.fiberMatcher import FiberMatcher
+from ics.fpsActor.utils.cobraCenters import updateCobraCenters
 from pfs.utils.database import opdb
 from pfs.datamodel import FiberStatus
 from pfs.utils import butler
@@ -117,6 +118,7 @@ class FpsCmd(object):
             ('driveHotRoachOpenLoop', '<nSpsIteration>', self.driveHotRoachOpenLoop),
             ('driveHotRoachCloseLoop', '<maskFile> <nSpsIteration>', self.driveHotRoachCloseLoop),
             ('setDb', '[<host>] [<user>] [<port>] [<dbname>]', self.setDb),
+            ('updateCobrasCenters', '[@brokenOnly]', self.updateCobrasCenters),
         ]
 
         # Define typed command arguments for the above commands.
@@ -2171,3 +2173,45 @@ class FpsCmd(object):
         boresightMeasure.calcBoresight(cmd, db, frameIds, pfsVisitId, writeToDB = writeToDB)
 
         cmd.finish(f'text="Boresight calculation is finished."')
+
+    def updateCobrasCenters(self, cmd):
+        """Update calibModel.centers from the last moveToHome MCS frame.
+
+        With @brokenOnly (default): updates only non-OK cobras, setting their center
+        directly to the observed spot position (angles unknown).
+        Without @brokenOnly: also updates good cobras by deriving the true center
+        from the observed tip position using forward-kinematics geometry at home.
+
+        Per-cobra info (old/new center, dx, dy, dist) is reported for non-OK cobras.
+        For good cobras, percentile statistics (p1/p50/p99) on dx, dy, dist are reported.
+        """
+        brokenOnly = 'brokenOnly' in cmd.cmd.keywords
+
+        label = 'non-OK' if brokenOnly else 'all'
+        cmd.inform(f'text="Updating {label} cobra centers from last moveToHome frame..."')
+
+        db = self.connectToDB(cmd)
+        cobraIds, isGood, oldX, oldY, newX, newY = updateCobraCenters(self.cc.calibModel, db=db, brokenOnly=brokenOnly)
+
+        dx = newX - oldX
+        dy = newY - oldY
+        dist = np.hypot(dx, dy)
+
+        # Per-cobra report for non-OK cobras (small set, detailed output useful)
+        brokenMask = ~isGood
+        for cobraId, ox, oy, nx, ny, ddx, ddy, d in zip(
+                cobraIds[brokenMask], oldX[brokenMask], oldY[brokenMask],
+                newX[brokenMask], newY[brokenMask],
+                dx[brokenMask], dy[brokenMask], dist[brokenMask]):
+            cmd.inform(f'text="cobra {cobraId}: '
+                       f'old=({ox:.3f},{oy:.3f}) new=({nx:.3f},{ny:.3f}) '
+                       f'dx={ddx:+.3f} dy={ddy:+.3f} dist={d:.3f} mm"')
+
+        # Percentile report for good cobras
+        if isGood.any():
+            for quantity, arr in [('dx', dx[isGood]), ('dy', dy[isGood]), ('dist', dist[isGood])]:
+                p1, p50, p99 = np.percentile(arr, [1, 50, 99])
+                cmd.inform(f'text="good cobras {quantity}: p1={p1:+.4f} p50={p50:+.4f} p99={p99:+.4f} mm"')
+
+        cmd.finish(f'text="{len(cobraIds)} cobra centers updated '
+                   f'({isGood.sum()} good, {brokenMask.sum()} non-OK)"')
