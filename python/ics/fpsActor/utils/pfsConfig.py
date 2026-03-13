@@ -88,13 +88,10 @@ def finalize(pfsConfig, finalIteration, notConvergedDistanceThreshold=None,
         visitId : `int`
             Convergence identifier.
         """
-        db = opdb.OpDB()
-
         if iteration == -1:
-            iteration = db.query_dataframe(f'select max(iteration) from cobra_match where pfs_visit_id = {pfs_visit_id}').squeeze()
+            raise RuntimeError('Should never reach this point. fix it')
 
-            if iteration is None:
-                return None
+        db = opdb.OpDB()
 
         sql = ('SELECT cm.pfs_visit_id, cm.iteration, cm.cobra_id, cm.spot_id, cm.pfi_center_x_mm, cm.pfi_center_y_mm '
                'FROM cobra_match cm LEFT OUTER JOIN mcs_data m '

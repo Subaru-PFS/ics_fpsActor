@@ -85,7 +85,7 @@ class FpsCmd(object):
             ('createHomeDesign', '[@(phi|theta|all)] [<maskFile>] [<designName>]', self.createHomeDesign),
             ('createBlackDotDesign', '[<maskFile>] [<designName>]', self.createBlackDotDesign),
             ('createThetaPhiScanDesign', '<thetaAngle> <phiAngle> [<designName>]', self.createThetaPhiScanDesign),
-            ('genPfsConfigFromMcs', '<visit> <designId>', self.genPfsConfigFromMcs),
+            ('genPfsConfigFromMcs', '<visit> <designId> [<expTime>]', self.genPfsConfigFromMcs),
             ('moveToHome', '@(phi|theta|all) [<expTime>] [@noMCSexposure] [<visit>] [<maskFile>] '
                            '[<designId>] [@thetaCCW]', self.moveToHome),
 
@@ -110,7 +110,8 @@ class FpsCmd(object):
             ('testLoop', '[<visit>] [<expTime>] [<cnt>] [@noMatching]',
              self.testIteration),  # Historical alias.
             ('cobraMoveSteps', '@(phi|theta) <stepsize> [<maskFile>] [<applyScaling>] [<cnt>]', self.cobraMoveStepsCmd),
-            ('cobraMoveAngles', '@(phi|theta) <angle> [<maskFile>]', self.cobraMoveAngles),
+            ('cobraMoveAngles','@(phi|theta) <angle> [<maskFile>] [<visit>] [<designId>] [<expTime>] [@(genPfsConfig)]',
+             self.cobraMoveAngles),
             ('loadDotScales', '[<filename>]', self.loadDotScales),
             ('updateDotLoop', '<filename> [<stepsPerMove>] [@noMove]', self.updateDotLoop),
             ('testDotMove', '[<stepsPerMove>]', self.testDotMove),
@@ -704,13 +705,15 @@ class FpsCmd(object):
         phi = 'phi' in cmdKeys
         theta = 'theta' in cmdKeys
         maskFile = cmdKeys['maskFile'].values[0] if 'maskFile' in cmdKeys else None
+        designId = cmdKeys['designId'].values[0] if 'designId' in cmdKeys else None
+        expTime = cmdKeys['expTime'].values[0] if 'expTime' in cmdKeys else None
+        doGenPfsConfig = 'genPfsConfig' in cmdKeys
         # loading mask file and moving only cobra with bitMask==1
         goodIdx = self.loadGoodIdx(maskFile)
 
         cobras = self.cc.allCobras[goodIdx]
 
-        cmdKeys = cmd.cmd.keywords
-        angles = cmd.cmd.keywords['angle'].values[0]
+        angles = cmdKeys['angle'].values[0]
 
         if phi:
             phiMoveAngle = np.deg2rad(np.full(2394, angles))[goodIdx]
@@ -721,6 +724,12 @@ class FpsCmd(object):
 
         self.cc.moveDeltaAngles(cobras, thetaMoveAngle,
                                 phiMoveAngle, thetaFast=False, phiFast=False)
+
+        self.atThetas = self.cc.cobraInfo['thetaAngle'].copy()
+        self.atPhis = self.cc.cobraInfo['phiAngle'].copy()
+
+        if doGenPfsConfig:
+            self._buildPfsConfigFromMcs(cmd, visit=visit, designId=designId)
 
         cmd.finish('text="cobraMoveAngles completed"')
 
@@ -1057,20 +1066,65 @@ class FpsCmd(object):
 
         cmd.finish(f'fpsDesignId=0x{pfsDesign.pfsDesignId:016x}')
 
+    def _exposeMcsAndUpdateAngles(self, cmd, expTime):
+        """Take an MCS exposure and update the current cobra angles from measured positions.
+
+        Sets the cobraCoach exposure time, triggers an MCS exposure via
+        exposeAndExtractPositions (which also populates cobra_match in opdb),
+        then converts the returned PFI positions to theta/phi angles via
+        inverse kinematics. Updates both self.atThetas/self.atPhis and
+        cobraCharmer's internal angle state via setCurrentAngles, so that
+        any subsequent move starts from the correct measured position.
+
+        Parameters
+        ----------
+        cmd : `actorcore.Command`
+            Current command, used for logging.
+        expTime : `float`
+            MCS exposure time in seconds.
+        """
+        self.cc.expTime = expTime
+        positions = self.cc.exposeAndExtractPositions()
+
+        thetas, phis, _ = self.cc.pfi.positionsToAngles(self.cc.allCobras, positions)
+        self.atThetas = thetas[:, 0]
+        self.atPhis = phis[:, 0]
+
+        self.cc.setCurrentAngles(self.cc.allCobras, thetaAngles=self.atThetas, phiAngles=self.atPhis)
+
+    def _buildPfsConfigFromMcs(self, cmd, visit, designId):
+        """Build, finalize and ingest a pfsConfig using the latest MCS cobra_match data.
+
+        Reads the pfsDesign, assembles the base pfsConfig from gen2 keys, then
+        calls the standard finalize/write/ingest pipeline. Intended to be called
+        after an MCS exposure has been taken and cobra_match has been populated.
+
+        Parameters
+        ----------
+        cmd : `actorcore.Command`
+            Current command, used for keyword replies and logging.
+        visit : `int`
+            Current visit id, used to retrieve cobra_match data.
+        designId : `int`
+            pfsDesign identifier.
+        """
+        pfsDesign = pfsDesignUtils.readDesign(designId)
+        pfsConfig = self.getPfsConfig(cmd, visit=visit, pfsDesign=pfsDesign)
+
+        self._finalizeWriteIngestPfsConfig(pfsConfig, cmd=cmd)
+
+        return pfsConfig
+
     def genPfsConfigFromMcs(self, cmd):
         cmdKeys = cmd.cmd.keywords
 
         designId = cmdKeys['designId'].values[0]
+        expTime = cmdKeys['expTime'].values[0] if 'expTime' in cmdKeys else None
         visit = self.actor.visitor.setOrGetVisit(cmd)
 
-        # Loading pfsDesign file
-        pfsDesign = pfsDesignUtils.readDesign(designId)
-
-        # making base pfsConfig from design file, fetching additional keys from gen2.
-        pfsConfig = self.getPfsConfig(cmd, visit=visit, pfsDesign=pfsDesign)
-
-        self._finalizeWriteIngestPfsConfig(pfsConfig, cmd=cmd)
-        cmd.finish()
+        self._exposeMcsAndUpdateAngles(cmd, expTime)
+        pfsConfig = self._buildPfsConfigFromMcs(cmd, visit=visit, designId=designId)
+        cmd.finish(f'text="{pfsConfig.filename} successfully generated..."')
 
     def moveToHome(self, cmd):
         cmdKeys = cmd.cmd.keywords
