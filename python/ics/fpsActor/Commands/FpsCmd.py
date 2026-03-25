@@ -1494,7 +1494,7 @@ class FpsCmd(object):
         # "homed" should be "goHome". Hack now here, fix there later.
         dataPath, thetas, phis, moves = eng.moveThetaPhi(self.cc.goodIdx, thetas, phis,
                                                          False, False, tolerance=tolerance,
-                                                         tries=8, homed=goHome, newDir=False,
+                                                         tries=8, homed=goHome, newDir=True,
                                                          threshold=2.0, thetaMargin=np.deg2rad(15.0))
 
         # Save the moves for record.
