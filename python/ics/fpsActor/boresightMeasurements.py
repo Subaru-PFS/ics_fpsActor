@@ -231,14 +231,13 @@ def loadCentroidsFromDB(db, mcsFrameId):
     """ retrieve a set of centroids from database and return as a numpy array"""
     
     sql = f'select mcs_data.spot_id, mcs_data.mcs_center_x_pix, mcs_data.mcs_center_y_pix from mcs_data where mcs_data.mcs_frame_id={mcsFrameId}'
-    df = db.bulkSelect('mcs_data',sql)
-    #df = db.fetch_query(sql)
+    df = db.query_dataframe(sql)
     return df.to_numpy()
 
 def loadTelescopeParametersFromDB(db, frameId):
 
     sql = f'SELECT mcs_exposure.insrot,mcs_exposure.altitude FROM mcs_exposure WHERE mcs_exposure.mcs_frame_id={frameId}'
-    df = db.fetch_query(sql)
+    df = db.query_dataframe(sql)
 
     if df['altitude'][0] < -99:
         zenithAngle = 90
