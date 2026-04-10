@@ -1696,6 +1696,15 @@ class FpsCmd(object):
         filteredThetas = thetas[~notMoveMask[goodIdx]]
         filteredPhis = phis[~notMoveMask[goodIdx]]
 
+        # Bump theta targets too close to the CW hard stop (local ~0°) to their equivalent
+        # position above 360°, reachable directly from the park position without a full revolution.
+        # Use per-cobra optimal margin = (thetaRange - 2π) / 2, which guarantees the bumped
+        # angle stays within [0, thetaRange] for every cobra.
+        _thetaRangeAll = (self.cc.calibModel.tht1 - self.cc.calibModel.tht0 + np.pi) % (np.pi * 2) + np.pi
+        _optMargin = (_thetaRangeAll - 2 * np.pi) / 2
+        _bump = filteredThetas < _optMargin[filteredGoodIdx]
+        filteredThetas[_bump] += np.pi * 2
+
         # Detailed statistics of filtered cobra
         cmd.inform(f'text="=== Filtering Summary ==="')
         cmd.inform(f'text="  After mask filtering: {len(goodIdx)}"')
@@ -1772,10 +1781,6 @@ class FpsCmd(object):
                  final_moving_cobras=filteredGoodIdx)
 
         cmd.inform(f'text="Saved filtering data: {len(filtering_records)} exclusions logged"')
-
-        # adjust theta angles that is too closed to the CCW hard stops
-        thetaMarginCCW = 0.1
-        thetas[thetas < thetaMarginCCW] += np.pi * 2
 
         cmd.inform(f'text="Reset the motor scaling factor."')
         self.cc.pfi.resetMotorScaling(self.cc.allCobras)
