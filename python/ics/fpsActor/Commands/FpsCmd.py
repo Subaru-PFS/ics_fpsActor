@@ -1647,8 +1647,7 @@ class FpsCmd(object):
         targets, isNan = pfsConfigUtils.makeTargetsArray(pfsConfig)
         # setting NaN targets to centers
         targets[isNan] = self.cc.calibModel.centers[isNan]
-        print(len(isNan), type(isNan))
-        print(isNan)
+
         cmd.inform(f'text="There are {np.sum(isNan)} NaN targets in the design."')
 
         # loading mask file and moving only cobra with bitMask==1
