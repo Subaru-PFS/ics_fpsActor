@@ -124,7 +124,6 @@ class FpsCmd(object):
             ('setDb', '[<host>] [<user>] [<port>] [<dbname>]', self.setDb),
             ('updateCobrasCenters', '[@brokenOnly]', self.updateCobrasCenters),
             ('moveToDot', '', self.moveToDot),
-            ('moveToDotByMcs', '<dotTarget> [<iteration>] [<overshootFraction>]', self.moveToDotByMcs),
             ('moveToDotByFlux', '[<nRemaining>]', self.moveToDotByFlux)
         ]
 
