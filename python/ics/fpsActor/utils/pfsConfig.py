@@ -55,6 +55,18 @@ def makeTargetsArray(pfsConfig):
     return targets[:, 0] + targets[:, 1] * 1j, isNan
 
 
+def getCobraTargetMask(pfsConfig, targetTypes):
+    """Bool mask (2394,) — True for cobras whose targetType is in targetTypes."""
+    allCobraIds = np.arange(2394, dtype='int32') + 1
+    cobraId = FiberIds().fiberIdToCobraId(pfsConfig.fiberId)
+    cobraMask = np.isin(cobraId, allCobraIds)
+    cobraId = cobraId[cobraMask]
+    typeMask = np.isin(pfsConfig.targetType[cobraMask], targetTypes)
+    result = np.zeros(2394, dtype=bool)
+    result[cobraId[typeMask] - 1] = True
+    return result
+
+
 def tweakTargetPosition(pfsConfig, cmd=None):
     """Update pfsConfig target position at the time of observation."""
     radec = np.vstack([pfsConfig.ra, pfsConfig.dec])

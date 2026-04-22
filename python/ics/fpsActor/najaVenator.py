@@ -1,10 +1,10 @@
 import io
-from importlib import reload
 
 import numpy as np
 import pandas as pd
 import psycopg2
 from pfs.utils.database import opdb
+
 
 class NajaVenator(object):
     """ 
@@ -34,11 +34,12 @@ class NajaVenator(object):
     def readFFConfig(self):
         """Read positions of all fidicial fibers."""
 
-        df = self._dbConn.query_dataframe("SELECT fiducial_fiber_id as id, ff_center_on_pfi_x_mm as x, ff_center_on_pfi_y_mm as y "
-                                          "FROM fiducial_fiber_geometry WHERE fiducial_fiber_calib_id = 1")
+        df = self._dbConn.query_dataframe(
+            "SELECT fiducial_fiber_id as id, ff_center_on_pfi_x_mm as x, ff_center_on_pfi_y_mm as y "
+            "FROM fiducial_fiber_geometry WHERE fiducial_fiber_calib_id = 1")
         df = self.reform(typeMap=dict(id='i4',
-                                       x='f4',
-                                       y='f4'))
+                                      x='f4',
+                                      y='f4'))
         return df
 
     def readCentroid(self, frameId):
@@ -115,7 +116,7 @@ class NajaVenator(object):
 
 
 class CobraTargetTable(object):
-    def __init__(self, visitid, tries, calibModel, designID, goHome = False):
+    def __init__(self, visitid, tries, calibModel, designID, goHome=False):
         self._dbConn = opdb.OpDB()
         self.visitid = visitid
         self.tries = tries
@@ -192,6 +193,62 @@ class CobraTargetTable(object):
 
         self.dataTable = pd.DataFrame(targetTable)
 
+        return self.dataTable
+
+    def makeTargetTableFromTargetPositions(self, targetPositions, cobraCoach, goodIdx):
+        """Make the target table for the convergence move.
+
+        Parameters
+        ----------
+        targetPositions : ndarray, shape (len(goodIdx), nIter), complex
+            Commanded focal-plane position for each moving cobra at each
+            iteration, pre-computed before movement starts.
+        cobraCoach : CobraCoach
+        goodIdx : ndarray
+            Global cobra indices of cobras that will move.
+        """
+        cc = cobraCoach
+
+        goodIdxSet = set(goodIdx)
+        goodIdxMap = {int(idx): i for i, idx in enumerate(goodIdx)}
+
+        targetTable = {'pfs_visit_id': [],
+                       'iteration': [],
+                       'cobra_id': [],
+                       'pfs_config_id': [],
+                       'pfi_nominal_x_mm': [],
+                       'pfi_nominal_y_mm': [],
+                       'pfi_target_x_mm': [],
+                       'pfi_target_y_mm': [],
+                       'flags': []
+                       }
+
+        for iteration in range(self.iteration):
+            for idx in range(cc.nCobras):
+                targetTable['pfs_visit_id'].append(self.visitid)
+                targetTable['pfs_config_id'].append(self.designID)
+                targetTable['cobra_id'].append(idx + 1)
+                targetTable['iteration'].append(iteration)
+                targetTable['pfi_nominal_x_mm'].append(self.calibModel.centers[idx].real)
+                targetTable['pfi_nominal_y_mm'].append(self.calibModel.centers[idx].imag)
+                targetTable['flags'].append(0)
+
+                if idx in cc.badIdx or idx not in goodIdxSet:
+                    targetTable['pfi_target_x_mm'].append(self.calibModel.centers[idx].real)
+                    targetTable['pfi_target_y_mm'].append(self.calibModel.centers[idx].imag)
+                else:
+                    localIdx = goodIdxMap[idx]
+                    if self.goHome and iteration == 0:
+                        # Cobra is at home; target = center
+                        targetTable['pfi_target_x_mm'].append(self.calibModel.centers[idx].real)
+                        targetTable['pfi_target_y_mm'].append(self.calibModel.centers[idx].imag)
+                    else:
+                        moveIter = max(0, iteration - 1) if self.goHome else iteration
+                        targetPos = targetPositions[localIdx, moveIter]
+                        targetTable['pfi_target_x_mm'].append(targetPos.real)
+                        targetTable['pfi_target_y_mm'].append(targetPos.imag)
+
+        self.dataTable = pd.DataFrame(targetTable)
         return self.dataTable
 
     def writeTargetTable(self):

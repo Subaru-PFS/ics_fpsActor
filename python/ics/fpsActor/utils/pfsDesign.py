@@ -91,6 +91,32 @@ def createBlackDotDesign(calibModel, movingIdx, designName='', versions=None):
                            versions=versions)
 
 
+def createDotConvergenceDesign(calibModel, pfi, allCobras, thetaAngleStart, phiAngleStart,
+                               movingIdx, designName='', versions=None):
+    """Create a design targeting the dot-convergence starting positions.
+
+    thetaAngleStart and phiAngleStart are per-cobra local angles (radians) as
+    returned by DotConverger.phiCrossing(). Positions are computed via
+    anglesToPositions and stored as BLACKSPOT targets so that moveToPfsDesign
+    drives each cobra to its approach starting point before moveToDotByMcs runs.
+
+    Parameters
+    ----------
+    thetaAngleStart, phiAngleStart : ndarray (nCobras,)
+        Local theta and phi start angles from phiCrossing().
+    movingIdx : ndarray
+        Indices of cobras to move (good cobras).
+    """
+    positions = pfi.anglesToPositions(allCobras, thetaAngleStart, phiAngleStart)
+    xy = np.column_stack((positions.real, positions.imag))
+    MOVE_MASK = np.isin(sgfm.cobraId.to_numpy() - 1, movingIdx)
+
+    return createPfsDesign(calibModel, xy, TargetType.BLACKSPOT,
+                           MOVE_MASK=MOVE_MASK,
+                           designName=designName,
+                           versions=versions)
+
+
 def homeMaskFromDesign(pfsDesign):
     """Return cobra mask where targetType==HOME."""
     return cobraIndexFromDesign(pfsDesign, targetType=TargetType.HOME)
