@@ -1677,8 +1677,13 @@ class FpsCmd(object):
             cmd.inform(f'text="Skipping fiducial interference check"')
             interfering_cobra_indices = []
         else:
-            interfering_cobra_indices = self.cc.checkFiducialInterference(thetas, phis)
+            # Getting unassigned cobra indexies for checking fiducial interference. 
+            # Exclude these from fiducial-interference reporting.
+            unassignedCobraIndexies = np.flatnonzero(isNan)
+            interfering_cobra_indices = self.cc.checkFiducialInterference(
+                thetas, phis, unassignedCobraIndexies=unassignedCobraIndexies)
             cmd.inform(f'text="{len(interfering_cobra_indices)} cobras interfere with fiducial fibers"')
+        
 
         # Combine isNan indices and interfering cobra indices to create notMoveMask
         notMoveMask = np.zeros(len(self.cc.allCobras), dtype=bool)
