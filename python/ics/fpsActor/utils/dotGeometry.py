@@ -367,33 +367,36 @@ def computePhiStart(phiInDot, direction, phiFloor=np.radians(15.0),
 def fitPhiSpeed(moves, localIdx, nFit=4):
     """Estimate phi angular speed (rad/step) for a dot cobra.
 
-    Uses the last nFit visible iterations (position != 0) to compute
-    nFit-1 consecutive Δphi/phiSteps ratios, then returns the median.
+    Uses the last nFit *truly-detected* iterations (moves['detected']==True) to
+    compute nFit-1 consecutive Δphi/phiSteps ratios, then returns the median.
+    Iterations where the cobra was not detected by MCS must be skipped because
+    cobra_match falls back to the dot centre, and positionsToAngles(dot_centre)
+    returns phiCenter — a pure artifact, not a real measurement.
 
     Parameters
     ----------
     moves : structured ndarray, shape (nDotCobras, nIter)
-        Slice of the moves array for dot cobras only
-        (fields: 'phiAngle', 'phiSteps', 'position').
+        Slice of the moves array for dot cobras only.  Required fields:
+        'phiAngle', 'phiSteps', 'detected'.
     localIdx : int
         Index within the dot-cobra slice (0..nDotCobras-1).
     nFit : int
-        Number of visible iterations to use. Default 4.
+        Number of detected iterations to use. Default 4.
 
     Returns
     -------
     speed : float
         Median |Δphi / phiSteps| in rad/step.  NaN if insufficient data.
     """
-    pos = moves['position'][localIdx]
-    phi = moves['phiAngle'][localIdx]
-    steps = moves['phiSteps'][localIdx]
+    detected = moves['detected'][localIdx]
+    phi      = moves['phiAngle'][localIdx]
+    steps    = moves['phiSteps'][localIdx]
 
-    visible = np.where(pos != 0)[0]
-    if len(visible) < 2:
+    visIdx = np.where(detected)[0]
+    if len(visIdx) < 2:
         return np.nan
 
-    last = visible[-min(nFit, len(visible)):]
+    last = visIdx[-min(nFit, len(visIdx)):]
     dphi = np.diff(phi[last])
     dstep = steps[last[1:]]
 
@@ -407,42 +410,45 @@ def fitPhiSpeed(moves, localIdx, nFit=4):
 def computeBlindSteps(moves, localIdx, phiTarget, speed):
     """Compute net phi step count for the blind move to phiTarget.
 
-    Accounts for any steps already sent after the last visible iteration.
+    Uses the last truly-detected iteration's phi as the starting point —
+    not the dot-centre fallback that contaminates phiAngle once the cobra
+    is hidden.  Adds any phi steps already sent after that detected iter
+    (during the closed-loop ramp before the lock kicked in) so the blind
+    move is a *net* correction.
 
     Parameters
     ----------
     moves : structured ndarray, shape (nDotCobras, nIter)
+        Required fields: 'phiAngle', 'phiSteps', 'detected'.
     localIdx : int
     phiTarget : float
         Target phi angle (radians).
     speed : float
-        rad/step estimate from fitPhiSpeed.
+        rad/step estimate from fitPhiSpeed (always positive; sign is set
+        from (phiTarget − phiLast)).
 
     Returns
     -------
     steps : int
         Net additional steps needed (signed, positive = CCW/opening).
-        Returns 0 if speed is NaN or insufficient data.
+        Returns 0 if speed is NaN or no detected iteration exists.
     """
     if np.isnan(speed) or speed == 0:
         return 0
 
-    pos = moves['position'][localIdx]
-    phi = moves['phiAngle'][localIdx]
-    steps = moves['phiSteps'][localIdx]
+    detected = moves['detected'][localIdx]
+    phi      = moves['phiAngle'][localIdx]
+    phiSteps = moves['phiSteps'][localIdx]
 
-    visible = np.where(pos != 0)[0]
-    if len(visible) == 0:
+    visIdx = np.where(detected)[0]
+    if len(visIdx) == 0:
         return 0
 
-    lastVis = visible[-1]
+    lastVis = visIdx[-1]
     phiLast = float(phi[lastVis])
 
     stepsToTarget = (phiTarget - phiLast) / speed
-    # preserve sign: positive means CCW (opening), negative means CW (closing)
-    stepsToTarget = np.sign(phiTarget - phiLast) * abs(stepsToTarget)
-
-    stepsAlreadySent = int(np.sum(steps[lastVis + 1:]))
+    stepsAlreadySent = int(np.sum(phiSteps[lastVis + 1:]))
     return int(round(stepsToTarget - stepsAlreadySent))
 
 
