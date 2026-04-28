@@ -1901,6 +1901,10 @@ class FpsCmd(object):
                 cmd.inform(
                     f'text="useScaling={self.cc.useScaling}, maxSegments={self.cc.maxSegments}, maxTotalSteps={self.cc.maxTotalSteps}"')
 
+                # hideLockIter=3 here corresponds to global iter 5 (the second
+                # moveThetaPhi call starts at global iter 2).  Earlier than the
+                # previous tries//2=7 default, which let cobras yo-yo behind
+                # the dot for several iterations before the lock engaged.
                 dataPath, atThetas, atPhis, moves[0, :, 2:] = \
                     eng.moveThetaPhi(cIds, filteredThetas, filteredPhis, relative=False, local=True,
                                      tolerance=tolerance,
@@ -1909,7 +1913,8 @@ class FpsCmd(object):
                                      homed=False,
                                      newDir=False, thetaFast=True, phiFast=True, threshold=fastThreshold,
                                      thetaMargin=np.deg2rad(thetaMarginDeg),
-                                     phiRamp=phiRampAll[2:], thetaRamp=thetaRampAll[2:])
+                                     phiRamp=phiRampAll[2:], thetaRamp=thetaRampAll[2:],
+                                     hideLockIter=3)
 
             else:
                 cIds = filteredGoodIdx
@@ -1919,18 +1924,10 @@ class FpsCmd(object):
                                                                      thetaFast=False, phiFast=False,
                                                                      threshold=fastThreshold,
                                                                      thetaMargin=np.deg2rad(thetaMarginDeg),
-                                                                     phiRamp=phiRampAll, thetaRamp=thetaRampAll)
+                                                                     phiRamp=phiRampAll, thetaRamp=thetaRampAll,
+                                                                     hideLockIter=5)
             self.atThetas = atThetas
             self.atPhis = atPhis
-
-            # Push hidden dot cobras deeper inside the dot via open-loop steps.
-            if len(dotGlobalIdx):
-                dotGeometry.blindMoveHiddenCobras(self.cc, dotGlobalIdx, filteredGoodIdx,
-                                                   moves, _dotGeom, cmd=cmd)
-                # Diagnostic exposure post-blind-move (the move itself is
-                # pfi-only / open-loop; this frame lets us inspect the
-                # post-push detection state for the on-hardware test).
-                self.cc.exposeAndExtractPositions()
 
             # Saving moves array
             np.save(dataPath / 'moves', moves)
