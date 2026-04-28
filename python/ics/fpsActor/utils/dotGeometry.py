@@ -495,3 +495,86 @@ def estimateMotorMapSpeed(cc, cIds, phiAngles, direction):
         speed[i] = abs(dAng / dStep) if dStep != 0 else np.nan
 
     return speed
+
+
+def blindMoveHiddenCobras(cc, dotGlobalIdx, filteredGoodIdx, moves, dotGeom,
+                          fraction=0.4, cmd=None):
+    """Open-loop step push of hidden dot cobras toward dotFraction inside the dot.
+
+    Called after the convergence loop in moveToPfsDesign.  Cobras whose spot has
+    disappeared from MCS (cc.cobraInfo['detected'] == False) are at or just
+    behind the dot rim; closed-loop refinement is unreliable there because the
+    partially-occluded centroid is biased.  Instead we estimate the per-cobra
+    rad/step from the recent measured history (fitPhiSpeed) and send a single
+    blind step command to land at the desired fractional depth.
+
+    Parameters
+    ----------
+    cc : CobraCoach
+        Source of cc.cobraInfo['detected'], cc.allCobras, cc.moveSteps.
+    dotGlobalIdx : ndarray of int
+        Global indices of cobras that participated in the dot ramp.
+    filteredGoodIdx : ndarray of int
+        Global indices in the order they appear along axis-1 of ``moves``.
+    moves : structured ndarray, shape (1, len(filteredGoodIdx), nIter)
+        moveThetaPhi history; fields include 'phiAngle', 'phiSteps', 'position'.
+    dotGeom : dict
+        Output of buildDotRamp; must carry phiCenter, halfDot, direction.
+    fraction : float
+        Target depth inside the dot.  0 = entry edge, 0.5 = centre, 1 = exit edge.
+        Default 0.4 — well past the rim, comfortably hidden.
+    cmd : optional
+        Command-handle for inform/warn messages.
+
+    Returns
+    -------
+    nCommanded : int
+        Number of cobras that received a blind step command.
+    """
+    detected     = cc.cobraInfo['detected']
+    hiddenGlobal = dotGlobalIdx[~detected[dotGlobalIdx]]
+
+    if cmd is not None:
+        cmd.inform(f'text="blind move: {len(hiddenGlobal)}/{len(dotGlobalIdx)} '
+                   f'hidden dot cobras → dotFraction={fraction}"')
+
+    if len(hiddenGlobal) == 0:
+        return 0
+
+    phiTarget = computePhiAtFraction(dotGeom['phiCenter'], dotGeom['halfDot'],
+                                      dotGeom['direction'], fraction)
+
+    idxMap = {int(gc): i for i, gc in enumerate(np.asarray(filteredGoodIdx))}
+    cobrasToStep = []
+    phiStepsList = []
+    nSpeedNan = 0
+    for cIdGlobal in hiddenGlobal:
+        iLocal = idxMap.get(int(cIdGlobal))
+        if iLocal is None:
+            continue
+        speed = fitPhiSpeed(moves[0], iLocal)
+        if np.isnan(speed) or speed == 0:
+            nSpeedNan += 1
+            continue
+        steps = computeBlindSteps(moves[0], iLocal, phiTarget[cIdGlobal], speed)
+        if steps == 0:
+            continue
+        cobrasToStep.append(cc.allCobras[cIdGlobal])
+        phiStepsList.append(int(steps))
+
+    nCommanded = len(cobrasToStep)
+    if nCommanded:
+        # Use cc.pfi.moveSteps (pure FPGA, no MCS exposure) — this is a
+        # genuine open-loop blind move, and avoids the per-call MCS frame
+        # that cc.moveSteps otherwise triggers via exposeAndExtractPositions.
+        # phiFast=True matches the fast-motor-map pulsing used during the
+        # slow-ramp moveThetaPhi from which fitPhiSpeed was calibrated.
+        thetaSteps = np.zeros(nCommanded, dtype=int)
+        cc.pfi.moveSteps(cobrasToStep, thetaSteps,
+                         np.asarray(phiStepsList, dtype=int),
+                         phiFast=True)
+
+    if cmd is not None:
+        cmd.inform(f'text="blind move: commanded {nCommanded}/{len(hiddenGlobal)} '
+                   f'(skipped {nSpeedNan} with no speed estimate)"')
+    return nCommanded

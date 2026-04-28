@@ -1923,6 +1923,15 @@ class FpsCmd(object):
             self.atThetas = atThetas
             self.atPhis = atPhis
 
+            # Push hidden dot cobras deeper inside the dot via open-loop steps.
+            if len(dotGlobalIdx):
+                dotGeometry.blindMoveHiddenCobras(self.cc, dotGlobalIdx, filteredGoodIdx,
+                                                   moves, _dotGeom, cmd=cmd)
+                # Diagnostic exposure post-blind-move (the move itself is
+                # pfi-only / open-loop; this frame lets us inspect the
+                # post-push detection state for the on-hardware test).
+                self.cc.exposeAndExtractPositions()
+
             # Saving moves array
             np.save(dataPath / 'moves', moves)
 
