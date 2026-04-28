@@ -20,6 +20,12 @@ import numpy as np
 from ics.fpsActor.utils.alfUtils import sgfm
 
 
+# Phi cap (deg) per leading "fast" iteration of moveThetaPhi.  Both the phi
+# clipping in capCommandedAngle and the matching theta safety offset in
+# buildDotRamp use this same schedule.
+PHI_CAPS_DEG = (30.0, 45.0)
+
+
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 def _sgfmArrays():
@@ -101,8 +107,26 @@ def computeDotAngles(cc, phiFloor=np.radians(15.0), minRangeDeg=30.0):
     return thetaStart, phiCenter, phiMinArr, phiMaxArr, phiEnter, direction, halfDot
 
 
-def buildDotRamp(cc, dotCobras, nIter):
-    """Build theta/phi starts and phiRamp array for dot cobras.
+def thetaOffsetForPhi(L1, L2, rDot, phi_rad, motorMarginMm=0.05):
+    """Per-cobra theta offset magnitude (rad) needed to clear the dot
+    footprint when the arm is forced to angle ``phi_rad``.
+
+    The tip-to-base distance at phi is
+        D(phi) = sqrt(L1² + L2² − 2·L1·L2·cos(phi))
+    so a theta sweep of Δθ moves the tip tangentially around the base
+    by D·Δθ.  To guarantee that any tip starting inside the dot
+    (worst case: dot-centre) ends up outside the rDot circle, we need
+        Δθ ≥ (rDot + motorMarginMm) / D(phi).
+
+    The motor-margin term accounts for the cobra not landing exactly on
+    the commanded position (default 50 µm).
+    """
+    D = np.sqrt(L1**2 + L2**2 - 2*L1*L2*np.cos(phi_rad))
+    return (rDot + motorMarginMm) / D
+
+
+def buildDotRamp(cc, dotCobras, nIter, capIters=2, motorMarginMm=0.05):
+    """Build theta/phi starts and phi/theta ramp arrays for dot cobras.
 
     One-call wrapper used by moveToPfsDesign.  All heavy geometry stays here.
 
@@ -112,18 +136,41 @@ def buildDotRamp(cc, dotCobras, nIter):
     dotCobras : array-like of int
         Global cobra indices that should hide behind their black dot.
     nIter : int
-        Number of moveThetaPhi iterations (= phiRamp rows).
+        Number of moveThetaPhi iterations (= phi/theta ramp rows).
+    capIters : int
+        Number of leading iterations during which capCommandedAngle clips phi
+        (default 2, matching PHI_CAPS_DEG = (30°, 45°)).  These same
+        iterations get the theta offset described below.
+    motorMarginMm : float
+        Motor-position-error margin (mm) added on top of rDot when computing
+        the per-iteration theta offset (default 50 µm).
 
     Returns
     -------
-    thetaStart : ndarray (nCobras,)
-        Theta angle at dot position; 0 for non-dot cobras.
-    phiStart : ndarray (nCobras,)
-        Ramp start phi; 0 for non-dot cobras.
+    thetaStart, phiStart : ndarray (nCobras,)
+        Local theta/phi at the dot for each dot cobra; 0 for non-dot cobras.
     phiRamp : ndarray (nIter, nCobras)
-        Cumulative phi delta from phiStart; zero columns for non-dot cobras.
+        Cumulative phi delta from phiStart.
+    thetaRamp : ndarray (nIter, nCobras)
+        Cumulative theta delta from thetaStart.  Non-zero for the first
+        ``capIters`` iterations of each dot cobra to keep the tip clear of
+        the dot while phi is still capped (see note).
     dotGeom : dict
-        Keys: phiCenter, halfDot, direction, phiMin, phiMax — all (nCobras,).
+        Keys: phiCenter, halfDot, direction, phiMin, phiMax, thetaOffset.
+
+    Note
+    ----
+    During the cap iterations, capCommandedAngle clips phi well below
+    phiCenter — the arm is more open than the angle that places the tip
+    on the dot, so holding theta = thetaDot risks the tip target landing
+    inside the dot footprint.  We offset theta by ±Δθ(phi_cap) where
+    Δθ(phi) = (rDot + motorMargin) / D(phi) and D(phi) is the tip-to-base
+    distance at the capped phi.  This guarantees the commanded tip target
+    is at least one dot-radius away from the dot centre, with extra
+    margin for motor-position error.  See ``thetaOffsetForPhi``.
+
+    Sign of the offset defaults to +; we flip to − when +offset would push
+    theta past the CW hard stop margin, and to 0 if neither sign fits.
     """
     nCobras = len(cc.allCobras)
     thetaStart = np.zeros(nCobras)
@@ -145,8 +192,38 @@ def buildDotRamp(cc, dotCobras, nIter):
     phiStart[dotCobras] = phiStartAll[dotCobras]
     phiRamp[:, dotCobras] = ramp
 
+    # ── theta offset during the cap iterations ────────────────────────────
+    # Per-iter offset based on the actual capped phi at that iteration:
+    # the lever arm D(phi) is shorter when the arm is more closed (smaller
+    # phi), so the required theta sweep is larger.
+    thetaRange = (cc.calibModel.tht1 - cc.calibModel.tht0 + np.pi) % (2*np.pi) + np.pi
+    thetaMargin = np.deg2rad(15.0)
+    L1 = cc.calibModel.L1
+    L2 = cc.calibModel.L2
+    rDot = sgfm.rDot.to_numpy()
+
+    nCap = min(capIters, nIter)
+    iterPhiCapsRad = np.deg2rad(PHI_CAPS_DEG)
+    iterOffsetMag = np.zeros((nCap, nCobras))
+    for j in range(nCap):
+        iterOffsetMag[j] = thetaOffsetForPhi(L1, L2, rDot, iterPhiCapsRad[j],
+                                              motorMarginMm=motorMarginMm)
+
+    # Sign choice: default +; flip to − if +max-iter offset clears the CW
+    # stop; leave 0 if neither sign keeps both iterations inside margins.
+    maxOffset = iterOffsetMag.max(axis=0)
+    plusOk  = (thetaStartAll + maxOffset) <= (thetaRange - thetaMargin)
+    minusOk = (thetaStartAll - maxOffset) >= thetaMargin
+    sign = np.zeros_like(thetaStartAll)
+    sign[plusOk]            =  1.0
+    sign[~plusOk & minusOk] = -1.0
+
+    for j in range(nCap):
+        thetaRamp[j, dotCobras] = (sign * iterOffsetMag[j])[dotCobras]
+    thetaOffset = sign * maxOffset   # for diagnostic / dotGeom output
+
     dotGeom = dict(phiCenter=phiCenter, halfDot=halfDot, direction=direction,
-                   phiMin=phiMin, phiMax=phiMax)
+                   phiMin=phiMin, phiMax=phiMax, thetaOffset=thetaOffset)
 
     return thetaStart, phiStart, phiRamp, thetaRamp, dotGeom
 
