@@ -407,49 +407,49 @@ def fitPhiSpeed(moves, localIdx, nFit=4):
     return float(np.median(np.abs(dphi[valid] / dstep[valid])))
 
 
-def computeBlindSteps(moves, localIdx, phiTarget, speed):
-    """Compute net phi step count for the blind move to phiTarget.
+def computeBlindSteps(speed, direction, halfDot,
+                      fromFraction=0.1, toFraction=0.4):
+    """Open-loop phi step count to push a hidden cobra from fromFraction
+    to toFraction inside its dot.
 
-    Uses the last truly-detected iteration's phi as the starting point —
-    not the dot-centre fallback that contaminates phiAngle once the cobra
-    is hidden.  Adds any phi steps already sent after that detected iter
-    (during the closed-loop ramp before the lock kicked in) so the blind
-    move is a *net* correction.
+    Hidden cobras are *not* reliably measured: cobra_match falls back to
+    the dot centre, positionsToAngles returns phiCenter, and any IK that
+    uses it generates step counts that yo-yo the cobra in/out of the dot.
+    The recorded phiAngle and phiSteps history is therefore polluted from
+    the moment the cobra first goes hidden.
+
+    Instead of trying to recover the cobra's actual current phi from that
+    history, we assume it is at fromFraction (the iter-15 ramp target,
+    where the convergence loop last commanded it) and step the *fixed*
+    delta to toFraction:
+
+        Δphi  = direction · (toFraction − fromFraction) · 2 · halfDot
+        steps = Δphi / speed
+
+    Sign comes from direction · (Δfraction); speed is the positive
+    rad/step magnitude from fitPhiSpeed.
 
     Parameters
     ----------
-    moves : structured ndarray, shape (nDotCobras, nIter)
-        Required fields: 'phiAngle', 'phiSteps', 'detected'.
-    localIdx : int
-    phiTarget : float
-        Target phi angle (radians).
     speed : float
-        rad/step estimate from fitPhiSpeed (always positive; sign is set
-        from (phiTarget − phiLast)).
+        Positive rad/step estimate from fitPhiSpeed (NaN → return 0).
+    direction : int
+        +1 CCW (opening), −1 CW (closing).
+    halfDot : float
+        Half-angle subtended by the dot at the elbow (radians).
+    fromFraction, toFraction : float
+        Assumed starting depth and target depth inside the dot.
+        0 = entry edge, 0.5 = centre, 1 = exit edge.
 
     Returns
     -------
     steps : int
-        Net additional steps needed (signed, positive = CCW/opening).
-        Returns 0 if speed is NaN or no detected iteration exists.
+        Signed phi step count (positive = CCW/opening).
     """
     if np.isnan(speed) or speed == 0:
         return 0
-
-    detected = moves['detected'][localIdx]
-    phi      = moves['phiAngle'][localIdx]
-    phiSteps = moves['phiSteps'][localIdx]
-
-    visIdx = np.where(detected)[0]
-    if len(visIdx) == 0:
-        return 0
-
-    lastVis = visIdx[-1]
-    phiLast = float(phi[lastVis])
-
-    stepsToTarget = (phiTarget - phiLast) / speed
-    stepsAlreadySent = int(np.sum(phiSteps[lastVis + 1:]))
-    return int(round(stepsToTarget - stepsAlreadySent))
+    deltaPhi = direction * (toFraction - fromFraction) * 2 * halfDot
+    return int(round(deltaPhi / speed))
 
 
 def estimateMotorMapSpeed(cc, cIds, phiAngles, direction):
@@ -504,31 +504,34 @@ def estimateMotorMapSpeed(cc, cIds, phiAngles, direction):
 
 
 def blindMoveHiddenCobras(cc, dotGlobalIdx, filteredGoodIdx, moves, dotGeom,
-                          fraction=0.4, cmd=None):
-    """Open-loop step push of hidden dot cobras toward dotFraction inside the dot.
+                          fromFraction=0.1, toFraction=0.4, cmd=None):
+    """Open-loop step push of hidden dot cobras toward toFraction inside the dot.
 
     Called after the convergence loop in moveToPfsDesign.  Cobras whose spot has
     disappeared from MCS (cc.cobraInfo['detected'] == False) are at or just
-    behind the dot rim; closed-loop refinement is unreliable there because the
-    partially-occluded centroid is biased.  Instead we estimate the per-cobra
-    rad/step from the recent measured history (fitPhiSpeed) and send a single
-    blind step command to land at the desired fractional depth.
+    behind the dot rim.  Once hidden, neither the cobra's measured phi nor the
+    closed-loop step counts can be trusted (cobra_match's dot-centre fallback
+    drives the IK to send wild yo-yo moves).  We assume each hidden cobra is at
+    fromFraction (the iter-15 ramp target) and step the fixed delta to
+    toFraction in the correct CCW/CW direction.
 
     Parameters
     ----------
     cc : CobraCoach
-        Source of cc.cobraInfo['detected'], cc.allCobras, cc.moveSteps.
+        Source of cc.cobraInfo['detected'], cc.allCobras, cc.pfi.moveSteps.
     dotGlobalIdx : ndarray of int
         Global indices of cobras that participated in the dot ramp.
     filteredGoodIdx : ndarray of int
         Global indices in the order they appear along axis-1 of ``moves``.
     moves : structured ndarray, shape (1, len(filteredGoodIdx), nIter)
-        moveThetaPhi history; fields include 'phiAngle', 'phiSteps', 'position'.
+        moveThetaPhi history (used by fitPhiSpeed for the rad/step estimate).
     dotGeom : dict
-        Output of buildDotRamp; must carry phiCenter, halfDot, direction.
-    fraction : float
-        Target depth inside the dot.  0 = entry edge, 0.5 = centre, 1 = exit edge.
-        Default 0.4 — well past the rim, comfortably hidden.
+        Output of buildDotRamp; must carry halfDot and direction.
+    fromFraction : float
+        Assumed depth at which each hidden cobra sits before the blind move.
+        Defaults to 0.1 — the iter-15 ramp target inside the dot.
+    toFraction : float
+        Target depth.  Default 0.4 — well past the rim, comfortably hidden.
     cmd : optional
         Command-handle for inform/warn messages.
 
@@ -542,13 +545,13 @@ def blindMoveHiddenCobras(cc, dotGlobalIdx, filteredGoodIdx, moves, dotGeom,
 
     if cmd is not None:
         cmd.inform(f'text="blind move: {len(hiddenGlobal)}/{len(dotGlobalIdx)} '
-                   f'hidden dot cobras → dotFraction={fraction}"')
+                   f'hidden dot cobras  fraction {fromFraction}→{toFraction}"')
 
     if len(hiddenGlobal) == 0:
         return 0
 
-    phiTarget = computePhiAtFraction(dotGeom['phiCenter'], dotGeom['halfDot'],
-                                      dotGeom['direction'], fraction)
+    halfDot   = dotGeom['halfDot']
+    direction = dotGeom['direction']
 
     idxMap = {int(gc): i for i, gc in enumerate(np.asarray(filteredGoodIdx))}
     cobrasToStep = []
@@ -562,7 +565,8 @@ def blindMoveHiddenCobras(cc, dotGlobalIdx, filteredGoodIdx, moves, dotGeom,
         if np.isnan(speed) or speed == 0:
             nSpeedNan += 1
             continue
-        steps = computeBlindSteps(moves[0], iLocal, phiTarget[cIdGlobal], speed)
+        steps = computeBlindSteps(speed, direction[cIdGlobal], halfDot[cIdGlobal],
+                                   fromFraction=fromFraction, toFraction=toFraction)
         if steps == 0:
             continue
         cobrasToStep.append(cc.allCobras[cIdGlobal])
