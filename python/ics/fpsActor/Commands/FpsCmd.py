@@ -1648,7 +1648,7 @@ class FpsCmd(object):
         # setting NaN targets to centers
         targets[isNan] = self.cc.calibModel.centers[isNan]
 
-        cmd.inform(f'text="There are {np.sum(isNan)} NaN targets in the design."')
+        cmd.inform(f'text="There are {np.sum(isNan)} NaN in {len(targets)} targets in the design."')
 
         # loading mask file and moving only cobra with bitMask==1
         cmd.inform(f'text="Setting good cobra index"')
@@ -1659,6 +1659,9 @@ class FpsCmd(object):
         cmd.inform(f'text="Filtering: {len(excludedByMask)} cobras excluded by mask file, {len(goodIdx)} remaining"')
 
         thetaSolution, phiSolution, flags = self.cc.pfi.positionsToAngles(cobras, targets)
+        cmd.inform(f'text="Converting {len(targets)} target positions to angles ({len(thetaSolution[:, 0])}, {len(phiSolution[:, 0])})"')
+
+
         invalid = (flags[:, 0] & self.cc.pfi.SOLUTION_OK) == 0
         invalidGoodIdx = np.where(invalid)[0]  # in the range of  goodIdx
         invalidOriginalIdx = goodIdx[invalidGoodIdx]  # mapping to total cobra index
@@ -1672,6 +1675,7 @@ class FpsCmd(object):
         thetas = thetaSolution[:, 0]
         phis = phiSolution[:, 0]
 
+        
         # Checking the interference with the fiducial fiber
         if skipFiducialInterferenceCheck:
             cmd.inform(f'text="Skipping fiducial interference check"')
