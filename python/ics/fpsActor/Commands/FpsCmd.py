@@ -1658,11 +1658,11 @@ class FpsCmd(object):
         excludedByMask = np.setdiff1d(np.arange(self.cc.nCobras), goodIdx)
         cmd.inform(f'text="Filtering: {len(excludedByMask)} cobras excluded by mask file, {len(goodIdx)} remaining"')
 
-        thetaSolution, phiSolution, flags = self.cc.pfi.positionsToAngles(cobras, targets)
+        thetaSolution, phiSolution, solutionFlags = self.cc.pfi.positionsToAngles(cobras, targets)
         cmd.inform(f'text="Converting {len(targets)} target positions to angles ({len(thetaSolution[:, 0])}, {len(phiSolution[:, 0])})"')
 
 
-        invalid = (flags[:, 0] & self.cc.pfi.SOLUTION_OK) == 0
+        invalid = (solutionFlags[:, 0] & self.cc.pfi.SOLUTION_OK) == 0
         invalidGoodIdx = np.where(invalid)[0]  # in the range of  goodIdx
         invalidOriginalIdx = goodIdx[invalidGoodIdx]  # mapping to total cobra index
 
