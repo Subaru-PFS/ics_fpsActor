@@ -1760,8 +1760,13 @@ class FpsCmd(object):
         # This operation will update dataDir for both PFI and camera.  So that we can keep information correctly.
         self.cc.connect(False)
 
-        # Saving information for book keeping.
+        # Saving information for book keeping. First, getting path name for saving data.
         dataPath = pathlib.Path(self.cc.runManager.dataDir)
+
+        # Save the solution flags for debugging and record.
+        np.save(f'{dataPath}/solutionFlags', solutionFlags)        
+
+        # Save the filtered targets for record. These are the targets that we will actually move to.
         np.save(f'{dataPath}/targets', filteredTargets)
         cmd.inform(f'text="Saving targets list to file {dataPath}/targets.npy."')
 
