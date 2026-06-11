@@ -1670,7 +1670,7 @@ class FpsCmd(object):
             # raise RuntimeError(f"Given positions are invalid: {np.where(valid)[0]}")
             cmd.inform(f'text="Given {invalid.sum()} positions are invalid: {goodIdx[np.where(invalid)[0]]}"')
             for ii in np.where(invalid)[0]:
-                self.logger.info(f'invalid pos: {ii} {flags[ii, 0]:08b}')
+                self.logger.info(f'invalid pos: {ii} {solutionFlags[ii, 0]:08b}')
 
         thetas = thetaSolution[:, 0]
         phis = phiSolution[:, 0]
@@ -1695,6 +1695,7 @@ class FpsCmd(object):
         # Set True for NaN targets (using original indices before goodIdx filtering)
         notMoveMask[isNan] = True
         notMoveMask[interfering_cobra_indices] = True
+        # This line controls the invalid cobra indices
         # notMoveMask[goodIdx[np.where(invalid)[0]]] = True
 
         # Filter goodIdx to exclude cobras that should not move
