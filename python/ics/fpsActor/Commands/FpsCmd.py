@@ -1658,11 +1658,11 @@ class FpsCmd(object):
         excludedByMask = np.setdiff1d(np.arange(self.cc.nCobras), goodIdx)
         cmd.inform(f'text="Filtering: {len(excludedByMask)} cobras excluded by mask file, {len(goodIdx)} remaining"')
 
-        thetaSolution, phiSolution, flags = self.cc.pfi.positionsToAngles(cobras, targets)
+        thetaSolution, phiSolution, solutionFlags = self.cc.pfi.positionsToAngles(cobras, targets)
         cmd.inform(f'text="Converting {len(targets)} target positions to angles ({len(thetaSolution[:, 0])}, {len(phiSolution[:, 0])})"')
 
 
-        invalid = (flags[:, 0] & self.cc.pfi.SOLUTION_OK) == 0
+        invalid = (solutionFlags[:, 0] & self.cc.pfi.SOLUTION_OK) == 0
         invalidGoodIdx = np.where(invalid)[0]  # in the range of  goodIdx
         invalidOriginalIdx = goodIdx[invalidGoodIdx]  # mapping to total cobra index
 
@@ -1670,7 +1670,7 @@ class FpsCmd(object):
             # raise RuntimeError(f"Given positions are invalid: {np.where(valid)[0]}")
             cmd.inform(f'text="Given {invalid.sum()} positions are invalid: {goodIdx[np.where(invalid)[0]]}"')
             for ii in np.where(invalid)[0]:
-                self.logger.info(f'invalid pos: {ii} {flags[ii, 0]:08b}')
+                self.logger.info(f'invalid pos: {ii} {solutionFlags[ii, 0]:08b}')
 
         thetas = thetaSolution[:, 0]
         phis = phiSolution[:, 0]
@@ -1695,6 +1695,7 @@ class FpsCmd(object):
         # Set True for NaN targets (using original indices before goodIdx filtering)
         notMoveMask[isNan] = True
         notMoveMask[interfering_cobra_indices] = True
+        # This line controls the invalid cobra indices
         # notMoveMask[goodIdx[np.where(invalid)[0]]] = True
 
         # Filter goodIdx to exclude cobras that should not move
@@ -1760,8 +1761,13 @@ class FpsCmd(object):
         # This operation will update dataDir for both PFI and camera.  So that we can keep information correctly.
         self.cc.connect(False)
 
-        # Saving information for book keeping.
+        # Saving information for book keeping. First, getting path name for saving data.
         dataPath = pathlib.Path(self.cc.runManager.dataDir)
+
+        # Save the solution flags for debugging and record.
+        np.save(f'{dataPath}/solutionFlags', solutionFlags)        
+
+        # Save the filtered targets for record. These are the targets that we will actually move to.
         np.save(f'{dataPath}/targets', filteredTargets)
         cmd.inform(f'text="Saving targets list to file {dataPath}/targets.npy."')
 
