@@ -1696,7 +1696,7 @@ class FpsCmd(object):
         notMoveMask[isNan] = True
         notMoveMask[interfering_cobra_indices] = True
         # This line controls the invalid cobra indices
-        # notMoveMask[goodIdx[np.where(invalid)[0]]] = True
+        notMoveMask[goodIdx[np.where(invalid)[0]]] = True
 
         # Filter goodIdx to exclude cobras that should not move
         filteredGoodIdx = goodIdx[~notMoveMask[goodIdx]]
