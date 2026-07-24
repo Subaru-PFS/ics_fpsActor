@@ -1889,9 +1889,12 @@ class FpsCmd(object):
                     self.cc.expTime = expTime
 
                 cmd.inform(f'text="Cobra goHome is set to be {goHome}"')
+                # INSTRM-2976: fast motor map disabled in the two-step convergence — both phases
+                # use the slow map (single map to maintain).  The old thetaFast/phiFast=True only
+                # ever took effect on iteration 0 (the farAwayMask gate never triggers in-patrol).
                 dataPath, atThetas, atPhis, moves[0, :, :2] = \
                     eng.moveThetaPhi(cIds, thetasVia, phisVia, relative=False, local=True, tolerance=tolerance,
-                                     tries=2, homed=goHome, newDir=False, thetaFast=True, phiFast=True,
+                                     tries=2, homed=goHome, newDir=False, thetaFast=False, phiFast=False,
                                      threshold=fastThreshold, thetaMargin=np.deg2rad(thetaMarginDeg),
                                      phiRamp=phiRampAll[:2], thetaRamp=thetaRampAll[:2])
 
@@ -1911,7 +1914,7 @@ class FpsCmd(object):
                                      # Changed from thetas, phis
                                      tries=iteration - 2,
                                      homed=False,
-                                     newDir=False, thetaFast=True, phiFast=True, threshold=fastThreshold,
+                                     newDir=False, thetaFast=False, phiFast=False, threshold=fastThreshold,
                                      thetaMargin=np.deg2rad(thetaMarginDeg),
                                      phiRamp=phiRampAll[2:], thetaRamp=thetaRampAll[2:],
                                      hideLockIter=8)
