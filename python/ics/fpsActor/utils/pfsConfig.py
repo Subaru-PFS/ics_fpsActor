@@ -10,7 +10,6 @@ import pfs.utils.pfsDesignUtils as pfsDesignUtils
 from pfs.datamodel import PfsConfig, FiberStatus, TargetType, InstrumentStatusFlag
 from pfs.utils.database import opdb
 from pfs.utils.fiberids import FiberIds
-from pfs.utils.versions import collectVersions
 from pfs.utils.versions import getVersion
 from scipy.interpolate import griddata
 
@@ -53,6 +52,18 @@ def makeTargetsArray(pfsConfig):
     isNan = np.logical_or(np.isnan(targets[:, 0]), np.isnan(targets[:, 1]))
 
     return targets[:, 0] + targets[:, 1] * 1j, isNan
+
+
+def getCobraTargetMask(pfsConfig, targetTypes):
+    """Bool mask (2394,) — True for cobras whose targetType is in targetTypes."""
+    allCobraIds = np.arange(2394, dtype='int32') + 1
+    cobraId = FiberIds().fiberIdToCobraId(pfsConfig.fiberId)
+    cobraMask = np.isin(cobraId, allCobraIds)
+    cobraId = cobraId[cobraMask]
+    typeMask = np.isin(pfsConfig.targetType[cobraMask], targetTypes)
+    result = np.zeros(2394, dtype=bool)
+    result[cobraId[typeMask] - 1] = True
+    return result
 
 
 def tweakTargetPosition(pfsConfig, cmd=None):

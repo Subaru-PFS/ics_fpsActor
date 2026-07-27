@@ -9,9 +9,7 @@ from pfs.utils.fiberids import FiberIds
 from pfs.utils.pfsDesignUtils import fakeRaDecFromPfiNominal
 
 pfsDesignDir = '/data/pfsDesign'
-from pfs.utils import butler
 from ics.fpsActor.utils.alfUtils import sgfm, dots
-from pfs.utils.versions import collectVersions
 
 
 def readDesign(pfsDesignId):
@@ -83,6 +81,32 @@ def createHomeDesign(calibModel, positions, movingIdx, designName='', versions=N
 def createBlackDotDesign(calibModel, movingIdx, designName='', versions=None):
     """Create black dots design from current dots position, ra and dec are faked."""
     xy = np.column_stack((dots.x.to_numpy(), dots.y.to_numpy()))
+    MOVE_MASK = np.isin(sgfm.cobraId.to_numpy() - 1, movingIdx)
+
+    return createPfsDesign(calibModel, xy, TargetType.BLACKSPOT,
+                           MOVE_MASK=MOVE_MASK,
+                           designName=designName,
+                           versions=versions)
+
+
+def createDotConvergenceDesign(calibModel, pfi, allCobras, thetaAngleStart, phiAngleStart,
+                               movingIdx, designName='', versions=None):
+    """Create a design targeting the dot-convergence starting positions.
+
+    thetaAngleStart and phiAngleStart are per-cobra local angles (radians) as
+    returned by dotGeometry.buildSafeRamp(). Positions are computed via
+    anglesToPositions and stored as BLACKSPOT targets so that moveToPfsDesign
+    drives each cobra to its approach starting point before running the phi ramp.
+
+    Parameters
+    ----------
+    thetaAngleStart, phiAngleStart : ndarray (nCobras,)
+        Local theta and phi start angles from buildSafeRamp().
+    movingIdx : ndarray
+        Indices of cobras to move (good cobras).
+    """
+    positions = pfi.anglesToPositions(allCobras, thetaAngleStart, phiAngleStart)
+    xy = np.column_stack((positions.real, positions.imag))
     MOVE_MASK = np.isin(sgfm.cobraId.to_numpy() - 1, movingIdx)
 
     return createPfsDesign(calibModel, xy, TargetType.BLACKSPOT,

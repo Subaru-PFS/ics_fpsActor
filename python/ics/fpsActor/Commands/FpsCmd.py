@@ -10,7 +10,6 @@ from importlib import reload
 import cv2
 import ics.cobraCharmer.pfiDesign as pfiDesign
 import ics.fpsActor.boresightMeasurements as boresightMeasure
-import ics.fpsActor.utils.alfUtils as alfUtils
 import ics.fpsActor.utils.pfsConfig as pfsConfigUtils
 import ics.fpsActor.utils.pfsDesign as pfsDesignUtils
 import ics.utils.sps.fits as fits
@@ -26,11 +25,9 @@ from ics.fpsActor import fpsFunction as fpstool
 from ics.fpsActor import fpsState
 from ics.fpsActor import najaVenator
 from ics.fpsActor.utils import display as vis
-from ics.fpsActor.utils.hotRoach import HotRoachDriver
-from ics.fpsActor.utils.fiberMatcher import FiberMatcher
+from ics.fpsActor.utils import dotGeometry
 from ics.fpsActor.utils.cobraCenters import updateCobraCenters
 from pfs.utils.database import opdb
-from pfs.datamodel import FiberStatus
 from pfs.utils import butler
 from pfs.utils.pfsConfigUtils import tweakTargetPosition
 from pfs.utils.versions import collectVersions
@@ -56,6 +53,7 @@ class FpsCmd(object):
         self.nv = najaVenator.NajaVenator()
 
         self.tranMatrix = None
+        self.dotScan = None  # in-memory dot-scan step handed off from moveToPfsDesign to moveToDotByFlux
         # Declare the commands we implement. When the actor is started
         # these are registered with the parser, which will call the
         # associated methods when matched. The callbacks will be
@@ -84,6 +82,7 @@ class FpsCmd(object):
 
             ('createHomeDesign', '[@(phi|theta|all)] [<maskFile>] [<designName>]', self.createHomeDesign),
             ('createBlackDotDesign', '[<maskFile>] [<designName>]', self.createBlackDotDesign),
+            ('createDotConvergenceDesign', '[<maskFile>] [<designName>]', self.createDotConvergenceDesign),
             ('createThetaPhiScanDesign', '<thetaAngle> <phiAngle> [<designName>]', self.createThetaPhiScanDesign),
             ('genPfsConfigFromMcs', '<visit> <designId> [<expTime>]', self.genPfsConfigFromMcs),
             ('moveToHome', '@(phi|theta|all) [<expTime>] [@noMCSexposure] [<visit>] [<maskFile>] '
@@ -115,11 +114,9 @@ class FpsCmd(object):
             ('loadDotScales', '[<filename>]', self.loadDotScales),
             ('updateDotLoop', '<filename> [<stepsPerMove>] [@noMove]', self.updateDotLoop),
             ('testDotMove', '[<stepsPerMove>]', self.testDotMove),
-            ('hideCobras', '[<visit>] [<nMcsIteration>] [<nSpsIteration>] [<stepSizeForScaling>]', self.driveHotRoach),
-            ('driveHotRoachOpenLoop', '<nSpsIteration>', self.driveHotRoachOpenLoop),
-            ('driveHotRoachCloseLoop', '<maskFile> <nSpsIteration>', self.driveHotRoachCloseLoop),
             ('setDb', '[<host>] [<user>] [<port>] [<dbname>]', self.setDb),
             ('updateCobrasCenters', '[@brokenOnly]', self.updateCobrasCenters),
+            ('moveToDotByFlux', '[<nRemaining>]', self.moveToDotByFlux)
         ]
 
         # Define typed command arguments for the above commands.
@@ -150,6 +147,8 @@ class FpsCmd(object):
                                         keys.Key("visit", types.Int(), help="PFS visit to use"),
                                         keys.Key("frameId", types.Int(), help="PFS Frame ID"),
                                         keys.Key("iteration", types.Int(), help="Interation number"),
+                                        keys.Key("overshootFraction", types.Float(),
+                                                 help="fraction past dot center toward outer edge (0=center, 1=outer edge)"),
                                         keys.Key("tolerance", types.Float(), help="Tolerance distance in mm"),
                                         keys.Key("id", types.Long(),
                                                  help="pfsDesignId, to define the target fiber positions"),
@@ -165,16 +164,6 @@ class FpsCmd(object):
                                         keys.Key("board", types.Int(), help="board index 1-84"),
                                         keys.Key("stepsPerMove", types.Int(),
                                                  help="number of steps per move"),
-                                        keys.Key("nIterForScaling", types.Int(),
-                                                 help="number of iteration for scaling"),
-                                        keys.Key("stepSizeForScaling", types.Int(),
-                                                 help="step size for scaling"),
-                                        keys.Key("nIterFindDot", types.Int(),
-                                                 help="number of iteration for finding dot"),
-                                        keys.Key("nMcsIteration", types.Int(),
-                                                 help="number of mcsIteration for finding edge of the dot"),
-                                        keys.Key("nSpsIteration", types.Int(),
-                                                 help="number of spsIteration for finding center of the dot"),
                                         keys.Key("applyScaling", types.String(),
                                                  help="scaling filename for cobra"),
 
@@ -183,6 +172,8 @@ class FpsCmd(object):
                                         keys.Key("dbname", types.String(), help="opdb db name"),
                                         keys.Key("port", types.Int(), help="opdb port"),
                                         keys.Key("designName", types.String(), help="pfsDesign name"),
+                                        keys.Key("dotTarget", types.String(), help="dotTarget"),
+                                        keys.Key("nRemaining", types.Int()),
                                         )
 
         self.logger = logging.getLogger('fps')
@@ -1035,6 +1026,41 @@ class FpsCmd(object):
 
         cmd.finish(f'fpsDesignId=0x{pfsDesign.pfsDesignId:016x}')
 
+    def createDotConvergenceDesign(self, cmd):
+        """Generate and write a pfsDesign targeting the dot-convergence starting positions.
+
+        All cobras in movingIdx are set as BLACKSPOT targets with theta fixed at the
+        dot-crossing angle and phi at the ramp start position (computed from
+        dotGeometry.computePhiRamp). iic then calls moveToPfsDesign with this design,
+        which handles the phi ramp + blind moves internally.
+        """
+        cmdKeys = cmd.cmd.keywords
+        maskFile = cmdKeys['maskFile'].values[0] if 'maskFile' in cmdKeys else None
+        movingIdx = self.loadGoodIdx(maskFile)
+
+        if 'designName' in cmdKeys:
+            designName = cmdKeys['designName'].values[0]
+        else:
+            designName = self._makeDesignName('dotConvergence', maskFile)
+
+        thetaDot, _phiCenter, _phiMin, _phiMax, _phiEnter, direction, _halfDot = \
+            dotGeometry.computeDotAngles(self.cc)
+        _phiInDot = dotGeometry.computePhiAtFraction(_phiCenter, _halfDot, direction,
+                                                     dotGeometry.RAMP_LANDING_FRACTION)
+        phiStart  = dotGeometry.computePhiStart(_phiInDot, direction)
+
+        versions = self._collectVersions()
+        pfsDesign = pfsDesignUtils.createDotConvergenceDesign(
+            self.cc.calibModel, self.cc.pfi, self.cc.allCobras,
+            thetaDot, phiStart, movingIdx,
+            designName=designName, versions=versions)
+
+        doWrite, fullPath = pfsDesignUtils.writeDesign(pfsDesign)
+        if doWrite:
+            cmd.inform(f'text="wrote {fullPath} to disk !"')
+
+        cmd.finish(f'fpsDesignId=0x{pfsDesign.pfsDesignId:016x}')
+
     def createThetaPhiScanDesign(self, cmd):
         cmdKeys = cmd.cmd.keywords
 
@@ -1695,15 +1721,16 @@ class FpsCmd(object):
         # Set True for NaN targets (using original indices before goodIdx filtering)
         notMoveMask[isNan] = True
         notMoveMask[interfering_cobra_indices] = True
-        # This line controls the invalid cobra indices
-        notMoveMask[goodIdx[np.where(invalid)[0]]] = True
+        notMoveMask[invalidOriginalIdx] = True
 
-        # Filter goodIdx to exclude cobras that should not move
-        filteredGoodIdx = goodIdx[~notMoveMask[goodIdx]]
-        filteredTargets = targets[~notMoveMask[goodIdx]]
-        filteredCobras = self.cc.allCobras[filteredGoodIdx]
-        filteredThetas = thetas[~notMoveMask[goodIdx]]
-        filteredPhis = phis[~notMoveMask[goodIdx]]
+        # toDotMask: only cobras explicitly assigned a BLACKSPOT target get the phi-ramp.
+        toDotMask = pfsConfigUtils.getCobraTargetMask(pfsConfig, [TargetType.BLACKSPOT])[goodIdx]
+
+        shouldMove = ~notMoveMask[goodIdx] | toDotMask   # local boolean, shape (nGood,)
+        filteredGoodIdx = goodIdx[shouldMove]
+        filteredThetas  = thetas[shouldMove]
+        filteredPhis    = phis[shouldMove]
+        filteredTargets = targets[shouldMove]
 
         # Bump theta targets too close to the CW hard stop (local ~0°) to their equivalent
         # position above 360°, reachable directly from the park position without a full revolution.
@@ -1714,7 +1741,19 @@ class FpsCmd(object):
         _bump = filteredThetas < _optMargin[filteredGoodIdx]
         filteredThetas[_bump] += np.pi * 2
 
-        # Detailed statistics of filtered cobra
+        # ── dot cobras: phi ramp to hide behind black dot ─────────────────────
+        dotCobras = np.where(toDotMask)[0]          # local indices into goodIdx
+        dotGlobalIdx = goodIdx[dotCobras]            # global cobra indices for geometry
+        # Local indices of dot cobras within filteredGoodIdx (for the via-step loop below)
+        dotCobrasSet = set(np.where(toDotMask[shouldMove])[0])
+
+        _thetaDot, _phiStart, phiRampAll, thetaRampAll, _dotGeom = dotGeometry.buildSafeRamp(self.cc, dotGlobalIdx, iteration)
+
+        filteredThetas[toDotMask[shouldMove]] = _thetaDot[dotGlobalIdx]
+        filteredPhis[toDotMask[shouldMove]]   = _phiStart[dotGlobalIdx]
+        phiRampAll   = phiRampAll[:, filteredGoodIdx]    # (nIter, nFiltered)
+        thetaRampAll = thetaRampAll[:, filteredGoodIdx]  # (nIter, nFiltered)
+
         cmd.inform(f'text="=== Filtering Summary ==="')
         cmd.inform(f'text="  After mask filtering: {len(goodIdx)}"')
         cmd.inform(f'text="  NaN targets: {np.sum(isNan)}"')
@@ -1754,9 +1793,6 @@ class FpsCmd(object):
             cobraTargetTable = najaVenator.CobraTargetTable(visit, iteration, self.cc.calibModel, designId,
                                                             goHome=False)
 
-        cobraTargetTable.makeTargetTable(moves, self.cc, goodIdx)
-        cobraTargetTable.writeTargetTable()
-
         # Getting a new directory for this operation by running PFI connection using cobraCoach.
         # This operation will update dataDir for both PFI and camera.  So that we can keep information correctly.
         self.cc.connect(False)
@@ -1774,8 +1810,8 @@ class FpsCmd(object):
         filtering_records = []
         for idx in np.setdiff1d(np.arange(self.cc.nCobras), goodIdx):
             filtering_records.append({'cobra_id': idx, 'step': 'mask file', 'reason': 'excluded_by_mask'})
-        for idx in isNan:
-            filtering_records.append({'cobra_id': idx, 'step': 'Not Assigned', 'reason': 'nan_target'})
+        for idx in dotGlobalIdx:
+            filtering_records.append({'cobra_id': idx, 'step': 'dot_cobra', 'reason': 'blackspot_target'})
         for idx in invalidOriginalIdx:
             filtering_records.append({'cobra_id': idx, 'step': 'angle_solve', 'reason': 'no_valid_solution'})
         for idx in interfering_cobra_indices:
@@ -1799,8 +1835,25 @@ class FpsCmd(object):
         cmd.inform(f'text="Reset the motor scaling factor."')
         self.cc.pfi.resetMotorScaling(self.cc.allCobras)
 
+        # Pre-compute per-iteration commanded target positions from geometry.
+        # Done here — before any movement — so MCS can use the table for cobra identification.
+        _thetasFull_all, _phisFull_all = dotGeometry.buildCommandedAngle(filteredThetas, filteredPhis, phiRampAll, thetaRampAll)
+        targetPositions = np.zeros((len(filteredGoodIdx), iteration), dtype=complex)
+        filteredCobras = self.cc.allCobras[filteredGoodIdx]
+        for j in range(iteration):
+            targetPositions[:, j] = self.cc.pfi.anglesToPositions(filteredCobras,
+                                                                   _thetasFull_all[j],
+                                                                   _phisFull_all[j])
+        cobraTargetTable.makeTargetTableFromTargetPositions(targetPositions, self.cc, filteredGoodIdx)
+        cobraTargetTable.writeTargetTable()
+
         # Invalidating previous pfsConfig.
         cmd.inform(f'pfsConfig=0x{pfsDesign.pfsDesignId:016x},{visit},inProgress')
+
+        # Drop any previous visit's scan state up front: if this convergence
+        # raises, moveToDotByFlux must not blind-move on stale indices.
+        self.dotScan = None
+
         try:
             if twoSteps:
                 cIds = filteredGoodIdx  # Changed from goodIdx to filteredGoodIdx
@@ -1815,6 +1868,8 @@ class FpsCmd(object):
                 thetasVia = np.copy(filteredThetas)  # Changed from thetas to filteredThetas
                 phisVia = np.copy(filteredPhis)  # Changed from phis to filteredPhis
                 for c in range(len(cIds)):
+                    if c in dotCobrasSet:
+                        continue
                     if filteredPhis[c] > limitPhi[c]:  # Changed from phis[c] to filteredPhis[c]
                         phisVia[c] = limitPhi[c]
                         thetasVia[c] = filteredThetas[c] + (filteredPhis[c] - limitPhi[c]) / 2  # Changed accordingly
@@ -1837,13 +1892,19 @@ class FpsCmd(object):
                 dataPath, atThetas, atPhis, moves[0, :, :2] = \
                     eng.moveThetaPhi(cIds, thetasVia, phisVia, relative=False, local=True, tolerance=tolerance,
                                      tries=2, homed=goHome, newDir=False, thetaFast=True, phiFast=True,
-                                     threshold=fastThreshold, thetaMargin=np.deg2rad(thetaMarginDeg))
+                                     threshold=fastThreshold, thetaMargin=np.deg2rad(thetaMarginDeg),
+                                     phiRamp=phiRampAll[:2], thetaRamp=thetaRampAll[:2])
 
                 self.cc.expTime = expTime
                 self.cc.useScaling, self.cc.maxSegments, self.cc.maxTotalSteps = _useScaling, _maxSegments, _maxTotalSteps
                 cmd.inform(
                     f'text="useScaling={self.cc.useScaling}, maxSegments={self.cc.maxSegments}, maxTotalSteps={self.cc.maxTotalSteps}"')
 
+                # hideLockIter=8 here corresponds to global iter 10 (the second
+                # moveThetaPhi call starts at global iter 2).  Late lock —
+                # cobras hit by the yo-yo at iter 5-7 have time to settle
+                # before the lock engages.  After the loop the blind move
+                # pushes them deeper inside the dot.
                 dataPath, atThetas, atPhis, moves[0, :, 2:] = \
                     eng.moveThetaPhi(cIds, filteredThetas, filteredPhis, relative=False, local=True,
                                      tolerance=tolerance,
@@ -1851,7 +1912,9 @@ class FpsCmd(object):
                                      tries=iteration - 2,
                                      homed=False,
                                      newDir=False, thetaFast=True, phiFast=True, threshold=fastThreshold,
-                                     thetaMargin=np.deg2rad(thetaMarginDeg))
+                                     thetaMargin=np.deg2rad(thetaMarginDeg),
+                                     phiRamp=phiRampAll[2:], thetaRamp=thetaRampAll[2:],
+                                     hideLockIter=8)
 
             else:
                 cIds = filteredGoodIdx
@@ -1860,12 +1923,40 @@ class FpsCmd(object):
                                                                      tries=iteration, homed=goHome, newDir=False,
                                                                      thetaFast=False, phiFast=False,
                                                                      threshold=fastThreshold,
-                                                                     thetaMargin=np.deg2rad(thetaMarginDeg))
+                                                                     thetaMargin=np.deg2rad(thetaMarginDeg),
+                                                                     phiRamp=phiRampAll, thetaRamp=thetaRampAll,
+                                                                     hideLockIter=10)
             self.atThetas = atThetas
             self.atPhis = atPhis
 
+            # Push the hidden dot cobras deeper inside the dot with a single open-loop
+            # (slow-map) move: the closed-loop ramp above lands them at
+            # RAMP_LANDING_FRACTION, this takes them to BLIND_TARGET_FRACTION.
+            if len(dotGlobalIdx):
+                dotGeometry.blindMoveHiddenCobras(self.cc, dotGlobalIdx, filteredGoodIdx,
+                                                  moves, _dotGeom,
+                                                  fromFraction=dotGeometry.RAMP_LANDING_FRACTION,
+                                                  toFraction=dotGeometry.BLIND_TARGET_FRACTION,
+                                                  cmd=cmd)
+                # Diagnostic exposure post-blind-move (the move itself is
+                # pfi-only / open-loop; this frame lets us inspect the
+                # post-push detection state).
+                self.cc.exposeAndExtractPositions()
+
             # Saving moves array
             np.save(dataPath / 'moves', moves)
+
+            # Hand off the blind-move inputs to moveToDotByFlux (in-memory, no file).  The scan
+            # then just calls dotGeometry.blindMoveHiddenCobras() each flat with the dot fraction
+            # advancing by dFraction — reusing the exact hidden-cobra / fitPhiSpeed / bounded-step
+            # / phiFast=False (slow-map) machinery the blind move already implements.
+            if len(dotGlobalIdx):
+                self.dotScan = dict(dotGlobalIdx=np.asarray(dotGlobalIdx, dtype=int),
+                                    filteredGoodIdx=np.asarray(filteredGoodIdx),
+                                    moves=moves, dotGeom=_dotGeom,
+                                    # cobras sit at BLIND_TARGET_FRACTION after the blind move above
+                                    fraction=dotGeometry.BLIND_TARGET_FRACTION,
+                                    dFraction=0.05)   # per-flat scan increment
 
         except Exception:
             convergenceFailed = True
@@ -1923,228 +2014,60 @@ class FpsCmd(object):
 
         return maxIteration
 
-    def hideCobras(self, cmd):
-        """"""
+        cmd.finish('text="cobraMoveAngles completed"')
+
+    def moveToDotByFlux(self, cmd):
+        """Open-loop scan of dot cobras across the black dot for flat-field flux mapping.
+
+        Called iteratively by iic, one SPS flat between each call.  moveToPfsDesign hands off
+        ``self.dotScan`` (the inputs for dotGeometry.blindMoveHiddenCobras plus the running dot
+        fraction).  Each call records the latest SPS flux, then calls blindMoveHiddenCobras to
+        walk every *hidden* dot cobra one ``dFraction`` (0.05) deeper across the dot — bounded,
+        motor-calibrated (fitPhiSpeed), phiFast=False (slow map), pure-FPGA moveSteps, no MCS.  Never stops
+        or reverses; the flux-vs-depth minimum (dot centre) is analysed offline.
+
+        Command keyword
+        ---------------
+        nRemaining : int (default 1)
+            Remaining calls including this one.  Pass 0 for the final call: record flux,
+            take no step, release the state.
+        """
+        from pfs.utils.database import opdb
+        from ics.fpsActor.utils import dotGeometry
+
         cmdKeys = cmd.cmd.keywords
-        visit = self.actor.visitor.setOrGetVisit(cmd)
-        iteration = 0
+        nRemaining = cmdKeys['nRemaining'].values[0] if 'nRemaining' in cmdKeys else 1
 
-        rootDir = '/data/fps/hideCobras'
-        outputDir = os.path.join(rootDir, f'v{visit:06d}')
-        if not os.path.isdir(outputDir):
-            os.mkdir(outputDir)
+        scan = self.dotScan
+        if scan is None:
+            cmd.fail('text="moveToDotByFlux: no dot-scan state - run moveToPfsDesign on a '
+                     'BLACKSPOT (dot) design first"')
+            return
 
-        nearConvergenceId = alfUtils.getLatestNearDotConvergenceId()
+        # -- record latest SPS flux (monitoring only; the profile is analysed offline) --
+        try:
+            db = opdb.OpDB()
+            spsVisit = int(db.query_scalar('SELECT MAX(pfs_visit_id) FROM sps_visit'))
+            fluxDf = db.query_dataframe(
+                f'SELECT cobra_id, flux_norm FROM dot_roach_flux WHERE pfs_visit_id = {spsVisit}')
+            nFlux = 0 if fluxDf.empty else int(np.isfinite(fluxDf.flux_norm.to_numpy()).sum())
+            cmd.inform(f'text="dotScan flat: spsVisit={spsVisit} nFlux={nFlux}"')
+        except Exception as e:
+            cmd.warn(f'text="dotScan: flux read failed ({e}); continuing scan"')
 
-        noCrossingCobras = alfUtils.findNoCrossingCobras(nearConvergenceId)
-        cmd.inform(f'text="{len(noCrossingCobras)} cobras wont cross the black dot..."')
+        # -- walk the hidden dot cobras one dFraction deeper (skip the final record-only call) --
+        if nRemaining > 0:
+            f = scan['fraction']
+            df = scan['dFraction']
+            dotGeometry.blindMoveHiddenCobras(self.cc, scan['dotGlobalIdx'], scan['filteredGoodIdx'],
+                                              scan['moves'], scan['dotGeom'],
+                                              fromFraction=f, toFraction=f + df, cmd=cmd)
+            scan['fraction'] = f + df
 
-        cobraMatch = alfUtils.getCobraMatchData(nearConvergenceId)
-        cobraMatch = cobraMatch[cobraMatch.iteration == cobraMatch.iteration.max()]
-        maskFile, maskFilepath = alfUtils.makeHideCobraMaskFile(cobraMatch, iteration, outputDir)
+        if nRemaining == 0:
+            self.dotScan = None  # release for the next dotRoach sequence
 
-        # How many steps used to calculate the scaling.
-        nIterForScaling = cmdKeys['nIterForScaling'] if 'nIterForScaling' in cmdKeys else 3
-        # what constant step size is used to calculate the scaling
-        stepSizeForScaling = cmdKeys['stepSizeForScaling'] if 'stepSizeForScaling' in cmdKeys else 60
-        # How many iteration to go the edge of the dot.
-        nIterFindDot = cmdKeys['nIterFindDot'] if 'nIterFindDot' in cmdKeys else 20
-        usePercentile = 98  # what percentile do you use to calculate the maximum distance to the dot.
-        distanceToDotTolerance = 1.25  # what tolerance to apply when calculate the maximum distance to the dot.
-
-        for direction in [1, -1]:
-            stepsize = direction * stepSizeForScaling
-
-            for nIter in range(nIterForScaling):
-                frameNum = self.actor.visitor.getNextFrameNum()
-                cmd.inform(f'text="iteration {iteration} moving {len(maskFile[maskFile.bitMask == 1])} cobras {stepsize} steps"')
-
-                self.cobraMoveSteps(maskFile=maskFilepath, stepsize=stepsize, phi=True)
-                ret = self.actor.cmdr.call(actor='mcs',
-                                           cmdStr=f'expose object expTime=4.8 frameId={frameNum} doCentroid doFibreId',
-                                           forUserCmd=cmd, timeLim=30)
-
-                if ret.didFail:
-                    raise RuntimeError("mcs expose failed")
-
-                cobraMatch = alfUtils.getCobraMatchData(visit, iteration=iteration)
-                maskFile, maskFilepath = alfUtils.makeHideCobraMaskFile(cobraMatch, iteration + 1, outputDir)
-                iteration += 1
-
-        # calculate the scaling
-        cmd.inform(f'text="computing scaling..."')
-        scalingFilepath = alfUtils.makeScaling(nearConvergenceId, visit, outputDir=outputDir)
-        cmd.inform(f'scalingFilepath={scalingFilepath}')
-
-        speeds = pd.read_csv(scalingFilepath, index_col=0)
-        maxAngle = distanceToDotTolerance * np.nanpercentile(speeds.distance, usePercentile)
-        maxSteps = maxAngle * stepSizeForScaling / np.nanmedian(speeds.speed2)
-        stepsize = round(int(maxSteps / nIterFindDot))
-
-        for nIter in range(nIterFindDot):
-            cmd.inform(f'text="iteration {iteration} moving {len(maskFile[maskFile.bitMask == 1])} cobras"')
-            self.cobraMoveSteps(maskFile=maskFilepath, stepsize=stepsize, phi=True, applyScaling=scalingFilepath)
-
-            # if nIter==nIterFindDot-1:
-            #    continue
-
-            frameNum = self.actor.visitor.getNextFrameNum()
-
-            ret = self.actor.cmdr.call(actor='mcs',
-                                       cmdStr=f'expose object expTime=4.8 frameId={frameNum} doCentroid doFibreId',
-                                       forUserCmd=cmd, timeLim=30)
-
-            if ret.didFail:
-                raise RuntimeError("mcs expose failed")
-
-            cobraMatch = alfUtils.getCobraMatchData(visit, iteration=iteration)
-            maskFile, maskFilepath = alfUtils.makeHideCobraMaskFile(cobraMatch, iteration + 1, outputDir)
-            iteration += 1
-
-        cmd.finish()
-
-    def driveHotRoach(self, cmd):
-        """"""
-        cmdKeys = cmd.cmd.keywords
-        visit = self.actor.visitor.setOrGetVisit(cmd)
-        iteration = 0
-
-        rootDir = '/data/fps/hideCobras'
-        outputDir = os.path.join(rootDir, f'v{visit:06d}')
-        if not os.path.isdir(outputDir):
-            os.mkdir(outputDir)
-
-        nearConvergenceId = alfUtils.getLatestNearDotConvergenceId()
-        fiberMatcher = FiberMatcher(nearConvergenceId)
-
-        cobraMatch = alfUtils.getCobraMatchData(nearConvergenceId)
-        cobraMatch = cobraMatch[cobraMatch.iteration == cobraMatch.iteration.max()]
-        maskFile, maskFilepath = alfUtils.makeHideCobraMaskFile(cobraMatch, iteration, outputDir)
-
-        # How many steps used to calculate the scaling.
-        useIterForScaling = cmdKeys['nIterForScaling'] if 'nIterForScaling' in cmdKeys else 3
-        # what constant step size is used to calculate the scaling
-        useStepSizeForScaling = cmdKeys['stepSizeForScaling'] if 'stepSizeForScaling' in cmdKeys else 60
-        # How many iteration to go the edge of the dot.
-        nMcsIteration = cmdKeys['nMcsIteration'].values[0] if 'nMcsIteration' in cmdKeys else 12
-        nSpsIteration = cmdKeys['nSpsIteration'].values[0] if 'nSpsIteration' in cmdKeys else 6
-
-        fixedScalingDf = []
-
-        for direction in [1, -1]:
-            nIterForScaling = 1 if direction == 1 else useIterForScaling
-            stepSizeForScaling = 180 if direction == 1 else useStepSizeForScaling
-
-            stepsize = direction * stepSizeForScaling
-
-            for nIter in range(nIterForScaling):
-                frameNum = self.actor.visitor.getNextFrameNum()
-                cmd.inform(
-                    f'text="iteration {iteration} moving {len(maskFile[maskFile.bitMask == 1])} cobras {stepsize} steps"')
-
-                self.cobraMoveSteps(maskFile=maskFilepath, stepsize=stepsize, phi=True)
-                ret = self.actor.cmdr.call(actor='mcs',
-                                           cmdStr=f'expose object expTime=4.8 frameId={frameNum} doCentroid doFibreId',
-                                           forUserCmd=cmd, timeLim=30)
-
-                if ret.didFail:
-                    raise RuntimeError("mcs expose failed")
-
-                cobraMatch = fiberMatcher.cobraMatch(visit, iteration=iteration)
-                maskFile, maskFilepath = alfUtils.makeHideCobraMaskFile(cobraMatch, iteration + 1, outputDir)
-
-                fixedScalingDf.append(cobraMatch)
-                iteration += 1
-
-        convergenceDf = alfUtils.loadConvergenceDf(nearConvergenceId)
-        fixedScalingDf = pd.concat(fixedScalingDf).reset_index(drop=True)
-
-        driver = HotRoachDriver(convergenceDf, fixedScalingDf, fixedSteps=useStepSizeForScaling * -1)
-        driver.bootstrap(fiberMatcher.allCobXY.x.to_numpy(), fiberMatcher.allCobXY.y.to_numpy())
-
-        for nIter in range(nMcsIteration):
-            maskFile = driver.makeScalingDf(nMcsIteration - nIter, nSpsIteration)
-
-            fileName = f'{iteration:02d}'
-            maskFilepath = os.path.join(outputDir, f'{fileName}.csv')
-            maskFile.to_csv(maskFilepath)
-
-            cmd.inform(f'text="iteration {iteration} moving {len(maskFile[maskFile.bitMask == 1])} cobras"')
-            self.cobraMoveSteps(maskFile=maskFilepath, stepsize=1, phi=True, applyScaling=maskFilepath)
-
-            frameNum = self.actor.visitor.getNextFrameNum()
-            ret = self.actor.cmdr.call(actor='mcs',
-                                       cmdStr=f'expose object expTime=4.8 frameId={frameNum} doCentroid doFibreId',
-                                       forUserCmd=cmd, timeLim=30)
-            if ret.didFail:
-                raise RuntimeError("mcs expose failed")
-
-            cobraMatch = fiberMatcher.cobraMatch(visit, iteration=iteration)
-            driver.newMcsIteration(cobraMatch, doUpdateTracker=nIter<nMcsIteration-1)
-
-            iteration += 1
-
-        driver.outputDir = outputDir
-        driver.iteration = iteration
-        self.driver = driver
-
-        cmd.finish()
-
-    def driveHotRoachOpenLoop(self, cmd):
-        cmdKeys = cmd.cmd.keywords
-        nMcsIteration = 0
-        nSpsIteration = cmdKeys['nSpsIteration']
-
-        driver = self.driver
-        iteration = self.driver.iteration
-        outputDir = self.driver.outputDir
-
-        maskFile = driver.makeScalingDf(nMcsIteration, nSpsIteration)
-
-        fileName = f'{iteration:02d}'
-        maskFilepath = os.path.join(outputDir, f'{fileName}.csv')
-        maskFile.to_csv(maskFilepath)
-
-        cmd.inform(f'text="iteration {iteration} moving {len(maskFile[maskFile.bitMask == 1])} cobras"')
-        self.cobraMoveSteps(maskFile=maskFilepath, stepsize=1, phi=True, applyScaling=maskFilepath)
-
-        frameNum = self.actor.visitor.getNextFrameNum()
-
-        ret = self.actor.cmdr.call(actor='mcs',
-                                   cmdStr=f'expose object expTime=4.8 frameId={frameNum} doCentroid doFibreId',
-                                   forUserCmd=cmd, timeLim=30)
-
-        if ret.didFail:
-            raise RuntimeError("mcs expose failed")
-
-        self.driver.iteration += 1
-
-        cmd.finish()
-
-    def driveHotRoachCloseLoop(self, cmd):
-        cmdKeys = cmd.cmd.keywords
-        nMcsIteration = 0
-        nSpsIteration = cmdKeys['nSpsIteration'].values[0]
-
-        driver = self.driver
-        iteration = self.driver.iteration
-        outputDir = self.driver.outputDir
-
-        flux = pd.read_csv(cmdKeys['maskFile'].values[0], index_col=0)
-        mergeAngle = flux.nIter.max() == 1
-        driver.newSpsIteration(flux, mergeAngle=mergeAngle)
-        maskFile = driver.makeScalingDf(nMcsIteration, nSpsIteration)
-
-        fileName = f'{iteration:02d}'
-        maskFilepath = os.path.join(outputDir, f'{fileName}.csv')
-        maskFile.to_csv(maskFilepath)
-
-        cmd.inform(f'text="iteration {iteration} moving {len(maskFile[maskFile.bitMask == 1])} cobras"')
-        self.cobraMoveSteps(maskFile=maskFilepath, stepsize=1, phi=True, applyScaling=maskFilepath)
-
-        self.driver.iteration += 1
-
-        cmd.finish()
+        cmd.finish('text="moveToDotByFlux done"')
 
     def loadDotScales(self, cmd):
         """Load step scaling just for the dot traversal loop. """
