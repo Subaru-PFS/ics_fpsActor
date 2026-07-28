@@ -30,13 +30,39 @@ PHI_CAPS_DEG = (30.0, 45.0)
 # a single open-loop slow-map blind move (blindMoveHiddenCobras, called from
 # moveToPfsDesign) then pushes it to BLIND_TARGET_FRACTION, deeper inside the dot.
 #
-# Measured on the 2026-07-24 telescope run: landing at 0.2 with no blind move leaves a
-# median 10.8% residual flux (33% of cobras below 5%), while the 0.1 -> 0.3 push reaches
-# 0.7% (78% below 5%).  The flux scan puts the true obscuration optimum near fraction
-# 0.40 (95% below 5%), so BLIND_TARGET_FRACTION still has room to grow.  Do not go past
-# 0.5: beyond the dot centre the tip approaches the far edge and the flux rises again.
+# Measured on the 2026-07-24 telescope run (good cobras, flux right after
+# moveToPfsDesign): landing at 0.2 with no blind move leaves a median 9.6% residual flux
+# (35% of cobras below 5%); the 0.1 -> 0.3 push reached 0.62% (84% below 5%).
+#
+# The two 13-step across-dot scans give the fraction of cobras below 5% residual flux for
+# a PERFECTLY placed tip as
+#     0.30 -> 89.8%    0.35 -> 96.8%    0.40 -> 98.4%    0.45 -> 98.3%    0.50 -> 96.7%
+# so the obscuration optimum is a broad plateau from about 0.35 to 0.50.
+#
+# The blind move cannot place the tip perfectly, so the target has to be chosen against
+# the realised distribution rather than that curve.  Inverting each cobra's own scan curve
+# against its measured flux in visit 147726 gives the error of the 0.1 -> 0.3 push as a
+# fraction of the commanded delta: median -0.19, p5 -0.50, p95 +0.12.  The move
+# systematically UNDERSHOOTS -- almost certainly because fitPhiSpeed reads the small
+# end-of-ramp steps and so over-estimates the speed.  Folding that error back into the
+# curve, and scaling it with the commanded delta:
+#     target  median flux   <5%     <1%    past 0.5
+#      0.30      0.800%    83.2%   57.5%     0.0%
+#      0.35      0.280%    90.9%   79.1%     0.2%
+#      0.40      0.169%    93.8%   87.9%     0.4%
+#      0.45      0.136%    94.7%   91.2%     3.9%
+# 0.40 is the turnover: 0.45 buys under a point more and takes overshoot past the dot
+# centre from 0.4% to 3.9%.  Aiming shallower is not the conservative choice -- since the
+# move undershoots, 0.35 simply compounds the bias and gives up three points.
+#
+# Do not go past 0.5: beyond the dot centre the tip approaches the far edge and the flux
+# rises again (0.60 -> 83.5%, 0.70 -> 60.3%).
+#
+# A single global value is adequate.  The per-cobra optimum has median 0.43 with an
+# intrinsic scatter of 0.051, and the field-dependent part is smaller still (m=1 amplitude
+# 0.025, i.e. 38 um of tip travel) -- all well inside the plateau.
 RAMP_LANDING_FRACTION = 0.1
-BLIND_TARGET_FRACTION = 0.3
+BLIND_TARGET_FRACTION = 0.4
 
 # Bounds on the open-loop blind move.  fitPhiSpeed stays the step estimator — it
 # tracks real behaviour better than the calibrated map — but it measures achieved
@@ -373,14 +399,27 @@ def computePhiStart(phiInDot, direction, phiFloor=np.radians(15.0),
                     minRangeDeg=30.0):
     """Compute per-cobra ramp start phi.
 
-    Guarantees at least minRange radians of ramp travel where possible.
+    The ramp starts minRange away from the landing angle, on the far side from
+    the dot, so both approach directions get the same run-up:
 
-    CCW (+1): phiStart = max(phiFloor, phiInDot - minRange)
-              Travel = phiInDot - phiStart (may be < minRange if phiInDot is
-              close to phiFloor — constrained by the hard stop, nothing we can do).
+        CCW (+1): phiStart = phiInDot - minRange   (approaches from below)
+        CW  (-1): phiStart = phiInDot + minRange   (approaches from above)
 
-    CW  (-1): phiStart = phiInDot + max(phiInDot - phiFloor, minRange)
-              Travel = phiStart - phiInDot >= minRange always.
+    The phiFloor clamp is a safety net that the direction choice already makes
+    unreachable: computeDotAngles only selects CCW when
+    phiMin >= phiFloor + minRange, which is exactly the condition for
+    phiInDot - minRange >= phiFloor.
+
+    The run-up is deliberately NOT scaled by how far phiInDot sits above the
+    floor.  An earlier version did, using
+        phiStart = phiInDot + max(phiInDot - phiFloor, minRange)
+    for the CW branch.  Because phiInDot - phiFloor is a median 51 deg for CW
+    cobras, that branch won for 99.8% of them and gave CW a 40 deg ramp span
+    against CCW's 19 deg -- so CW cobras were commanded twice the per-iteration
+    step for no reason.  Measured on the 2026-07-24 dataset, execution error is
+    a fixed ~17% of the commanded step in both directions, so the oversized
+    run-up doubled the CW residual (45 um against 24 um for CCW at the same
+    iteration) and cost ~14 points of arrival within 100 um.
 
     Parameters
     ----------
@@ -391,19 +430,14 @@ def computePhiStart(phiInDot, direction, phiFloor=np.radians(15.0),
     phiFloor : float
         Minimum starting phi (hard-stop margin, radians). Default 15°.
     minRangeDeg : float
-        Minimum guaranteed ramp travel in degrees. Default 30°.
+        Ramp travel before the dot, in degrees. Default 30°.
 
     Returns
     -------
     phiStart : ndarray (nCobras,)
     """
     minRange = np.deg2rad(minRangeDeg)
-    phiStart = np.maximum(phiFloor, phiInDot - minRange)  # CCW default
-
-    cwMask = direction < 0
-    cw_travel = np.maximum(phiInDot[cwMask] - phiFloor, minRange)
-    phiStart[cwMask] = phiInDot[cwMask] + cw_travel
-    return phiStart
+    return np.maximum(phiFloor, phiInDot - direction * minRange)
 
 
 def fitPhiSpeed(moves, localIdx, nFit=4):
