@@ -18,6 +18,7 @@ fraction : 0 = phiEnter, 0.5 = phiCenter, 1 = phiExit
 
 import numpy as np
 from ics.fpsActor.utils.alfUtils import sgfm
+from ics.cobraCharmer import targetValidation
 
 
 # Phi cap (deg) per leading "fast" iteration of moveThetaPhi.  Both the phi
@@ -259,7 +260,7 @@ def buildDotRamp(cc, dotCobras, nIter, capIters=2, motorMarginMm=0.2):
     # Per-iter offset based on the actual capped phi at that iteration:
     # the lever arm D(phi) is shorter when the arm is more closed (smaller
     # phi), so the required theta sweep is larger.
-    thetaRange = (cc.calibModel.tht1 - cc.calibModel.tht0 + np.pi) % (2*np.pi) + np.pi
+    thetaRange = targetValidation.thetaRange(cc.calibModel)
     thetaMargin = np.deg2rad(15.0)
     L1 = cc.calibModel.L1
     L2 = cc.calibModel.L2
@@ -592,7 +593,7 @@ def estimateMotorMapSpeed(cc, cIds, phiAngles, direction):
     return speed
 
 
-def blindMoveHiddenCobras(cc, dotGlobalIdx, filteredGoodIdx, moves, dotGeom,
+def blindMoveHiddenCobras(cc, dotGlobalIdx, commandedIdx, moves, dotGeom,
                           fromFraction=0.1, toFraction=0.4, cmd=None):
     """Open-loop step push of hidden dot cobras toward toFraction inside the dot.
 
@@ -610,12 +611,12 @@ def blindMoveHiddenCobras(cc, dotGlobalIdx, filteredGoodIdx, moves, dotGeom,
         Source of cc.cobraInfo['detected'], cc.allCobras, cc.pfi.moveSteps.
     dotGlobalIdx : ndarray of int
         Global indices of cobras that participated in the dot ramp.
-    filteredGoodIdx : ndarray of int
+    commandedIdx : ndarray of int
         Global indices in the order they appear along axis-1 of ``moves``.
     moves : structured ndarray
         moveThetaPhi history (used by fitPhiSpeed for the rad/step estimate),
-        either (1, len(filteredGoodIdx), nIter) as moveToPfsDesign builds it on
-        the twoSteps path, or (len(filteredGoodIdx), nIter) on twoStepsOff.
+        either (1, len(commandedIdx), nIter) as moveToPfsDesign builds it on
+        the twoSteps path, or (len(commandedIdx), nIter) on twoStepsOff.
     dotGeom : dict
         Output of buildDotRamp; must carry halfDot and direction.
     fromFraction : float
@@ -658,7 +659,7 @@ def blindMoveHiddenCobras(cc, dotGlobalIdx, filteredGoodIdx, moves, dotGeom,
                                      direction[hiddenGlobal], fromFraction)
     mapSpeed = estimateMotorMapSpeed(cc, hiddenGlobal, phiAtFrom, direction[hiddenGlobal])
 
-    idxMap = {int(gc): i for i, gc in enumerate(np.asarray(filteredGoodIdx))}
+    idxMap = {int(gc): i for i, gc in enumerate(np.asarray(commandedIdx))}
     cobrasToStep = []
     phiStepsList = []
     nSpeedNan = 0
