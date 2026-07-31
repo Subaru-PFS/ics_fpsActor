@@ -26,6 +26,7 @@ from ics.fpsActor import fpsState
 from ics.fpsActor import najaVenator
 from ics.fpsActor.utils import display as vis
 from ics.fpsActor.utils import dotGeometry
+from ics.fpsActor.utils import motorScales
 from ics.fpsActor.utils.cobraCenters import updateCobraCenters
 from pfs.utils.database import opdb
 from pfs.utils import butler
@@ -1965,6 +1966,10 @@ class FpsCmd(object):
 
             # Saving moves array
             np.save(dataPath / 'moves', moves)
+
+            # INSTRM-2977: persist what the adaptive on-time loop learned, before the
+            # next convergence resets it to 1.0 and the correction is lost.
+            motorScales.saveMotorScales(self.cc, dataPath, cmd=cmd)
 
             # Hand off the blind-move inputs to moveToDotByFlux (in-memory, no file).  The scan
             # then just calls dotGeometry.blindMoveHiddenCobras() each flat with the dot fraction
