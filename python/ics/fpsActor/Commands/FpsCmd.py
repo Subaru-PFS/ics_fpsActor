@@ -44,6 +44,11 @@ reload(eng)
 
 reload(pfsConfigUtils)
 
+# Iterations a prematurely-hidden dot cobra needs to recover: to be driven back out
+# of the dot, re-acquired by the MCS, and converged onto the ramp again.  Below this
+# many iterations remaining, freezing it where it is beats letting it try.
+HIDE_RECOVERY_ITERS = 4
+
 
 class FpsCmd(object):
     def __init__(self, actor):
@@ -1903,11 +1908,23 @@ class FpsCmd(object):
                 cmd.inform(
                     f'text="useScaling={self.cc.useScaling}, maxSegments={self.cc.maxSegments}, maxTotalSteps={self.cc.maxTotalSteps}"')
 
-                # hideLockIter=8 here corresponds to global iter 10 (the second
-                # moveThetaPhi call starts at global iter 2).  Late lock —
-                # cobras hit by the yo-yo at iter 5-7 have time to settle
-                # before the lock engages.  After the loop the blind move
-                # pushes them deeper inside the dot.
+                # Lock a prematurely-hidden cobra unless at least 4 iterations remain
+                # for it to recover.  A cobra that hides early reads as the dot centre
+                # (cobra_match's fallback), so the loop computes its correction against
+                # a fabricated position and drives it back out; it then has to converge
+                # again from scratch.  Measured on the four 8-iteration runs of
+                # 2026-07-24, which carried no working lock: of the cobras that hid
+                # before the final jump, those with 4 iterations left recovered to
+                # hidden 85% of the time, with 2 left 33%, with 1 left only 7% -- the
+                # final jump, computed from the dot centre, pushes them straight back
+                # out of the dot.  Freezing instead keeps them hidden, and because they
+                # are hidden they still receive the blind move, landing shallower than
+                # intended but genuinely behind the dot.
+                #
+                # Expressed relative to `tries` rather than as a fixed index: this call
+                # starts at global iter 2, so a constant was only ever right for one
+                # value of `iteration`.  hideLockIter=8 meant global 10 at iteration=16,
+                # but at iteration=8 `tries` is 6 and the lock could never fire at all.
                 dataPath, atThetas, atPhis, moves[0, :, 2:] = \
                     eng.moveThetaPhi(cIds, filteredThetas, filteredPhis, relative=False, local=True,
                                      tolerance=tolerance,
@@ -1917,7 +1934,7 @@ class FpsCmd(object):
                                      newDir=False, thetaFast=False, phiFast=False, threshold=fastThreshold,
                                      thetaMargin=np.deg2rad(thetaMarginDeg),
                                      phiRamp=phiRampAll[2:], thetaRamp=thetaRampAll[2:],
-                                     hideLockIter=8)
+                                     hideLockIter=max(0, (iteration - 2) - HIDE_RECOVERY_ITERS))
 
             else:
                 cIds = filteredGoodIdx
@@ -1928,7 +1945,7 @@ class FpsCmd(object):
                                                                      threshold=fastThreshold,
                                                                      thetaMargin=np.deg2rad(thetaMarginDeg),
                                                                      phiRamp=phiRampAll, thetaRamp=thetaRampAll,
-                                                                     hideLockIter=10)
+                                                                     hideLockIter=max(0, iteration - HIDE_RECOVERY_ITERS))
             self.atThetas = atThetas
             self.atPhis = atPhis
 
