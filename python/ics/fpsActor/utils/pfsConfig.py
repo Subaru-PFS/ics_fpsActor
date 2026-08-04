@@ -1,20 +1,18 @@
 import logging
-from datetime import datetime as datetime
 
 import numpy as np
 import pandas as pd
-import pfs.utils.coordinates.updateTargetPosition as updateTargetPosition
 import pfs.utils.ingestPfsDesign as ingestPfsDesign
 import pfs.utils.pfsConfigUtils as pfsConfigUtils
 import pfs.utils.pfsDesignUtils as pfsDesignUtils
+from ics.cobraCharmer import targetValidation
 from pfs.datamodel import PfsConfig, FiberStatus, TargetType, InstrumentStatusFlag
 from pfs.utils.database import opdb
 from pfs.utils.fiberids import FiberIds
-from pfs.utils.versions import getVersion
 from scipy.interpolate import griddata
 
-__all__ = ["pfsConfigFromDesign", "makeTargetsArray", "tweakTargetPosition",
-           "finalize", "writePfsConfig", "ingestPfsConfig"]
+__all__ = ["pfsConfigFromDesign", "makeTargetsArray", "finalize", "writePfsConfig",
+           "ingestPfsConfig"]
 
 
 def pfsConfigFromDesign(pfsDesign, visit0, calibModel=None, header=None, maskFile=None, versions=None):
@@ -35,56 +33,95 @@ def pfsConfigFromDesign(pfsDesign, visit0, calibModel=None, header=None, maskFil
     return pfsDesignUtils.setFiberStatus(pfsConfig, calibModel=calibModel)
 
 
-def makeTargetsArray(pfsConfig):
-    """Construct target array from pfsConfig file."""
-    allCobraIds = np.arange(2394, dtype='int32') + 1
-    fiberId = pfsConfig.fiberId
-    cobraId = FiberIds().fiberIdToCobraId(fiberId)
-    # targets vector has an entry for each cobra and sorted by cobraId.
-    targets = np.empty((2394, 2), dtype=pfsConfig.pfiNominal.dtype)
-    targets[:] = np.nan
-    # cobraMask is boolean array(shape=cobraId.shape)
-    cobraMask = np.isin(cobraId, allCobraIds)
-    # only existing cobraId.
-    cobraId = cobraId[cobraMask]
-    # assigning target vector directly.
-    targets[cobraId - 1] = pfsConfig.pfiNominal[cobraMask]
-    isNan = np.logical_or(np.isnan(targets[:, 0]), np.isnan(targets[:, 1]))
+N_COBRAS = 2394
 
-    return targets[:, 0] + targets[:, 1] * 1j, isNan
+# Types that carry a real sky target and must converge.  These are the ones an
+# operator cares about losing.
+SCIENCE_TARGET_TYPES = [TargetType.SCIENCE, TargetType.SKY, TargetType.FLUXSTD]
+
+# Target types a cobra may carry in a convergence design: the science ones, plus the two
+# that are parked rather than converged.  Anything else -- DCB, AFL, SUNSS, HOME,
+# SCIENCE_MASKED -- means the design was built for another purpose.  ENGINEERING is
+# absent on purpose: those fibers have no cobra, so they never appear on the 2394-wide
+# grid these masks live on.
+ACCEPTED_TARGET_TYPES = SCIENCE_TARGET_TYPES + [TargetType.UNASSIGNED, TargetType.BLACKSPOT]
+
+
+def cobraRows(pfsConfig):
+    """Rows of pfsConfig that drive a cobra, and the 0-based cobra index of each.
+
+    Reads pfsConfig.cobraId, which pfsDesignUtils.setFiberStatus fills in; fibers with no
+    cobra carry a CobraId sentinel outside 1..nCobras and drop out here.  That is the same
+    partition FiberIds().fiberIdToCobraId gives -- the two disagree only on which sentinel
+    they use for the 64 engineering fibers -- but it costs no fiber-map load.
+    """
+    isCobra = np.isin(pfsConfig.cobraId, np.arange(1, N_COBRAS + 1))
+
+    return isCobra, pfsConfig.cobraId[isCobra] - 1
+
+
+def makeTargetsArray(pfsConfig):
+    """Design positions as a complex (nCobras,) array indexed by cobra, NaN where none."""
+    isCobra, index = cobraRows(pfsConfig)
+    targets = np.full((N_COBRAS, 2), np.nan, dtype=pfsConfig.pfiNominal.dtype)
+    targets[index] = pfsConfig.pfiNominal[isCobra]
+
+    return targets[:, 0] + targets[:, 1] * 1j
 
 
 def getCobraTargetMask(pfsConfig, targetTypes):
-    """Bool mask (2394,) — True for cobras whose targetType is in targetTypes."""
-    allCobraIds = np.arange(2394, dtype='int32') + 1
-    cobraId = FiberIds().fiberIdToCobraId(pfsConfig.fiberId)
-    cobraMask = np.isin(cobraId, allCobraIds)
-    cobraId = cobraId[cobraMask]
-    typeMask = np.isin(pfsConfig.targetType[cobraMask], targetTypes)
-    result = np.zeros(2394, dtype=bool)
-    result[cobraId[typeMask] - 1] = True
-    return result
+    """Bool (nCobras,) — True for cobras whose targetType is in targetTypes."""
+    isCobra, index = cobraRows(pfsConfig)
+    mask = np.zeros(N_COBRAS, dtype=bool)
+    mask[index] = np.isin(pfsConfig.targetType[isCobra], targetTypes)
+
+    return mask
 
 
-def tweakTargetPosition(pfsConfig, cmd=None):
-    """Update pfsConfig target position at the time of observation."""
-    radec = np.vstack([pfsConfig.ra, pfsConfig.dec])
-    pa = pfsConfig.posAng
-    cent = np.vstack([pfsConfig.raBoresight, pfsConfig.decBoresight])
-    # getting pm and par from design.
-    pm = np.vstack([pfsConfig.pmRa, pfsConfig.pmDec])
-    par = pfsConfig.parallax
-    obstime = datetime.utcnow().isoformat()
+def summariseByTargetType(pfsConfig, flags, converging, toBlackDot, isBroken, isMasked):
+    """What the convergence will do to each target type the design carries, as text.
 
-    ra_now, dec_now, pfi_now_x, pfi_now_y = updateTargetPosition.update_target_position(radec, pa, cent, pm, par,
-                                                                                        obstime)
-    # Get pfs_utils version.
-    pfsUtilsVer = getVersion('pfs_utils')
-    # setting the new positions.
-    pfsConfig.updateTargetPosition(ra=ra_now, dec=dec_now, pfiNominal=np.vstack((pfi_now_x, pfi_now_y)).transpose(),
-                                   obstime=obstime, pfsUtilsVer=pfsUtilsVer)
+    One line per target type present, then a total.  Every row reconciles --
+    nDesign = converging + toBlackDot + broken + masked -- and the rows sum to the
+    total, so a cobra belonging to no outcome shows up as arithmetic that does not add.
 
-    return pfsConfig
+    Reasons are counted over the non-broken cobras only.  A broken cobra is a parked
+    monitoring fiber and always carries a non-finite target, which otherwise doubles
+    the count that matters.
+
+    Parameters
+    ----------
+    pfsConfig : PfsConfig
+        Design being converged to.
+    flags : ndarray of uint16, (nCobras,)
+        Per-cobra verdict from targetValidation.validateTargets.
+    converging, toBlackDot, isBroken, isMasked : ndarray of bool, (nCobras,)
+        The four outcomes, mutually exclusive and covering every cobra.
+
+    Returns
+    -------
+    list of str
+        Header, one row per target type, then a total row.
+    """
+    informational = targetValidation.FLAG_NAMES[targetValidation.IN_OVERLAPPING_REGION]
+
+    def row(label, inRow):
+        counts = targetValidation.summarise(flags, isScience=inRow & ~isBroken)
+        reasons = ', '.join(f'{name}={n}' for name, n in counts.items()
+                            if n and name not in ('checked', 'invalid', informational))
+        return (f'{label:<12}{int(inRow.sum()):>8}{int((converging & inRow).sum()):>11}'
+                f'{int((toBlackDot & inRow).sum()):>11}{int((isBroken & inRow).sum()):>7}'
+                f'{int((isMasked & inRow).sum()):>7}   {reasons}')
+
+    lines = [f'{"targetType":<12}{"nDesign":>8}{"converging":>11}{"toBlackDot":>11}'
+             f'{"broken":>7}{"masked":>7}   reasons']
+    for targetType in ACCEPTED_TARGET_TYPES:
+        inType = getCobraTargetMask(pfsConfig, [targetType])
+        if inType.any():
+            lines.append(row(targetType.name, inType))
+    lines.append(row('TOTAL', np.ones(N_COBRAS, dtype=bool)))
+
+    return lines
 
 
 def finalize(pfsConfig, finalIteration, notConvergedDistanceThreshold=None,

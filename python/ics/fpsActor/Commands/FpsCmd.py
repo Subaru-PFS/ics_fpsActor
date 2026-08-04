@@ -27,6 +27,7 @@ from ics.fpsActor import najaVenator
 from ics.fpsActor.utils import display as vis
 from ics.fpsActor.utils import dotGeometry
 from ics.fpsActor.utils import motorScales
+from ics.cobraCharmer import targetValidation
 from ics.fpsActor.utils.cobraCenters import updateCobraCenters
 from pfs.utils.database import opdb
 from pfs.utils import butler
@@ -45,10 +46,6 @@ reload(eng)
 
 reload(pfsConfigUtils)
 
-# Iterations a prematurely-hidden dot cobra needs to recover: to be driven back out
-# of the dot, re-acquired by the MCS, and converged onto the ramp again.  Below this
-# many iterations remaining, freezing it where it is beats letting it try.
-HIDE_RECOVERY_ITERS = 4
 
 
 class FpsCmd(object):
@@ -97,7 +94,7 @@ class FpsCmd(object):
             ('setCobraMode', '@(phi|theta|normal)', self.setCobraMode),
             ('setGeometry', '@(phi|theta) <runDir>', self.setGeometry),
             ('moveToPfsDesign',
-             '<designId> [@twoStepsOff] [@shortExpOff] [@goHome] [@noTweak] [@skipFiducialInterferenceCheck] [<visit>] [<expTime>] [<iteration>] [<tolerance>] [<maskFile>]',
+             '<designId> [@twoStepsOff] [@shortExpOff] [@goHome] [@noTweak] [@skipFiducialInterferenceCheck] [@allowMaskedCobras] [<visit>] [<expTime>] [<iteration>] [<tolerance>] [<maskFile>]',
              self.moveToPfsDesign),
             ('moveToSafePosition', '[<expTime>] [<visit>] [<tolerance>] [<phiAngle>] [<thetaAngle>] [@noHome]', self.moveToSafePosition),
             ('makeMotorMap', '@(phi|theta) <stepsize> <repeat> [<totalsteps>] [@slowOnly] [@forceMove] [<visit>]',
@@ -982,7 +979,7 @@ class FpsCmd(object):
         else:
             designName = self._makeDesignName(homingType, maskFile)
 
-        thetaHome = ((self.cc.calibModel.tht1 - self.cc.calibModel.tht0 + np.pi) % (np.pi * 2) + np.pi)
+        thetaHome = targetValidation.thetaRange(self.cc.calibModel)
         phiHome = np.zeros_like(thetaHome)
 
         thetaAngles = thetaHome if thetaEnable else self.atThetas
@@ -1223,7 +1220,7 @@ class FpsCmd(object):
             if useMCS and thetaEnable and phiEnable and diff is not None:
                 self.logger.info(f'Averaged position offset compared with cobra center = {np.mean(diff)}')
 
-            thetaHome = ((self.cc.calibModel.tht1 - self.cc.calibModel.tht0 + np.pi) % (np.pi * 2) + np.pi)
+            thetaHome = targetValidation.thetaRange(self.cc.calibModel)
 
             if self.atThetas is None:
                 self.atThetas = thetaHome.copy()
@@ -1651,11 +1648,16 @@ class FpsCmd(object):
         except KeyError:
             notConvergedDistanceThreshold = None
 
+        convergenceCfg = self.actor.actorConfig.get('convergence', {})
+        maxInvalidScienceTargets = convergenceCfg.get('maxInvalidScienceTargets', 25)
+
         shortExp = 'shortExpOff' not in cmdKeys
         twoSteps = 'twoStepsOff' not in cmdKeys
         goHome = 'goHome' in cmdKeys
         doTweak = 'noTweak' not in cmdKeys
         skipFiducialInterferenceCheck = 'skipFiducialInterferenceCheck' in cmdKeys
+        # Proceed even when more science targets fail validation than the limit.
+        allowMaskedCobras = 'allowMaskedCobras' in cmdKeys
 
         self.cc.expTime = expTime
         cmd.inform(f'text="Setting moveToPfsDesign expTime={expTime}"')
@@ -1676,108 +1678,103 @@ class FpsCmd(object):
             cmd.inform(f'text="Tweaking designed targets position..."')
             tweakTargetPosition(pfsConfig)
 
-        targets, isNan = pfsConfigUtils.makeTargetsArray(pfsConfig)
-        # setting NaN targets to centers
-        targets[isNan] = self.cc.calibModel.centers[isNan]
+        # ── validation ────────────────────────────────────────────────────────
+        # Everything here is (nCobras,) and indexed by cobra index; subsetting is done
+        # once, at the end, when the arrays are handed to the move.
+        targets = pfsConfigUtils.makeTargetsArray(pfsConfig)
+        isNan = np.isnan(targets)
 
-        cmd.inform(f'text="There are {np.sum(isNan)} NaN in {len(targets)} targets in the design."')
+        isScience = pfsConfigUtils.getCobraTargetMask(pfsConfig, pfsConfigUtils.SCIENCE_TARGET_TYPES)
+        isBlackDot = pfsConfigUtils.getCobraTargetMask(pfsConfig, [TargetType.BLACKSPOT])
+        isUnassigned = pfsConfigUtils.getCobraTargetMask(pfsConfig, [TargetType.UNASSIGNED])
 
-        # loading mask file and moving only cobra with bitMask==1
-        cmd.inform(f'text="Setting good cobra index"')
-        goodIdx = self.loadGoodIdx(maskFile)
-        targets = targets[goodIdx]
-        cobras = self.cc.allCobras[goodIdx]
-        excludedByMask = np.setdiff1d(np.arange(self.cc.nCobras), goodIdx)
-        cmd.inform(f'text="Filtering: {len(excludedByMask)} cobras excluded by mask file, {len(goodIdx)} remaining"')
+        # A cobra carrying DCB, AFL, SUNSS or HOME means the design was built for another
+        # purpose.  Refuse it: moving the remainder would half-execute somebody else's
+        # design, and the caller cannot tell that from a normal convergence.
+        accepted = pfsConfigUtils.getCobraTargetMask(pfsConfig, pfsConfigUtils.ACCEPTED_TARGET_TYPES)
+        if not accepted.all():
+            cmd.fail(f'text="{(~accepted).sum()} cobras carry a forbidden target type for convergence"')
+            return
 
-        thetaSolution, phiSolution, solutionFlags = self.cc.pfi.positionsToAngles(cobras, targets)
-        cmd.inform(f'text="Converting {len(targets)} target positions to angles ({len(thetaSolution[:, 0])}, {len(phiSolution[:, 0])})"')
+        flags = targetValidation.validateTargets(self.cc.calibModel, targets,
+                                                 skipFiducialInterferenceCheck=skipFiducialInterferenceCheck)
+        isInvalid = targetValidation.isInvalid(flags)
 
+        # ── outcomes ──────────────────────────────────────────────────────────
+        # Before the alert: a cobra that will never be commanded cannot make a design out
+        # of spec, and 36 of the 42 broken ones read out of reach on any target.
+        thetaRangeAll = targetValidation.thetaRange(self.cc.calibModel)
+        doNotMove = ~np.isin(np.arange(self.cc.nCobras), self.loadGoodIdx(maskFile))
+        isBroken = np.zeros(self.cc.nCobras, dtype=bool)
+        isBroken[self.cc.badIdx] = True
 
-        invalid = (solutionFlags[:, 0] & self.cc.pfi.SOLUTION_OK) == 0
-        invalidGoodIdx = np.where(invalid)[0]  # in the range of  goodIdx
-        invalidOriginalIdx = goodIdx[invalidGoodIdx]  # mapping to total cobra index
+        # An isInvalid target is parked on its black dot rather than left wherever it
+        # happens to be.  Drop `| isInvalid` here to go back to only explicit BLACKSPOT.
+        toBlackDot = (isBlackDot | isUnassigned | isInvalid) & ~doNotMove
+        converge = isScience & ~toBlackDot & ~doNotMove
 
-        if not np.all(invalid):
-            # raise RuntimeError(f"Given positions are invalid: {np.where(valid)[0]}")
-            cmd.inform(f'text="Given {invalid.sum()} positions are invalid: {goodIdx[np.where(invalid)[0]]}"')
-            for ii in np.where(invalid)[0]:
-                self.logger.info(f'invalid pos: {ii} {solutionFlags[ii, 0]:08b}')
+        # Before the gate, so a refused design still reports why it was refused.
+        for diag in pfsConfigUtils.summariseByTargetType(pfsConfig, flags, converge, toBlackDot,
+                                                         isBroken, doNotMove & ~isBroken):
+            cmd.inform(f'text="{diag}"')
 
-        thetas = thetaSolution[:, 0]
-        phis = phiSolution[:, 0]
+        nBad = int((isInvalid & isScience & ~doNotMove).sum())
+        if nBad > maxInvalidScienceTargets and not allowMaskedCobras:
+            cmd.fail(f'text="{nBad} invalid science targets, above '
+                     f'maxInvalidScienceTargets={maxInvalidScienceTargets}; design is out of spec"')
+            return
 
-        
-        # Checking the interference with the fiducial fiber
-        if skipFiducialInterferenceCheck:
-            cmd.inform(f'text="Skipping fiducial interference check"')
-            interfering_cobra_indices = []
-        else:
-            # Getting unassigned cobra indexies for checking fiducial interference. 
-            # Exclude these from fiducial-interference reporting.
-            unassignedCobraIndexies = np.flatnonzero(isNan)
-            interfering_cobra_indices = self.cc.checkFiducialInterference(
-                thetas, phis, unassignedCobraIndexies=unassignedCobraIndexies)
-            cmd.inform(f'text="{len(interfering_cobra_indices)} cobras interfere with fiducial fibers"')
-        
+        thetaSolution, phiSolution, _ = self.cc.pfi.positionsToAngles(self.cc.allCobras, targets)
+        thetas, phis = thetaSolution[:, 0], phiSolution[:, 0]
 
-        # Combine isNan indices and interfering cobra indices to create notMoveMask
-        notMoveMask = np.zeros(len(self.cc.allCobras), dtype=bool)
+        # Bump theta targets near the CW hard stop to their equivalent above 360.  The
+        # margin is half the hard-stop overlap, so the result stays in [0, thetaRange].
+        optMargin = (thetaRangeAll - 2 * np.pi) / 2
+        thetas[thetas < optMargin] += np.pi * 2
 
-        # Set True for NaN targets (using original indices before goodIdx filtering)
-        notMoveMask[isNan] = True
-        notMoveMask[interfering_cobra_indices] = True
-        notMoveMask[invalidOriginalIdx] = True
+        # Dot cobras follow a phi ramp into their black dot rather than going to the
+        # design position.  buildSafeRamp returns (nCobras,) and (nIter, nCobras).
+        dotGlobalIdx = np.flatnonzero(toBlackDot)
+        thetaDot, phiStart, phiRamp, thetaRamp, dotGeom = dotGeometry.buildSafeRamp(
+            self.cc, dotGlobalIdx, iteration)
+        thetas[toBlackDot] = thetaDot[toBlackDot]
+        phis[toBlackDot] = phiStart[toBlackDot]
 
-        # toDotMask: only cobras explicitly assigned a BLACKSPOT target get the phi-ramp.
-        toDotMask = pfsConfigUtils.getCobraTargetMask(pfsConfig, [TargetType.BLACKSPOT])[goodIdx]
+        # ── subset, once, here ────────────────────────────────────────────────
+        # Above is (nCobras,); below, `commanded` is the mask and `commanded*` is an array
+        # restricted to it, so the prefix alone states an array's width.  commandedIdx
+        # exists only because the engineer API takes cobra ids where a mask would do.
+        commanded = converge | toBlackDot
+        commandedIdx = np.flatnonzero(commanded)
+        commandedThetas = thetas[commanded]
+        commandedPhis = phis[commanded]
+        commandedTargets = targets[commanded]
+        commandedToDot = toBlackDot[commanded]
+        commandedPhiRamp = phiRamp[:, commanded]
+        commandedThetaRamp = thetaRamp[:, commanded]
 
-        shouldMove = ~notMoveMask[goodIdx] | toDotMask   # local boolean, shape (nGood,)
-        filteredGoodIdx = goodIdx[shouldMove]
-        filteredThetas  = thetas[shouldMove]
-        filteredPhis    = phis[shouldMove]
-        filteredTargets = targets[shouldMove]
+        # Drives FiberStatus in finalize(): a science fiber parked on a black dot is
+        # commanded but not good, or the DRP extracts a deliberately dark fiber.
+        notMoveMask = ~commanded | (isInvalid & isScience)
 
-        # Bump theta targets too close to the CW hard stop (local ~0°) to their equivalent
-        # position above 360°, reachable directly from the park position without a full revolution.
-        # Use per-cobra optimal margin = (thetaRange - 2π) / 2, which guarantees the bumped
-        # angle stays within [0, thetaRange] for every cobra.
-        _thetaRangeAll = (self.cc.calibModel.tht1 - self.cc.calibModel.tht0 + np.pi) % (np.pi * 2) + np.pi
-        _optMargin = (_thetaRangeAll - 2 * np.pi) / 2
-        _bump = filteredThetas < _optMargin[filteredGoodIdx]
-        filteredThetas[_bump] += np.pi * 2
-
-        # ── dot cobras: phi ramp to hide behind black dot ─────────────────────
-        dotCobras = np.where(toDotMask)[0]          # local indices into goodIdx
-        dotGlobalIdx = goodIdx[dotCobras]            # global cobra indices for geometry
-        # Local indices of dot cobras within filteredGoodIdx (for the via-step loop below)
-        dotCobrasSet = set(np.where(toDotMask[shouldMove])[0])
-
-        _thetaDot, _phiStart, phiRampAll, thetaRampAll, _dotGeom = dotGeometry.buildSafeRamp(self.cc, dotGlobalIdx, iteration)
-
-        filteredThetas[toDotMask[shouldMove]] = _thetaDot[dotGlobalIdx]
-        filteredPhis[toDotMask[shouldMove]]   = _phiStart[dotGlobalIdx]
-        phiRampAll   = phiRampAll[:, filteredGoodIdx]    # (nIter, nFiltered)
-        thetaRampAll = thetaRampAll[:, filteredGoodIdx]  # (nIter, nFiltered)
-
-        cmd.inform(f'text="=== Filtering Summary ==="')
-        cmd.inform(f'text="  After mask filtering: {len(goodIdx)}"')
-        cmd.inform(f'text="  NaN targets: {np.sum(isNan)}"')
-        cmd.inform(f'text="  Invalid solutions: {len(invalidOriginalIdx)}"')
-        cmd.inform(f'text="  Fiducial interference: {len(interfering_cobra_indices)}"')
-        cmd.inform(f'text="  Final cobras to move: {len(filteredGoodIdx)}"')
-        cmd.inform(f'text="========================"')
+        # Nothing to command means the design is not one this command can act on -- every
+        # target type unaccepted, or every cobra masked.  Say so: the engineer API takes
+        # cobra ids, and an empty index array reaches numpy as float64 and raises
+        # "arrays used as indices must be of integer type" several frames down.
+        if not commanded.any():
+            cmd.fail('text="no cobra to command: check the target types warned about above"')
+            return
 
         # Here we start to deal with target table
         cmd.inform(f'text="Handling the cobra target table."')
         self.cc.trajectoryMode = True
-        traj, moves = eng.createTrajectory(goodIdx, thetas, phis,
+        traj, moves = eng.createTrajectory(commandedIdx, commandedThetas, commandedPhis,
                                            tries=iteration, twoSteps=True, threshold=fastThreshold, timeStep=500)
-        moves[:, 2]['position'] = targets
+        moves[:, 2]['position'] = commandedTargets
 
         cmd.inform(f'text="Reset the current angles for cobra arms."')
         self.cc.trajectoryMode = False
-        thetaHome = ((self.cc.calibModel.tht1 - self.cc.calibModel.tht0 + np.pi) % (np.pi * 2) + np.pi)
+        thetaHome = targetValidation.thetaRange(self.cc.calibModel)
 
         if goHome:
             cmd.inform(f'text="Setting ThetaAngle = Home and phiAngle = 0."')
@@ -1791,10 +1788,11 @@ class FpsCmd(object):
                 cmd.fail('text="Cannot move to PfsDesign without cobra information.  Please use goHome option."')
                 return
 
-            cmd.inform(f'text="Number of cobras = {len(goodIdx)} Number of angles = {len(self.atThetas[goodIdx])}."')
-            cmd.inform(f'text="Setting ThetaAngle = {self.atThetas[goodIdx]} and phiAngle = {self.atPhis[goodIdx]}."')
-            self.cc.setCurrentAngles(self.cc.allCobras[goodIdx],
-                                     thetaAngles=self.atThetas[goodIdx], phiAngles=self.atPhis[goodIdx])
+            cmd.inform(f'text="Number of cobras = {len(commandedIdx)} '
+                       f'Number of angles = {len(self.atThetas[commandedIdx])}."')
+            self.cc.setCurrentAngles(self.cc.allCobras[commandedIdx],
+                                     thetaAngles=self.atThetas[commandedIdx],
+                                     phiAngles=self.atPhis[commandedIdx])
 
             cobraTargetTable = najaVenator.CobraTargetTable(visit, iteration, self.cc.calibModel, designId,
                                                             goHome=False)
@@ -1807,34 +1805,40 @@ class FpsCmd(object):
         dataPath = pathlib.Path(self.cc.runManager.dataDir)
 
         # Save the solution flags for debugging and record.
-        np.save(f'{dataPath}/solutionFlags', solutionFlags)        
+        np.save(f'{dataPath}/validationFlags', flags)
 
         # Save the filtered targets for record. These are the targets that we will actually move to.
-        np.save(f'{dataPath}/targets', filteredTargets)
+        np.save(f'{dataPath}/targets', commandedTargets)
         cmd.inform(f'text="Saving targets list to file {dataPath}/targets.npy."')
 
+        # Every exclusion reason comes from the one validation, so the log cannot
+        # disagree with the decision that was actually taken.
         filtering_records = []
-        for idx in np.setdiff1d(np.arange(self.cc.nCobras), goodIdx):
-            filtering_records.append({'cobra_id': idx, 'step': 'mask file', 'reason': 'excluded_by_mask'})
-        for idx in dotGlobalIdx:
-            filtering_records.append({'cobra_id': idx, 'step': 'dot_cobra', 'reason': 'blackspot_target'})
-        for idx in invalidOriginalIdx:
-            filtering_records.append({'cobra_id': idx, 'step': 'angle_solve', 'reason': 'no_valid_solution'})
-        for idx in interfering_cobra_indices:
-            filtering_records.append({'cobra_id': idx, 'step': 'fiducial_check', 'reason': 'interference'})
+        for idx in np.flatnonzero(doNotMove):
+            filtering_records.append({'cobra_id': idx, 'step': 'mask file',
+                                      'reason': 'excluded_by_mask_or_broken'})
+        for idx in np.flatnonzero(toBlackDot):
+            filtering_records.append({'cobra_id': idx, 'step': 'dot_cobra',
+                                      'reason': 'blackspot_target'})
+        logged = isInvalid | isUnassigned
+        for bit, name in targetValidation.FLAG_NAMES.items():
+            if bit == targetValidation.IN_OVERLAPPING_REGION:
+                continue        # informational: set on nearly every cobra, not a defect
+            for idx in np.flatnonzero(((flags & bit) != 0) & logged):
+                filtering_records.append({'cobra_id': idx, 'step': 'validation',
+                                          'reason': name.replace(' ', '_')})
 
         df_log = pd.DataFrame(filtering_records)
         df_log.to_csv(f'{dataPath}/cobra_filtering_log.csv', index=False)
 
-        # The notDoneMask is selected based on goodIdx. Has to involve self.cc.badIdx
-        notMoveMask[self.cc.badIdx] = True
         np.savez(f'{dataPath}/cobra_filtering.npz',
-                 excluded_by_mask=np.setdiff1d(np.arange(self.cc.nCobras), goodIdx),
+                 validation_flags=flags,
                  nan_targets=isNan,
-                 invalid_solutions=invalidOriginalIdx,
-                 fiducial_interference=interfering_cobra_indices,
+                 converge=converge,
+                 to_black_dot=toBlackDot,
+                 do_not_move=doNotMove,
                  not_move_mask=notMoveMask,
-                 final_moving_cobras=filteredGoodIdx)
+                 final_moving_cobras=commandedIdx)
 
         cmd.inform(f'text="Saved filtering data: {len(filtering_records)} exclusions logged"')
 
@@ -1843,14 +1847,15 @@ class FpsCmd(object):
 
         # Pre-compute per-iteration commanded target positions from geometry.
         # Done here — before any movement — so MCS can use the table for cobra identification.
-        _thetasFull_all, _phisFull_all = dotGeometry.buildCommandedAngle(filteredThetas, filteredPhis, phiRampAll, thetaRampAll)
-        targetPositions = np.zeros((len(filteredGoodIdx), iteration), dtype=complex)
-        filteredCobras = self.cc.allCobras[filteredGoodIdx]
+        commandedThetaSchedule, commandedPhiSchedule = dotGeometry.buildCommandedAngle(
+            commandedThetas, commandedPhis, commandedPhiRamp, commandedThetaRamp)
+        commandedTargetPositions = np.zeros((len(commandedIdx), iteration), dtype=complex)
+        commandedCobras = self.cc.allCobras[commandedIdx]
         for j in range(iteration):
-            targetPositions[:, j] = self.cc.pfi.anglesToPositions(filteredCobras,
-                                                                   _thetasFull_all[j],
-                                                                   _phisFull_all[j])
-        cobraTargetTable.makeTargetTableFromTargetPositions(targetPositions, self.cc, filteredGoodIdx)
+            commandedTargetPositions[:, j] = self.cc.pfi.anglesToPositions(commandedCobras,
+                                                                   commandedThetaSchedule[j],
+                                                                   commandedPhiSchedule[j])
+        cobraTargetTable.makeTargetTableFromTargetPositions(commandedTargetPositions, self.cc, commandedIdx)
         cobraTargetTable.writeTargetTable()
 
         # Invalidating previous pfsConfig.
@@ -1862,25 +1867,21 @@ class FpsCmd(object):
 
         try:
             if twoSteps:
-                cIds = filteredGoodIdx  # Changed from goodIdx to filteredGoodIdx
-
-                moves = np.zeros((1, len(cIds), iteration), dtype=eng.moveDtype)
-
-                thetaRange = ((self.cc.calibModel.tht1 - self.cc.calibModel.tht0 + np.pi) % (np.pi * 2) + np.pi)[cIds]
-                phiRange = ((self.cc.calibModel.phiOut - self.cc.calibModel.phiIn) % (np.pi * 2))[cIds]
+                moves = np.zeros((1, len(commandedIdx), iteration), dtype=eng.moveDtype)
+                commandedThetaRange = thetaRangeAll[commandedIdx]
 
                 # limit phi angle for first two tries
-                limitPhi = np.pi / 3 - self.cc.calibModel.phiIn[cIds] - np.pi
-                thetasVia = np.copy(filteredThetas)  # Changed from thetas to filteredThetas
-                phisVia = np.copy(filteredPhis)  # Changed from phis to filteredPhis
-                for c in range(len(cIds)):
-                    if c in dotCobrasSet:
+                commandedLimitPhi = np.pi / 3 - self.cc.calibModel.phiIn[commandedIdx] - np.pi
+                commandedThetasVia = np.copy(commandedThetas)
+                commandedPhisVia = np.copy(commandedPhis)
+                for c in range(len(commandedIdx)):
+                    if commandedToDot[c]:
                         continue
-                    if filteredPhis[c] > limitPhi[c]:  # Changed from phis[c] to filteredPhis[c]
-                        phisVia[c] = limitPhi[c]
-                        thetasVia[c] = filteredThetas[c] + (filteredPhis[c] - limitPhi[c]) / 2  # Changed accordingly
-                        if thetasVia[c] > thetaRange[c]:
-                            thetasVia[c] = thetaRange[c]
+                    if commandedPhis[c] > commandedLimitPhi[c]:
+                        commandedPhisVia[c] = commandedLimitPhi[c]
+                        commandedThetasVia[c] = commandedThetas[c] + (commandedPhis[c] - commandedLimitPhi[c]) / 2
+                        if commandedThetasVia[c] > commandedThetaRange[c]:
+                            commandedThetasVia[c] = commandedThetaRange[c]
 
                 _useScaling, _maxSegments, _maxTotalSteps = self.cc.useScaling, self.cc.maxSegments, self.cc.maxTotalSteps
                 self.cc.useScaling, self.cc.maxSegments, self.cc.maxTotalSteps = False, _maxSegments * 2, _maxTotalSteps * 2
@@ -1895,58 +1896,40 @@ class FpsCmd(object):
                     self.cc.expTime = expTime
 
                 cmd.inform(f'text="Cobra goHome is set to be {goHome}"')
-                # INSTRM-2976: fast motor map disabled in the two-step convergence — both phases
-                # use the slow map (single map to maintain).  The old thetaFast/phiFast=True only
-                # ever took effect on iteration 0 (the farAwayMask gate never triggers in-patrol).
+                # INSTRM-2976: fast motor map disabled in the two-step convergence
                 dataPath, atThetas, atPhis, moves[0, :, :2] = \
-                    eng.moveThetaPhi(cIds, thetasVia, phisVia, relative=False, local=True, tolerance=tolerance,
+                    eng.moveThetaPhi(commandedIdx, commandedThetasVia, commandedPhisVia,
+                                     relative=False, local=True, tolerance=tolerance,
                                      tries=2, homed=goHome, newDir=False, thetaFast=False, phiFast=False,
                                      threshold=fastThreshold, thetaMargin=np.deg2rad(thetaMarginDeg),
-                                     phiRamp=phiRampAll[:2], thetaRamp=thetaRampAll[:2])
+                                     phiRamp=commandedPhiRamp[:2], thetaRamp=commandedThetaRamp[:2])
 
                 self.cc.expTime = expTime
                 self.cc.useScaling, self.cc.maxSegments, self.cc.maxTotalSteps = _useScaling, _maxSegments, _maxTotalSteps
                 cmd.inform(
                     f'text="useScaling={self.cc.useScaling}, maxSegments={self.cc.maxSegments}, maxTotalSteps={self.cc.maxTotalSteps}"')
 
-                # Lock a prematurely-hidden cobra unless at least 4 iterations remain
-                # for it to recover.  A cobra that hides early reads as the dot centre
-                # (cobra_match's fallback), so the loop computes its correction against
-                # a fabricated position and drives it back out; it then has to converge
-                # again from scratch.  Measured on the four 8-iteration runs of
-                # 2026-07-24, which carried no working lock: of the cobras that hid
-                # before the final jump, those with 4 iterations left recovered to
-                # hidden 85% of the time, with 2 left 33%, with 1 left only 7% -- the
-                # final jump, computed from the dot centre, pushes them straight back
-                # out of the dot.  Freezing instead keeps them hidden, and because they
-                # are hidden they still receive the blind move, landing shallower than
-                # intended but genuinely behind the dot.
-                #
-                # Expressed relative to `tries` rather than as a fixed index: this call
-                # starts at global iter 2, so a constant was only ever right for one
-                # value of `iteration`.  hideLockIter=8 meant global 10 at iteration=16,
-                # but at iteration=8 `tries` is 6 and the lock could never fire at all.
                 dataPath, atThetas, atPhis, moves[0, :, 2:] = \
-                    eng.moveThetaPhi(cIds, filteredThetas, filteredPhis, relative=False, local=True,
+                    eng.moveThetaPhi(commandedIdx, commandedThetas, commandedPhis,
+                                     relative=False, local=True,
                                      tolerance=tolerance,
-                                     # Changed from thetas, phis
                                      tries=iteration - 2,
                                      homed=False,
                                      newDir=False, thetaFast=False, phiFast=False, threshold=fastThreshold,
                                      thetaMargin=np.deg2rad(thetaMarginDeg),
-                                     phiRamp=phiRampAll[2:], thetaRamp=thetaRampAll[2:],
-                                     hideLockIter=max(0, (iteration - 2) - HIDE_RECOVERY_ITERS))
+                                     phiRamp=commandedPhiRamp[2:], thetaRamp=commandedThetaRamp[2:],
+                                     )
 
             else:
-                cIds = filteredGoodIdx
-                dataPath, atThetas, atPhis, moves = eng.moveThetaPhi(cIds, filteredThetas, filteredPhis,
+                dataPath, atThetas, atPhis, moves = eng.moveThetaPhi(commandedIdx, commandedThetas, commandedPhis,
                                                                      relative=False, local=True, tolerance=tolerance,
                                                                      tries=iteration, homed=goHome, newDir=False,
                                                                      thetaFast=False, phiFast=False,
                                                                      threshold=fastThreshold,
                                                                      thetaMargin=np.deg2rad(thetaMarginDeg),
-                                                                     phiRamp=phiRampAll, thetaRamp=thetaRampAll,
-                                                                     hideLockIter=max(0, iteration - HIDE_RECOVERY_ITERS))
+                                                                     phiRamp=commandedPhiRamp,
+                                                                     thetaRamp=commandedThetaRamp,
+                                                                     )
             self.atThetas = atThetas
             self.atPhis = atPhis
 
@@ -1954,8 +1937,8 @@ class FpsCmd(object):
             # (slow-map) move: the closed-loop ramp above lands them at
             # RAMP_LANDING_FRACTION, this takes them to BLIND_TARGET_FRACTION.
             if len(dotGlobalIdx):
-                dotGeometry.blindMoveHiddenCobras(self.cc, dotGlobalIdx, filteredGoodIdx,
-                                                  moves, _dotGeom,
+                dotGeometry.blindMoveHiddenCobras(self.cc, dotGlobalIdx, commandedIdx,
+                                                  moves, dotGeom,
                                                   fromFraction=dotGeometry.RAMP_LANDING_FRACTION,
                                                   toFraction=dotGeometry.BLIND_TARGET_FRACTION,
                                                   cmd=cmd)
@@ -1971,14 +1954,12 @@ class FpsCmd(object):
             # next convergence resets it to 1.0 and the correction is lost.
             motorScales.saveMotorScales(self.cc, dataPath, cmd=cmd)
 
-            # Hand off the blind-move inputs to moveToDotByFlux (in-memory, no file).  The scan
-            # then just calls dotGeometry.blindMoveHiddenCobras() each flat with the dot fraction
-            # advancing by dFraction — reusing the exact hidden-cobra / fitPhiSpeed / bounded-step
-            # / phiFast=False (slow-map) machinery the blind move already implements.
+            # Blind-move inputs for moveToDotByFlux (in-memory, no file): it calls
+            # blindMoveHiddenCobras once per flat, advancing fraction by dFraction.
             if len(dotGlobalIdx):
                 self.dotScan = dict(dotGlobalIdx=np.asarray(dotGlobalIdx, dtype=int),
-                                    filteredGoodIdx=np.asarray(filteredGoodIdx),
-                                    moves=moves, dotGeom=_dotGeom,
+                                    commandedIdx=np.asarray(commandedIdx),
+                                    moves=moves, dotGeom=dotGeom,
                                     # cobras sit at BLIND_TARGET_FRACTION after the blind move above
                                     fraction=dotGeometry.BLIND_TARGET_FRACTION,
                                     dFraction=0.05)   # per-flat scan increment
@@ -2084,7 +2065,7 @@ class FpsCmd(object):
         if nRemaining > 0:
             f = scan['fraction']
             df = scan['dFraction']
-            dotGeometry.blindMoveHiddenCobras(self.cc, scan['dotGlobalIdx'], scan['filteredGoodIdx'],
+            dotGeometry.blindMoveHiddenCobras(self.cc, scan['dotGlobalIdx'], scan['commandedIdx'],
                                               scan['moves'], scan['dotGeom'],
                                               fromFraction=f, toFraction=f + df, cmd=cmd)
             scan['fraction'] = f + df
