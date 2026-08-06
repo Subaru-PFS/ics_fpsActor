@@ -1140,7 +1140,10 @@ class FpsCmd(object):
         pfsDesign = pfsDesignUtils.readDesign(designId)
         pfsConfig = self.getPfsConfig(cmd, visit=visit, pfsDesign=pfsDesign)
 
-        self._finalizeWriteIngestPfsConfig(pfsConfig, cmd=cmd)
+        # A snapshot commands nothing, which is a fact worth recording rather than leaving
+        # every cobra to read as "never asked".
+        self._finalizeWriteIngestPfsConfig(pfsConfig, cmd=cmd,
+                                           cobraCommand=pfsConfigUtils.cobraCommand())
 
         return pfsConfig
 
@@ -1188,6 +1191,13 @@ class FpsCmd(object):
 
         cmd.inform(f'text="Getting all avaliable cobra arms."')
         goodCobra = self.cc.allCobras[goodIdx]
+
+        # Homing commands a subset, so the pfsConfig has to say which cobras it drove for
+        # the same reason a convergence does.  It validates no targets, so nothing was
+        # refused: zero, not NOT_SET, which would claim the file predates the column.
+        homed = np.isin(np.arange(self.cc.nCobras), goodIdx)
+        command = pfsConfigUtils.cobraCommand(home=homed)
+        validationMask = np.zeros(self.cc.nCobras, dtype=np.int32)
 
         # Only grab a visit if we need one for the PFSC and pfsConfig files
         visit = self.actor.visitor.setOrGetVisit(cmd) if (useMCS or 'visit' in cmdKeys) else -1
@@ -1244,9 +1254,11 @@ class FpsCmd(object):
             eng.setNormalMode()
             # Only generate pfsConfigs if we take an image which needs them.
             if visit !=-1:
+                pfsConfig.convergenceParams = dict(elapsedTime=round(time.time() - start, 3))
                 self._finalizeWriteIngestPfsConfig(pfsConfig, cmd=cmd,
                                                    convergenceFailed=convergenceFailed,
-                                                   converg_elapsed_time=round(time.time() - start, 3))
+                                                   validationMask=validationMask,
+                                                   cobraCommand=command)
 
         cmd.finish(f'text="Moved all arms back to home"')
 
@@ -1608,14 +1620,13 @@ class FpsCmd(object):
 
         return self.cc.goodIdx[np.isin(self.cc.goodIdx, doMove)]
 
-    def getPfsConfig(self, cmd, visit, pfsDesign, maskFile=None):
+    def getPfsConfig(self, cmd, visit, pfsDesign):
         """Get pfsConfig from pfsDesign, adding additional gen2 keys."""
         cards = fits.getPfsConfigCards(self.actor, cmd, visit, expType='acquisition')
         versions = self._collectVersions()
         return pfsConfigUtils.pfsConfigFromDesign(pfsDesign, visit,
                                                   calibModel=self.cc.calibModel,
                                                   header=cards,
-                                                  maskFile=maskFile,
                                                   versions=versions)
 
     def moveToPfsDesign(self, cmd):
@@ -1641,15 +1652,12 @@ class FpsCmd(object):
         iteration = cmdKeys['iteration'].values[0] if 'iteration' in cmdKeys else 12
         tolerance = cmdKeys['tolerance'].values[0] if 'tolerance' in cmdKeys else 0.01
         fastThreshold = cmdKeys['fastThreshold'].values[0] if 'fastThreshold' in cmdKeys else 99.9
-        try:
-            notConvergedDistanceThreshold = self.actor.actorConfig['pfsConfig']['notConvergedDistanceThreshold']
-            # Just in case, we use large tolerance.
-            notConvergedDistanceThreshold = max(notConvergedDistanceThreshold, 5 * tolerance)
-        except KeyError:
-            notConvergedDistanceThreshold = None
 
         convergenceCfg = self.actor.actorConfig.get('convergence', {})
         maxInvalidScienceTargets = convergenceCfg.get('maxInvalidScienceTargets', 25)
+        targetFallback = pfsConfigUtils.resolveTargetFallback(convergenceCfg)
+        notConvergedDistanceThreshold = convergenceCfg.get('notConvergedDistanceThreshold', 0.05)
+        notConvergedDistanceThreshold = max(notConvergedDistanceThreshold, 5 * tolerance)
 
         shortExp = 'shortExpOff' not in cmdKeys
         twoSteps = 'twoStepsOff' not in cmdKeys
@@ -1670,7 +1678,7 @@ class FpsCmd(object):
         pfsDesign = pfsDesignUtils.readDesign(designId)
 
         # making base pfsConfig from design file, fetching additional keys from gen2.
-        pfsConfig = self.getPfsConfig(cmd, visit=visit, pfsDesign=pfsDesign, maskFile=maskFile)
+        pfsConfig = self.getPfsConfig(cmd, visit=visit, pfsDesign=pfsDesign)
         cmd.inform(f'pfsConfig=0x{designId:016x},{visit},Preparing')
 
         if doTweak:
@@ -1704,21 +1712,21 @@ class FpsCmd(object):
         # Before the alert: a cobra that will never be commanded cannot make a design out
         # of spec, and 36 of the 42 broken ones read out of reach on any target.
         thetaRangeAll = targetValidation.thetaRange(self.cc.calibModel)
-        doNotMove = ~np.isin(np.arange(self.cc.nCobras), self.loadGoodIdx(maskFile))
+        mayMove = np.isin(np.arange(self.cc.nCobras), self.loadGoodIdx(maskFile))
         isBroken = np.zeros(self.cc.nCobras, dtype=bool)
         isBroken[self.cc.badIdx] = True
 
         # An isInvalid target is parked on its black dot rather than left wherever it
         # happens to be.  Drop `| isInvalid` here to go back to only explicit BLACKSPOT.
-        toBlackDot = (isBlackDot | isUnassigned | isInvalid) & ~doNotMove
-        converge = isScience & ~toBlackDot & ~doNotMove
+        toBlackDot = (isBlackDot | isUnassigned | isInvalid) & mayMove
+        converge = isScience & ~toBlackDot & mayMove
 
         # Before the gate, so a refused design still reports why it was refused.
         for diag in pfsConfigUtils.summariseByTargetType(pfsConfig, flags, converge, toBlackDot,
-                                                         isBroken, doNotMove & ~isBroken):
+                                                         isBroken, ~mayMove & ~isBroken):
             cmd.inform(f'text="{diag}"')
 
-        nBad = int((isInvalid & isScience & ~doNotMove).sum())
+        nBad = int((isInvalid & isScience & mayMove).sum())
         if nBad > maxInvalidScienceTargets and not allowMaskedCobras:
             cmd.fail(f'text="{nBad} invalid science targets, above '
                      f'maxInvalidScienceTargets={maxInvalidScienceTargets}; design is out of spec"')
@@ -1755,7 +1763,11 @@ class FpsCmd(object):
 
         # Drives FiberStatus in finalize(): a science fiber parked on a black dot is
         # commanded but not good, or the DRP extracts a deliberately dark fiber.
-        notMoveMask = ~commanded | (isInvalid & isScience)
+        validationMask = pfsConfigUtils.targetValidationMask(flags, isScience)
+        command = pfsConfigUtils.cobraCommand(converge=converge, toBlackDot=toBlackDot)
+        pfsConfig.convergenceParams = pfsConfigUtils.convergenceParams(
+            targetFallback, notConvergedDistanceThreshold, skipFiducialInterferenceCheck,
+            numIterations=iteration, requestedTolerance=tolerance)
 
         # Nothing to command means the design is not one this command can act on -- every
         # target type unaccepted, or every cobra masked.  Say so: the engineer API takes
@@ -1814,7 +1826,7 @@ class FpsCmd(object):
         # Every exclusion reason comes from the one validation, so the log cannot
         # disagree with the decision that was actually taken.
         filtering_records = []
-        for idx in np.flatnonzero(doNotMove):
+        for idx in np.flatnonzero(~mayMove):
             filtering_records.append({'cobra_id': idx, 'step': 'mask file',
                                       'reason': 'excluded_by_mask_or_broken'})
         for idx in np.flatnonzero(toBlackDot):
@@ -1836,8 +1848,9 @@ class FpsCmd(object):
                  nan_targets=isNan,
                  converge=converge,
                  to_black_dot=toBlackDot,
-                 do_not_move=doNotMove,
-                 not_move_mask=notMoveMask,
+                 do_not_move=~mayMove,
+                 validation_mask=validationMask,
+                 cobra_command=command,
                  final_moving_cobras=commandedIdx)
 
         cmd.inform(f'text="Saved filtering data: {len(filtering_records)} exclusions logged"')
@@ -1969,19 +1982,18 @@ class FpsCmd(object):
             raise
 
         finally:
+            pfsConfig.convergenceParams['elapsedTime'] = round(time.time() - start, 3)
             self._finalizeWriteIngestPfsConfig(pfsConfig, cmd=cmd,
                                                convergenceFailed=convergenceFailed,
                                                notConvergedDistanceThreshold=notConvergedDistanceThreshold,
-                                               NOT_MOVE_MASK=notMoveMask,
-                                               converg_num_iter=iteration,
-                                               converg_elapsed_time=round(time.time() - start, 3),
-                                               converg_tolerance=tolerance)
+                                               validationMask=validationMask,
+                                               cobraCommand=command)
 
         cmd.finish(f'text="We are at design position in {round(time.time() - start, 3)} seconds."')
 
     def _finalizeWriteIngestPfsConfig(self, pfsConfig, cmd,
-                                      convergenceFailed=False, notConvergedDistanceThreshold=None, NOT_MOVE_MASK=None,
-                                      converg_num_iter=None, converg_elapsed_time=None, converg_tolerance=None):
+                                      convergenceFailed=False, notConvergedDistanceThreshold=None,
+                                      validationMask=None, cobraCommand=None):
         """Finalize pfsConfig, write to disk, ingest into opdb, and generate pfsConfig keyword."""
         atThetas = None if convergenceFailed else self.atThetas
         atPhis = None if convergenceFailed else self.atPhis
@@ -1990,7 +2002,8 @@ class FpsCmd(object):
             maxIteration = pfsConfigUtils.finalize(pfsConfig,
                                                    finalIteration=self.actor.visitor.frameSeq - 1,
                                                    notConvergedDistanceThreshold=notConvergedDistanceThreshold,
-                                                   NOT_MOVE_MASK=NOT_MOVE_MASK,
+                                                   validationMask=validationMask,
+                                                   cobraCommand=cobraCommand,
                                                    atThetas=atThetas, atPhis=atPhis,
                                                    convergenceFailed=convergenceFailed)
         except Exception as e:
@@ -2011,9 +2024,6 @@ class FpsCmd(object):
         pfsConfigUtils.ingestPfsConfig(
             pfsConfig,
             allocated_at="now",
-            converg_num_iter=converg_num_iter,
-            converg_elapsed_time=converg_elapsed_time,
-            converg_tolerance=converg_tolerance,
             cmd=cmd)
 
         cmd.inform(f'pfsConfig=0x{pfsConfig.pfsDesignId:016x},{pfsConfig.visit0},Done')
