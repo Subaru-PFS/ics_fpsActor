@@ -28,6 +28,7 @@ import pandas as pd
 
 from ics.cobraCharmer import fpgaProtocol as proto
 from ics.cobraCharmer.fpgaSim import FPGAProtocol
+from ics.fpsActor.utils.alfUtils import sgfm
 
 log = logging.getLogger('pfiSimServer')
 
@@ -267,6 +268,15 @@ def startPhysicsServer(physics, host='localhost', port=4001):
 # makeSimExpose — replaces cc.exposeAndExtractPositions (the only monkey-patch)
 # ─────────────────────────────────────────────────────────────────────────────
 
+DETECTION_RADIUS_MM = 0.711
+"""Tip-to-dot-centre distance below which a fibre stops being centroided.
+
+The 50% point of the detection profile measured over 4.44M stacked detections.  The
+real transition is not a step -- it has a 54 um width -- but a threshold keeps a run
+reproducible, which matters more here than reproducing the last few percent.
+"""
+
+
 def makeSimExpose(physics, cc):
     """Return a replacement for cc.exposeAndExtractPositions.
 
@@ -274,14 +284,27 @@ def makeSimExpose(physics, cc):
     them directly. No hardware, no DB writes — the caller (cc.moveSteps) uses the
     returned positions immediately via positionsToAngles.
 
+    A fibre closer than DETECTION_RADIUS_MM to its black dot is reported the way the
+    real pipeline reports it: cobraInfo['detected'] goes False, and the position
+    returned is the dot centre, which is what cobra_match substitutes when it matches
+    no spot.  Callers that trust the position without checking the flag therefore fail
+    here the same way they fail on sky, instead of silently working.
+
     Args:
         physics : PhysicsState (shared with the asyncio server thread)
         cc      : real CobraCoach instance (used for pfi.anglesToPositions)
     """
+    dotPos = sgfm.xDot.to_numpy() + 1j * sgfm.yDot.to_numpy()
+
     def _expose(**kwargs):
         with physics.lock:
             trueT = physics.trueThetas.copy()
             trueP = physics.truePhis.copy()
-        return cc.pfi.anglesToPositions(cc.allCobras, trueT, trueP)
+
+        positions = np.asarray(cc.pfi.anglesToPositions(cc.allCobras, trueT, trueP)).copy()
+        hidden = np.abs(positions - dotPos) < DETECTION_RADIUS_MM
+        positions[hidden] = dotPos[hidden]
+        cc.cobraInfo['detected'] = ~hidden
+        return positions
 
     return _expose
