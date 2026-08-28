@@ -984,6 +984,114 @@ def test_dotConvergence(cc, physics, db):
     return True
 
 
+def test_dotScan(cc, physics, db):
+    """moveToPfsDesign on a dot design, then the flux scan that walks the fleet deeper.
+
+    The only test that runs the hide path end to end: the ramp drives cobras behind
+    their dots, the tracker is seeded from the run directory the convergence wrote, and
+    each moveToDotByFlux call steps every hidden cobra one SCAN_STEP_FRACTION on.  What
+    it is really checking is that the estimate advances once per call -- a stateless
+    implementation re-derives the same starting point every time and re-sends the whole
+    distance, which looks like a working scan until the depths are read back.
+    """
+    print('\n── test_dotScan ───────────────────────────────────────')
+    if not HAS_DOT_CONVERGENCE:
+        print('  SKIP (dotConvergence not available on this branch)')
+        return 'SKIP'
+
+    try:
+        from ics.fpsActor.utils import dotMove, dotState  # noqa: F401
+    except ImportError:
+        print('  SKIP (dotMove not on this branch)')
+        return 'SKIP'
+
+    from ics.fpsActor.utils import dotGeometry
+
+    nAll = len(cc.allCobras)
+    nScan = 4
+
+    # ── 1. Home, then build the dot design the convergence will run ───────────
+    atThetas = (cc.calibModel.tht1 - cc.calibModel.tht0 + np.pi) % (2 * np.pi) + np.pi
+    with physics.lock:
+        physics.trueThetas[:] = atThetas
+        physics.truePhis[:] = 0.0
+    cc.cobraInfo['thetaAngle'] = atThetas.copy()
+    cc.cobraInfo['phiAngle'] = np.zeros(nAll)
+    cc.cobraInfo['position'] = cc.pfi.anglesToPositions(cc.allCobras, atThetas,
+                                                        np.zeros(nAll))
+
+    thetaDot, phiCenter, _, _, _, direction, halfDot = dotGeometry.computeDotAngles(cc)
+    phiInDot = dotGeometry.computePhiAtFraction(phiCenter, halfDot, direction,
+                                                dotGeometry.RAMP_LANDING_FRACTION)
+    phiStart = dotGeometry.computePhiStart(phiInDot, direction)
+    pfsDesign = pfsDesignUtils.createDotConvergenceDesign(
+        cc.calibModel, cc.pfi, cc.allCobras, thetaDot, phiStart,
+        movingIdx=cc.goodIdx, designName='sim_dot_scan')
+
+    fps = makeFakeFpsCmd(cc, db)
+    fps.getPfsConfig = lambda cmd, visit, pfsDesign, maskFile=None: \
+        pfsConfigUtils.pfsConfigFromDesign(pfsDesign, visit, calibModel=cc.calibModel)
+    fps._finalizeWriteIngestPfsConfig = lambda *a, **kw: None
+    fps.loadModel = lambda *a, **kw: None
+
+    fps.moveToPfsDesign(FakeCmd({
+        'designId': FakeKeyword(pfsDesign.pfsDesignId),
+        'noBlindMove': FakeKeyword(True),
+        'noTweak': FakeKeyword(True),
+        'goHome': FakeKeyword(True),
+        'skipFiducialInterferenceCheck': FakeKeyword(True),
+    }))
+
+    # ── 2. The convergence must have handed over a usable estimate ────────────
+    assert fps.dotTracker is not None, 'moveToPfsDesign left no dotTracker for the scan'
+    assert fps.dotCobras is not None, 'moveToPfsDesign left no dotCobras for the scan'
+
+    hidden = ~cc.cobraInfo['detected'][fps.dotCobras]
+    known = np.isfinite(fps.dotTracker.phi[fps.dotCobras])
+    print(f'  handoff: {hidden.sum()}/{len(fps.dotCobras)} dot cobras hidden, '
+          f'{known.sum()} with an estimate')
+    assert hidden.any(), 'no cobra ended the ramp behind its dot, so nothing to scan'
+    assert known.any(), 'the tracker could not place a single dot cobra'
+
+    # ── 3. Walk the scan, one flat per call ──────────────────────────────────
+    depthFile = pathlib.Path(cc.runManager.dataDir) / dotMove.DEPTH_FILE
+    if depthFile.exists():
+        depthFile.unlink()
+
+    for step in range(nScan):
+        spsVisit = allocateSimVisitId(db)
+        db.insert_kw('sps_visit', pfs_visit_id=spsVisit, exp_type='flat')
+        fps.moveToDotByFlux(FakeCmd({'nRemaining': FakeKeyword(nScan - 1 - step)}))
+
+    # ── 4. The depths must be there, and must advance one step per flat ──────
+    assert depthFile.exists(), f'{dotMove.DEPTH_FILE} was never written'
+    depths = pd.read_csv(depthFile)
+    visits = sorted(depths.pfs_visit_id.unique())
+    print(f'  {dotMove.DEPTH_FILE}: {len(depths)} rows over {len(visits)} visits')
+    assert len(visits) == nScan, f'expected {nScan} flats recorded, got {len(visits)}'
+
+    wide = depths.pivot_table(index='cobra_id', columns='pfs_visit_id', values='fraction')
+    walked = wide.dropna()
+    assert len(walked), 'no cobra was recorded at every flat'
+
+    steps = np.diff(walked.to_numpy(), axis=1)
+    median = float(np.median(steps))
+    print(f'  fraction step per flat: median {median:.4f} '
+          f'(commanded {dotMove.SCAN_STEP_FRACTION}), '
+          f'p5 {np.percentile(steps, 5):.4f} p95 {np.percentile(steps, 95):.4f}')
+    assert abs(median - dotMove.SCAN_STEP_FRACTION) < 0.02, \
+        f'scan advanced {median:.4f} per flat, not {dotMove.SCAN_STEP_FRACTION}'
+
+    # A stateless scan re-sends the whole distance each flat, so the steps grow.
+    perFlat = np.median(steps, axis=0)
+    assert perFlat.max() < 2 * dotMove.SCAN_STEP_FRACTION, \
+        f'step size grew across the scan ({np.round(perFlat, 4).tolist()}), ' \
+        'which is what double-counting looks like'
+
+    print('  PASS')
+    return True
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Entry point
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1059,6 +1167,7 @@ def run_all():
         ('makeMotorMapGroups',  test_makeMotorMapGroups),
         ('testLoop',            test_testLoop),
         ('dotConvergence',      test_dotConvergence),
+        ('dotScan',             test_dotScan),
     ]
 
     results = {}
