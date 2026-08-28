@@ -375,11 +375,16 @@ def test_cobraMoveAngles(cc, physics, db):
 
     fps.cobraMoveAngles(FakeCmd({'phi': FakeKeyword(True), 'angle': FakeKeyword(10.0)}))
 
+    # 20° puts every tip well inside its dot's radius; 10° further out, a few hundred
+    # cobras pass over their dot and report the dot centre instead of where they are.
+    # Their angle is not a measurement, so only the cobras still seen can be checked.
+    seen = cc.cobraInfo['detected'][goodIdx]
     phiAfter = cc.cobraInfo['phiAngle'][goodIdx]
     expected = np.deg2rad(10.0)
-    err = np.max(np.abs(phiAfter - phiBefore - expected))
+    err = np.max(np.abs(phiAfter[seen] - phiBefore[seen] - expected))
     assert err < np.deg2rad(0.5), f'phi not updated correctly: max error = {np.rad2deg(err):.3f}°'
-    print(f'  phi +10° from 20° start OK (max error {np.rad2deg(err):.3f}°)')
+    print(f'  phi +10° from 20° start OK on {seen.sum()}/{len(seen)} still visible '
+          f'(max error {np.rad2deg(err):.3f}°)')
     print('  PASS')
     return True
 
