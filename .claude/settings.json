@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//home/alefur/devel/ics/pfi/**)",
+      "Read(//home/alefur/devel/ics/**)",
+      "Read(//home/alefur/devel/ics/pfi/ics_fpsActor/**)",
+      "Bash(python3 -c \"from ics.iicActor.utils import cmdUtils; import inspect; print\\(inspect.getsource\\(cmdUtils.parse\\)\\)\")",
+      "Bash(python3 -c \"import ics.iicActor.utils.cmdUtils as c; import inspect; print\\(inspect.getsourcefile\\(c\\)\\); print\\(inspect.getsource\\(c.parse\\)\\)\")",
+      "Read(//home/alefur/**)",
+      "Bash(grep -r \"angleToPosition\\\\|cobraCharmer\" /home/alefur/devel/ics/pfi --include=*.py)",
+      "Bash(python3 -c \"from ics.cobraCharmer.cobraCoach import calculation; print\\(calculation.__file__\\)\")",
+      "Bash(find /home/alefur -type f -name *.py -path */cobraCharmer/*)",
+      "Bash(grep -r \"thetaHome\\\\|phiHome\\\\|tht0\\\\|phi0\" /home/alefur/devel/ics/pf --include=*.py)",
+      "Bash(grep -r calibModel. /home/alefur/devel/ics/pfi/ics_fpsActor --include=*.py)",
+      "Bash(grep -r \"angleToPosition\\\\|toPosition\\\\|fromPosition\" /home/alefur/devel/ics/pfs_obsproc_planning_tools/src/ics_cobraCharmer --include=*.py)",
+      "Bash(grep -rn \"angleToPosition\\\\|toPosition\\\\|def.*position.*angle\\\\|def.*angle.*position\" /home/alefur/devel/ics/pfs_obsproc_planning_tools/src/ics_cobraCharmer --include=*.py)",
+      "Bash(grep -rn angleToPosition /home/alefur --include=*.py)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)"
+    ]
+  }
+}

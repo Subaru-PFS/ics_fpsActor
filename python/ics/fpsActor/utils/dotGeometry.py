@@ -28,8 +28,8 @@ PHI_CAPS_DEG = (30.0, 45.0)
 
 # Dot-hiding depth schedule, in dot fraction (0 = entry edge, 0.5 = dot centre,
 # 1 = exit edge).  The closed-loop phi ramp lands the tip at RAMP_LANDING_FRACTION;
-# a single open-loop slow-map blind move (blindMoveHiddenCobras, called from
-# moveToPfsDesign) then pushes it to BLIND_TARGET_FRACTION, deeper inside the dot.
+# a single open-loop slow-map blind move (dotMove.blindMoveToDots) then pushes it
+# deeper, to each cobra's own measured optimum.
 #
 # Measured on the 2026-07-24 telescope run (good cobras, flux right after
 # moveToPfsDesign): landing at 0.2 with no blind move leaves a median 9.6% residual flux
@@ -40,30 +40,31 @@ PHI_CAPS_DEG = (30.0, 45.0)
 #     0.30 -> 89.8%    0.35 -> 96.8%    0.40 -> 98.4%    0.45 -> 98.3%    0.50 -> 96.7%
 # so the obscuration optimum is a broad plateau from about 0.35 to 0.50.
 #
-# The blind move cannot place the tip perfectly, so the target has to be chosen against
-# the realised distribution rather than that curve.  Inverting each cobra's own scan curve
-# against its measured flux in visit 147726 gives the error of the 0.1 -> 0.3 push as a
-# fraction of the commanded delta: median -0.19, p5 -0.50, p95 +0.12.  The move
-# systematically UNDERSHOOTS -- almost certainly because fitPhiSpeed reads the small
-# end-of-ramp steps and so over-estimates the speed.  Folding that error back into the
-# curve, and scaling it with the commanded delta:
-#     target  median flux   <5%     <1%    past 0.5
-#      0.30      0.800%    83.2%   57.5%     0.0%
-#      0.35      0.280%    90.9%   79.1%     0.2%
-#      0.40      0.169%    93.8%   87.9%     0.4%
-#      0.45      0.136%    94.7%   91.2%     3.9%
-# 0.40 is the turnover: 0.45 buys under a point more and takes overshoot past the dot
-# centre from 0.4% to 3.9%.  Aiming shallower is not the conservative choice -- since the
-# move undershoots, 0.35 simply compounds the bias and gives up three points.
+# BLIND_TARGET_FRACTION is only the fallback.  Each cobra is aimed at its own measured
+# optimum where one exists (dotTargets), because the depth at which a cobra hides best is
+# a property of that cobra: the fitted optima span 0.21 to 0.80 with 158 um of real
+# cobra-to-cobra spread, against 25 um of measurement scatter.  Interpolating the scan
+# curves at each aim point gives the fraction hidden below 1% residual flux as
+#     fixed 0.40  89.8%    fixed 0.445  92.0%    fixed 0.50  89.7%    per-cobra  98.8%
+# so 0.445 is the best single value and is what an uncalibrated cobra gets.
 #
-# Do not go past 0.5: beyond the dot centre the tip approaches the far edge and the flux
-# rises again (0.60 -> 83.5%, 0.70 -> 60.3%).
-#
-# A single global value is adequate.  The per-cobra optimum has median 0.43 with an
-# intrinsic scatter of 0.051, and the field-dependent part is smaller still (m=1 amplitude
-# 0.025, i.e. 38 um of tip travel) -- all well inside the plateau.
+# Optima beyond 0.5 are real and are not clipped: for the 1108 cobras whose measured
+# optimum is past the dot centre, aiming there hides 98.7% against 83.3% at 0.40.  What
+# the fraction cannot exceed is the range the scan actually covered -- dotTargets rejects
+# anything outside it rather than clamping, since a clamped value still asserts a depth
+# nobody observed.
 RAMP_LANDING_FRACTION = 0.1
 BLIND_TARGET_FRACTION = 0.4
+
+# Where the closed-loop ramp stops, just outside the entry edge, before the landing jump.
+# A fixed angle is not a fixed standoff -- halfDot varies across the fleet, so 3 degrees
+# spans 0.076 to 0.087 of a dot -- and every other depth in this module is a fraction.
+# Measured against the detection boundary on the 2026-07-24 scans, -0.075 leaves a median
+# margin of 168 um (p5 51 um) and keeps 98.1% of cobras outside it, which matches the
+# 99.7% actually still detected at that iteration.  Do not shrink it further: the last
+# measured iteration is what the blind move departs from, and below about -0.05 it lands
+# inside the scatter of where the edge really is.
+RAMP_APPROACH_FRACTION = -0.075
 
 # Bounds on the open-loop blind move.  fitPhiSpeed stays the step estimator — it
 # tracks real behaviour better than the calibrated map — but it measures achieved
@@ -181,7 +182,8 @@ def thetaOffsetForPhi(L1, L2, rDot, phi_rad, motorMarginMm=0.05):
     return (rDot + motorMarginMm) / D
 
 
-def buildDotRamp(cc, dotCobras, nIter, capIters=2, motorMarginMm=0.2):
+def buildDotRamp(cc, dotCobras, nIter, capIters=2, motorMarginMm=0.2,
+                 landingFraction=RAMP_LANDING_FRACTION):
     """Build theta/phi starts and phi/theta ramp arrays for dot cobras.
 
     One-call wrapper used by moveToPfsDesign.  All heavy geometry stays here.
@@ -206,6 +208,9 @@ def buildDotRamp(cc, dotCobras, nIter, capIters=2, motorMarginMm=0.2):
         still fits between the theta hard stops for every cobra (sign=0 count
         stays 0 up to 0.5 mm).  Effect to be confirmed on the next run alongside
         the fast-map-on-first-iteration fix.
+    landingFraction : float
+        Dot fraction the last ramp row lands at.  The run-up before it is unchanged,
+        so only the length of the final jump across the edge varies.
 
     Returns
     -------
@@ -243,14 +248,25 @@ def buildDotRamp(cc, dotCobras, nIter, capIters=2, motorMarginMm=0.2):
     thetaStartAll, phiCenter, phiMin, phiMax, phiEnter, direction, halfDot = \
         computeDotAngles(cc)
 
-    # Final ramp target: the closed-loop iterations land the tip just inside the dot at
-    # RAMP_LANDING_FRACTION; moveToPfsDesign then blind-moves it deeper (see the constant).
+    # The ramp starts a fixed run-up before the nominal landing, whatever depth the
+    # last row is asked for.  Anchoring the start to RAMP_LANDING_FRACTION rather than
+    # to `landingFraction` keeps it equal to the phiStart the dot design was built from,
+    # so the design and the ramp describe the same starting angle.
     phiInDot = computePhiAtFraction(phiCenter, halfDot, direction, RAMP_LANDING_FRACTION)
     phiStartAll = computePhiStart(phiInDot, direction)
 
+    # Where the last row lands.  A scan wants this shallow, to climb the obscuration
+    # curve from outside; a sequence that only has to hide wants it deeper, so that a
+    # blind move falling short still leaves the cobra behind its dot.
+    phiFinal = computePhiAtFraction(phiCenter, halfDot, direction, landingFraction)
+
+    # Stop the closed-loop ramp just outside the entry edge, as a fraction of each
+    # cobra's own dot rather than a fixed angle.
+    phiRampEnd = computePhiAtFraction(phiCenter, halfDot, direction, RAMP_APPROACH_FRACTION)
+
     ramp = computePhiRamp(
-        phiStartAll[dotCobras], phiEnter[dotCobras],
-        phiInDot[dotCobras], direction[dotCobras], nIter=nIter)
+        phiStartAll[dotCobras], phiRampEnd[dotCobras],
+        phiFinal[dotCobras], direction[dotCobras], nIter=nIter)
 
     thetaStart[dotCobras] = thetaStartAll[dotCobras]
     phiStart[dotCobras] = phiStartAll[dotCobras]
@@ -320,8 +336,9 @@ def capCommandedAngle(thetaStart, phiStart, phiRamp, thetaRamp, iterPhiCapsDeg=(
     return thetaStart, phiStart, phiRamp, thetaRamp
 
 
-def buildSafeRamp(cc, dotCobras, nIter):
-    thetaStart, phiStart, phiRamp, thetaRamp, dotGeom = buildDotRamp(cc, dotCobras, nIter)
+def buildSafeRamp(cc, dotCobras, nIter, landingFraction=RAMP_LANDING_FRACTION):
+    thetaStart, phiStart, phiRamp, thetaRamp, dotGeom = buildDotRamp(
+        cc, dotCobras, nIter, landingFraction=landingFraction)
     thetaStart, phiStart, phiRamp, thetaRamp = capCommandedAngle(thetaStart, phiStart, phiRamp, thetaRamp)
     return thetaStart, phiStart, phiRamp, thetaRamp, dotGeom
 
@@ -351,15 +368,14 @@ def computePhiAtFraction(phiCenter, halfDot, direction, fraction):
     return phiCenter + direction * halfDot * (2 * fraction - 1)
 
 
-def computePhiRamp(phiStart, phiEnter, phiInDot, direction, nIter,
-                   edgeMarginDeg=3.0):
+def computePhiRamp(phiStart, phiRampEnd, phiInDot, direction, nIter):
     """Build the (nIter, nCobras) phi delta array for the dot ramp.
 
     Two-phase schedule:
-      rows 0 .. nIter-2 : uniform linear ramp stopping edgeMargin before entry edge
+      rows 0 .. nIter-2 : uniform linear ramp stopping at phiRampEnd, just outside the
+                          entry edge
                           phiRamp[j] = j * phiStep,  j = 0 .. nIter-2
                           phiStep = (phiRampEnd - phiStart) / (nIter - 2)
-                          phiRampEnd = phiEnter - direction * edgeMargin
       row  nIter-1      : jump to phiInDot (just inside entry edge, fraction=0.1)
                           phiRamp[nIter-1] = phiInDot - phiStart
 
@@ -369,12 +385,11 @@ def computePhiRamp(phiStart, phiEnter, phiInDot, direction, nIter,
 
     Parameters
     ----------
-    phiStart  : ndarray (nCobras,)  ramp start phi (= phis[dotCobras])
-    phiEnter  : ndarray (nCobras,)  phi at dot entry edge (phiMin CCW, phiMax CW)
+    phiStart   : ndarray (nCobras,)  ramp start phi (= phis[dotCobras])
+    phiRampEnd : ndarray (nCobras,)  where the linear ramp stops, just outside the edge
     phiInDot  : ndarray (nCobras,)  target phi inside dot (fraction=0.1)
     direction : ndarray (nCobras,) int  +1 CCW, -1 CW
     nIter     : int  total iterations (= tries).  Must be >= 3.
-    edgeMarginDeg : float  degrees before entry edge where linear ramp ends.
 
     Returns
     -------
@@ -386,8 +401,6 @@ def computePhiRamp(phiStart, phiEnter, phiInDot, direction, nIter,
                          'reserves one row for the landing jump and divides the '
                          'linear phase by (nIter - 2)')
 
-    edgeMargin = np.deg2rad(edgeMarginDeg)
-    phiRampEnd = phiEnter - direction * edgeMargin  # 3° before entry edge
     phiStep = (phiRampEnd - phiStart) / (nIter - 2)  # signed, nIter-1 uniform steps
 
     j_arr = np.arange(nIter - 1)
@@ -591,126 +604,3 @@ def estimateMotorMapSpeed(cc, cIds, phiAngles, direction):
         speed[i] = abs(dAng / dStep) if dStep != 0 else np.nan
 
     return speed
-
-
-def blindMoveHiddenCobras(cc, dotGlobalIdx, commandedIdx, moves, dotGeom,
-                          fromFraction=0.1, toFraction=0.4, cmd=None):
-    """Open-loop step push of hidden dot cobras toward toFraction inside the dot.
-
-    Called after the convergence loop in moveToPfsDesign.  Cobras whose spot has
-    disappeared from MCS (cc.cobraInfo['detected'] == False) are at or just
-    behind the dot rim.  Once hidden, neither the cobra's measured phi nor the
-    closed-loop step counts can be trusted (cobra_match's dot-centre fallback
-    drives the IK to send wild yo-yo moves).  We assume each hidden cobra is at
-    fromFraction (the iter-15 ramp target) and step the fixed delta to
-    toFraction in the correct CCW/CW direction.
-
-    Parameters
-    ----------
-    cc : CobraCoach
-        Source of cc.cobraInfo['detected'], cc.allCobras, cc.pfi.moveSteps.
-    dotGlobalIdx : ndarray of int
-        Global indices of cobras that participated in the dot ramp.
-    commandedIdx : ndarray of int
-        Global indices in the order they appear along axis-1 of ``moves``.
-    moves : structured ndarray
-        moveThetaPhi history (used by fitPhiSpeed for the rad/step estimate),
-        either (1, len(commandedIdx), nIter) as moveToPfsDesign builds it on
-        the twoSteps path, or (len(commandedIdx), nIter) on twoStepsOff.
-    dotGeom : dict
-        Output of buildDotRamp; must carry halfDot and direction.
-    fromFraction : float
-        Assumed depth at which each hidden cobra sits before the blind move.
-        Defaults to 0.1 — the iter-15 ramp target inside the dot.
-    toFraction : float
-        Target depth.  Default 0.4 — well past the rim, comfortably hidden.
-    cmd : optional
-        Command-handle for inform/warn messages.
-
-    Returns
-    -------
-    nCommanded : int
-        Number of cobras that received a blind step command.
-    """
-    detected     = cc.cobraInfo['detected']
-    hiddenGlobal = dotGlobalIdx[~detected[dotGlobalIdx]]
-
-    if cmd is not None:
-        cmd.inform(f'text="blind move: {len(hiddenGlobal)}/{len(dotGlobalIdx)} '
-                   f'hidden dot cobras  fraction {fromFraction}→{toFraction}"')
-
-    if len(hiddenGlobal) == 0:
-        return 0
-
-    halfDot   = dotGeom['halfDot']
-    direction = dotGeom['direction']
-    phiCenter = dotGeom['phiCenter']
-
-    # moveToPfsDesign builds moves as (1, nCobras, nIter) on the twoSteps path but
-    # hands through moveThetaPhi's raw (nCobras, nIter) when twoStepsOff is set.
-    # fitPhiSpeed wants the 2-D history either way.
-    movesArr = moves[0] if moves.ndim == 3 else moves
-
-    # Independent bound on the step count, per cobra: how many steps the
-    # *calibrated* motor map says this move needs, times BLIND_SPEED_SLACK.
-    # fitPhiSpeed stays the estimator — it tracks real behaviour better than the
-    # map — but it can no longer ask for an unbounded push when it collapses.
-    phiAtFrom = computePhiAtFraction(phiCenter[hiddenGlobal], halfDot[hiddenGlobal],
-                                     direction[hiddenGlobal], fromFraction)
-    mapSpeed = estimateMotorMapSpeed(cc, hiddenGlobal, phiAtFrom, direction[hiddenGlobal])
-
-    idxMap = {int(gc): i for i, gc in enumerate(np.asarray(commandedIdx))}
-    cobrasToStep = []
-    phiStepsList = []
-    nSpeedNan = 0
-    nClamped = 0
-    for k, cIdGlobal in enumerate(hiddenGlobal):
-        iLocal = idxMap.get(int(cIdGlobal))
-        if iLocal is None:
-            continue
-        speed = fitPhiSpeed(movesArr, iLocal)
-        if np.isnan(speed) or speed == 0:
-            nSpeedNan += 1
-            continue
-
-        maxSteps = MAX_BLIND_STEPS
-        if np.isfinite(mapSpeed[k]) and mapSpeed[k] > 0:
-            deltaPhi = abs((toFraction - fromFraction) * 2 * halfDot[cIdGlobal])
-            maxSteps = min(maxSteps, BLIND_SPEED_SLACK * deltaPhi / mapSpeed[k])
-
-        rawSteps = computeBlindSteps(speed, direction[cIdGlobal], halfDot[cIdGlobal],
-                                     fromFraction=fromFraction, toFraction=toFraction)
-        steps = computeBlindSteps(speed, direction[cIdGlobal], halfDot[cIdGlobal],
-                                   fromFraction=fromFraction, toFraction=toFraction,
-                                   maxSteps=maxSteps)
-        if steps == 0:
-            continue
-        if steps != rawSteps:
-            nClamped += 1
-            if cmd is not None:
-                cmd.warn(f'text="blind move: cobra {cIdGlobal + 1} fitted speed '
-                         f'{speed:.3e} rad/step asked for {rawSteps} steps, '
-                         f'clamped to {steps}"')
-        cobrasToStep.append(cc.allCobras[cIdGlobal])
-        phiStepsList.append(int(steps))
-
-    nCommanded = len(cobrasToStep)
-    if nCommanded:
-        # Use cc.pfi.moveSteps (pure FPGA, no MCS exposure) — this is a
-        # genuine open-loop blind move, and avoids the per-call MCS frame
-        # that cc.moveSteps otherwise triggers via exposeAndExtractPositions.
-        # phiFast=False (SLOW map): fitPhiSpeed is measured from the ramp's
-        # near-dot iterations, which run on the slow map (moveThetaPhi gates to
-        # slow below fastThreshold=99.9mm, i.e. for every in-patrol move).  The
-        # raw pfi.moveSteps has no such gating, so we must force the slow map
-        # here — using the fast map with slow-calibrated steps overshoots badly.
-        thetaSteps = np.zeros(nCommanded, dtype=int)
-        cc.pfi.moveSteps(cobrasToStep, thetaSteps,
-                         np.asarray(phiStepsList, dtype=int),
-                         phiFast=False)
-
-    if cmd is not None:
-        cmd.inform(f'text="blind move: commanded {nCommanded}/{len(hiddenGlobal)} '
-                   f'(skipped {nSpeedNan} with no speed estimate, '
-                   f'clamped {nClamped})"')
-    return nCommanded
