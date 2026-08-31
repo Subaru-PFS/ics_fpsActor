@@ -1037,6 +1037,7 @@ def test_dotScan(cc, physics, db):
     fps.moveToPfsDesign(FakeCmd({
         'designId': FakeKeyword(pfsDesign.pfsDesignId),
         'noBlindMove': FakeKeyword(True),
+        'dotLanding': FakeKeyword(dotGeometry.RAMP_LANDING_FRACTION),
         'noTweak': FakeKeyword(True),
         'goHome': FakeKeyword(True),
         'skipFiducialInterferenceCheck': FakeKeyword(True),
@@ -1061,7 +1062,8 @@ def test_dotScan(cc, physics, db):
     for step in range(nScan):
         spsVisit = allocateSimVisitId(db)
         db.insert_kw('sps_visit', pfs_visit_id=spsVisit, exp_type='flat')
-        fps.moveToDotByFlux(FakeCmd({'nRemaining': FakeKeyword(nScan - 1 - step)}))
+        fps.moveToDotByFlux(FakeCmd({'nRemaining': FakeKeyword(nScan - 1 - step),
+                                     'sweep': FakeKeyword(True)}))
 
     # ── 4. The depths must be there, and must advance one step per flat ──────
     assert depthFile.exists(), f'{dotMove.DEPTH_FILE} was never written'
