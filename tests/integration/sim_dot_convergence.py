@@ -1094,6 +1094,103 @@ def test_dotScan(cc, physics, db):
     return True
 
 
+def test_dotRoachHiding(cc, physics, db):
+    """The operational sequence: step only the cobras the flux says are still lit.
+
+    dotScan covers the sweep; this covers the branch that actually runs on sky.  The
+    failure it exists to catch is a sequence that keeps pushing cobras already behind
+    their dot, which drives them out the far side with nothing watching -- so what is
+    asserted is not that something moved, but that the hidden ones did not.
+    """
+    print('\n── test_dotRoachHiding ────────────────────────────────')
+    if not HAS_DOT_CONVERGENCE:
+        print('  SKIP (dotConvergence not available on this branch)')
+        return 'SKIP'
+
+    try:
+        from ics.fpsActor.utils import dotMove
+    except ImportError:
+        print('  SKIP (dotMove not on this branch)')
+        return 'SKIP'
+
+    from ics.fpsActor.utils import dotGeometry
+
+    nAll = len(cc.allCobras)
+    nFlats = 3
+
+    atThetas = (cc.calibModel.tht1 - cc.calibModel.tht0 + np.pi) % (2 * np.pi) + np.pi
+    with physics.lock:
+        physics.trueThetas[:] = atThetas
+        physics.truePhis[:] = 0.0
+    cc.cobraInfo['thetaAngle'] = atThetas.copy()
+    cc.cobraInfo['phiAngle'] = np.zeros(nAll)
+    cc.cobraInfo['position'] = cc.pfi.anglesToPositions(cc.allCobras, atThetas, np.zeros(nAll))
+
+    thetaDot, phiCenter, _, _, _, direction, halfDot = dotGeometry.computeDotAngles(cc)
+    phiInDot = dotGeometry.computePhiAtFraction(phiCenter, halfDot, direction,
+                                                dotGeometry.RAMP_LANDING_FRACTION)
+    pfsDesign = pfsDesignUtils.createDotConvergenceDesign(
+        cc.calibModel, cc.pfi, cc.allCobras, thetaDot,
+        dotGeometry.computePhiStart(phiInDot, direction),
+        movingIdx=cc.goodIdx, designName='sim_dot_roach')
+
+    fps = makeFakeFpsCmd(cc, db)
+    fps.getPfsConfig = lambda cmd, visit, pfsDesign, maskFile=None: \
+        pfsConfigUtils.pfsConfigFromDesign(pfsDesign, visit, calibModel=cc.calibModel)
+    fps._finalizeWriteIngestPfsConfig = lambda *a, **kw: None
+    fps.loadModel = lambda *a, **kw: None
+
+    # The operational configuration: land deeper, and blind-move to each calibrated
+    # optimum rather than stopping at the landing depth.
+    fps.moveToPfsDesign(FakeCmd({
+        'designId': FakeKeyword(pfsDesign.pfsDesignId),
+        'dotLanding': FakeKeyword(0.2),
+        'noTweak': FakeKeyword(True),
+        'goHome': FakeKeyword(True),
+        'skipFiducialInterferenceCheck': FakeKeyword(True),
+    }))
+    assert fps.dotTracker is not None, 'moveToPfsDesign left no dotTracker'
+
+    dotCobras = np.asarray(fps.dotCobras, dtype=int)
+    lit = dotCobras[::7]                       # a scattered minority still showing light
+    litSet = set(int(c) + 1 for c in lit)      # cobra_id is one-based
+    print(f'  {len(dotCobras)} dot cobras, {len(lit)} reported lit each flat')
+
+    depthFile = pathlib.Path(cc.runManager.dataDir) / dotMove.DEPTH_FILE
+    if depthFile.exists():
+        depthFile.unlink()
+
+    for step in range(nFlats):
+        spsVisit = allocateSimVisitId(db)
+        db.insert_kw('sps_visit', pfs_visit_id=spsVisit, exp_type='flat')
+        cobraIds = np.asarray(dotCobras, dtype=int) + 1
+        ratio = np.where(np.isin(cobraIds, list(litSet)), 0.90, 0.001)
+        db.insert_dataframe('dot_roach_flux', pd.DataFrame({
+            'pfs_visit_id': spsVisit, 'cobra_id': cobraIds,
+            'flux_abs': ratio * 1000, 'flux_ratio': ratio, 'flux_ratio_norm': ratio}))
+        fps.moveToDotByFlux(FakeCmd({'nRemaining': FakeKeyword(nFlats - 1 - step)}))
+
+    assert depthFile.exists(), f'{dotMove.DEPTH_FILE} was never written'
+    depths = pd.read_csv(depthFile)
+    wide = depths.pivot_table(index='cobra_id', columns='pfs_visit_id',
+                              values='fraction').dropna()
+    moved = (wide.iloc[:, -1] - wide.iloc[:, 0]).abs()
+
+    litMoved = moved[[c for c in moved.index if c in litSet]]
+    darkMoved = moved[[c for c in moved.index if c not in litSet]]
+    print(f'  lit cobras moved  : median {litMoved.median():.4f} fraction '
+          f'(expect {(nFlats - 1) * dotMove.SCAN_STEP_FRACTION:.2f})')
+    print(f'  hidden cobras moved: max {darkMoved.max():.6f} fraction')
+
+    assert darkMoved.max() < 1e-9, \
+        f'{int((darkMoved > 1e-9).sum())} cobras already hidden were pushed anyway'
+    assert litMoved.median() > 0.5 * (nFlats - 1) * dotMove.SCAN_STEP_FRACTION, \
+        f'lit cobras only advanced {litMoved.median():.4f}'
+
+    print('  PASS')
+    return True
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Entry point
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1170,6 +1267,7 @@ def run_all():
         ('testLoop',            test_testLoop),
         ('dotConvergence',      test_dotConvergence),
         ('dotScan',             test_dotScan),
+        ('dotRoachHiding',      test_dotRoachHiding),
     ]
 
     results = {}
