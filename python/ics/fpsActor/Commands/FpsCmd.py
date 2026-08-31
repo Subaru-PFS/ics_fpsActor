@@ -26,6 +26,7 @@ from ics.fpsActor import fpsState
 from ics.fpsActor import najaVenator
 from ics.fpsActor.utils import display as vis
 from ics.fpsActor.utils import dotGeometry
+from ics.fpsActor.utils import dotMove
 from ics.fpsActor.utils import motorScales
 from ics.cobraCharmer import targetValidation
 from ics.fpsActor.utils.cobraCenters import updateCobraCenters
@@ -56,7 +57,11 @@ class FpsCmd(object):
         self.nv = najaVenator.NajaVenator()
 
         self.tranMatrix = None
-        self.dotScan = None  # in-memory dot-scan step handed off from moveToPfsDesign to moveToDotByFlux
+        # Position estimate for the dot cobras, carried from the convergence through
+        # every blind move that follows it.  None when no dot convergence has run, which
+        # is also what says no flux scan can be stepped.
+        self.dotTracker = None
+        self.dotCobras = None
         # Declare the commands we implement. When the actor is started
         # these are registered with the parser, which will call the
         # associated methods when matched. The callbacks will be
@@ -94,7 +99,7 @@ class FpsCmd(object):
             ('setCobraMode', '@(phi|theta|normal)', self.setCobraMode),
             ('setGeometry', '@(phi|theta) <runDir>', self.setGeometry),
             ('moveToPfsDesign',
-             '<designId> [@twoStepsOff] [@shortExpOff] [@goHome] [@noTweak] [@skipFiducialInterferenceCheck] [@allowMaskedCobras] [<visit>] [<expTime>] [<iteration>] [<tolerance>] [<maskFile>]',
+             '<designId> [@twoStepsOff] [@shortExpOff] [@goHome] [@noTweak] [@skipFiducialInterferenceCheck] [@allowMaskedCobras] [@noBlindMove] [<visit>] [<expTime>] [<iteration>] [<tolerance>] [<maskFile>] [<dotTarget>] [<dotTargetOffset>] [<dotLanding>]',
              self.moveToPfsDesign),
             ('moveToSafePosition', '[<expTime>] [<visit>] [<tolerance>] [<phiAngle>] [<thetaAngle>] [@noHome]', self.moveToSafePosition),
             ('makeMotorMap', '@(phi|theta) <stepsize> <repeat> [<totalsteps>] [@slowOnly] [@forceMove] [<visit>]',
@@ -119,7 +124,7 @@ class FpsCmd(object):
             ('testDotMove', '[<stepsPerMove>]', self.testDotMove),
             ('setDb', '[<host>] [<user>] [<port>] [<dbname>]', self.setDb),
             ('updateCobrasCenters', '[@brokenOnly]', self.updateCobrasCenters),
-            ('moveToDotByFlux', '[<nRemaining>]', self.moveToDotByFlux)
+            ('moveToDotByFlux', '[@sweep] [<nRemaining>]', self.moveToDotByFlux)
         ]
 
         # Define typed command arguments for the above commands.
@@ -177,6 +182,8 @@ class FpsCmd(object):
                                         keys.Key("designName", types.String(), help="pfsDesign name"),
                                         keys.Key("dotTarget", types.String(), help="dotTarget"),
                                         keys.Key("nRemaining", types.Int()),
+                                        keys.Key("dotLanding", types.Float(),
+                                                 help="dot fraction the ramp lands at"),
                                         )
 
         self.logger = logging.getLogger('fps')
@@ -1653,6 +1660,18 @@ class FpsCmd(object):
         tolerance = cmdKeys['tolerance'].values[0] if 'tolerance' in cmdKeys else 0.01
         fastThreshold = cmdKeys['fastThreshold'].values[0] if 'fastThreshold' in cmdKeys else 99.9
 
+        # Dot depth controls.  Unset, every dot cobra goes to its own measured optimum.
+        # noBlindMove leaves the fleet at the ramp landing, which is the common, known
+        # depth a fresh calibration has to start from; dotTarget forces one depth for
+        # every cobra; dotTargetOffset shifts them all while keeping their differences.
+        noBlindMove = 'noBlindMove' in cmdKeys
+        dotTarget = cmdKeys['dotTarget'].values[0] if 'dotTarget' in cmdKeys else None
+        dotTargetOffset = (cmdKeys['dotTargetOffset'].values[0]
+                           if 'dotTargetOffset' in cmdKeys else 0.0)
+        # dotLanding moves only the last ramp row, not the run-up before it.
+        dotLanding = (cmdKeys['dotLanding'].values[0] if 'dotLanding' in cmdKeys
+                      else dotGeometry.RAMP_LANDING_FRACTION)
+
         convergenceCfg = self.actor.actorConfig.get('convergence', {})
         maxInvalidScienceTargets = convergenceCfg.get('maxInvalidScienceTargets', 25)
         targetFallback = pfsConfigUtils.resolveTargetFallback(convergenceCfg)
@@ -1744,7 +1763,7 @@ class FpsCmd(object):
         # design position.  buildSafeRamp returns (nCobras,) and (nIter, nCobras).
         dotGlobalIdx = np.flatnonzero(toBlackDot)
         thetaDot, phiStart, phiRamp, thetaRamp, dotGeom = dotGeometry.buildSafeRamp(
-            self.cc, dotGlobalIdx, iteration)
+            self.cc, dotGlobalIdx, iteration, landingFraction=dotLanding)
         thetas[toBlackDot] = thetaDot[toBlackDot]
         phis[toBlackDot] = phiStart[toBlackDot]
 
@@ -1876,7 +1895,7 @@ class FpsCmd(object):
 
         # Drop any previous visit's scan state up front: if this convergence
         # raises, moveToDotByFlux must not blind-move on stale indices.
-        self.dotScan = None
+        self.dotTracker = self.dotCobras = None
 
         try:
             if twoSteps:
@@ -1949,17 +1968,6 @@ class FpsCmd(object):
             # Push the hidden dot cobras deeper inside the dot with a single open-loop
             # (slow-map) move: the closed-loop ramp above lands them at
             # RAMP_LANDING_FRACTION, this takes them to BLIND_TARGET_FRACTION.
-            if len(dotGlobalIdx):
-                dotGeometry.blindMoveHiddenCobras(self.cc, dotGlobalIdx, commandedIdx,
-                                                  moves, dotGeom,
-                                                  fromFraction=dotGeometry.RAMP_LANDING_FRACTION,
-                                                  toFraction=dotGeometry.BLIND_TARGET_FRACTION,
-                                                  cmd=cmd)
-                # Diagnostic exposure post-blind-move (the move itself is
-                # pfi-only / open-loop; this frame lets us inspect the
-                # post-push detection state).
-                self.cc.exposeAndExtractPositions()
-
             # Saving moves array
             np.save(dataPath / 'moves', moves)
 
@@ -1967,15 +1975,22 @@ class FpsCmd(object):
             # next convergence resets it to 1.0 and the correction is lost.
             motorScales.saveMotorScales(self.cc, dataPath, cmd=cmd)
 
-            # Blind-move inputs for moveToDotByFlux (in-memory, no file): it calls
-            # blindMoveHiddenCobras once per flat, advancing fraction by dFraction.
+            # The blind move reads the run directory, so it comes after that write.  It
+            # also makes this convergence simply the newest run when the gain is
+            # measured, instead of a case of its own.
             if len(dotGlobalIdx):
-                self.dotScan = dict(dotGlobalIdx=np.asarray(dotGlobalIdx, dtype=int),
-                                    commandedIdx=np.asarray(commandedIdx),
-                                    moves=moves, dotGeom=dotGeom,
-                                    # cobras sit at BLIND_TARGET_FRACTION after the blind move above
-                                    fraction=dotGeometry.BLIND_TARGET_FRACTION,
-                                    dFraction=0.05)   # per-flat scan increment
+                self.dotTracker, self.dotCobras = dotMove.makeTracker(self.cc, cmd=cmd)
+
+                if noBlindMove:
+                    cmd.inform('text="blindMove: skipped; the fleet stays at the ramp '
+                               'landing depth"')
+                else:
+                    dotMove.blindMoveToDots(self.cc, self.dotTracker, self.dotCobras,
+                                            cmd=cmd, targetFraction=dotTarget,
+                                            targetOffset=dotTargetOffset)
+                    # The push is open loop; this frame is the only look at what it did,
+                    # and a cobra that reappears is the strongest sign it overshot.
+                    self.cc.exposeAndExtractPositions()
 
         except Exception:
             convergenceFailed = True
@@ -2036,8 +2051,8 @@ class FpsCmd(object):
         """Open-loop scan of dot cobras across the black dot for flat-field flux mapping.
 
         Called iteratively by iic, one SPS flat between each call.  moveToPfsDesign hands off
-        ``self.dotScan`` (the inputs for dotGeometry.blindMoveHiddenCobras plus the running dot
-        fraction).  Each call records the latest SPS flux, then calls blindMoveHiddenCobras to
+        ``self.dotTracker`` (where every dot cobra is estimated to be).  Each call records
+        the latest SPS flux, then calls blindMoveToDots to
         walk every *hidden* dot cobra one ``dFraction`` (0.05) deeper across the dot — bounded,
         motor-calibrated (fitPhiSpeed), phiFast=False (slow map), pure-FPGA moveSteps, no MCS.  Never stops
         or reverses; the flux-vs-depth minimum (dot centre) is analysed offline.
@@ -2053,35 +2068,56 @@ class FpsCmd(object):
 
         cmdKeys = cmd.cmd.keywords
         nRemaining = cmdKeys['nRemaining'].values[0] if 'nRemaining' in cmdKeys else 1
+        # A scan steps the whole fleet so the obscuration curve is sampled at every
+        # depth; a sequence that only has to hide steps whichever cobras the flux says
+        # are still lit, and leaves the rest where they are.
+        sweep = 'sweep' in cmdKeys
 
-        scan = self.dotScan
-        if scan is None:
+        if self.dotTracker is None:
             cmd.fail('text="moveToDotByFlux: no dot-scan state - run moveToPfsDesign on a '
                      'BLACKSPOT (dot) design first"')
             return
 
-        # -- record latest SPS flux (monitoring only; the profile is analysed offline) --
+        spsVisit = None
+        stillLit = None
         try:
             db = opdb.OpDB()
             spsVisit = int(db.query_scalar('SELECT MAX(pfs_visit_id) FROM sps_visit'))
+            # flux_ratio_norm is the hide ratio corrected by the lamp factor, which is
+            # the column the scan is reduced on; a zero count means it is arriving
+            # unwritten, not that the cobras were not measured.
             fluxDf = db.query_dataframe(
-                f'SELECT cobra_id, flux_norm FROM dot_roach_flux WHERE pfs_visit_id = {spsVisit}')
-            nFlux = 0 if fluxDf.empty else int(np.isfinite(fluxDf.flux_norm.to_numpy()).sum())
+                f'SELECT cobra_id, flux_ratio_norm FROM dot_roach_flux '
+                f'WHERE pfs_visit_id = {spsVisit}')
+            nFlux = 0 if fluxDf.empty else int(np.isfinite(fluxDf.flux_ratio_norm.to_numpy()).sum())
             cmd.inform(f'text="dotScan flat: spsVisit={spsVisit} nFlux={nFlux}"')
+            if not sweep:
+                stillLit = dotMove.litFromFlux(fluxDf, len(self.cc.allCobras))
+                cmd.inform(f'text="dotScan: {int(stillLit.sum())} cobras above '
+                           f'{dotMove.HIDDEN_FLUX} residual flux"')
         except Exception as e:
             cmd.warn(f'text="dotScan: flux read failed ({e}); continuing scan"')
 
-        # -- walk the hidden dot cobras one dFraction deeper (skip the final record-only call) --
-        if nRemaining > 0:
-            f = scan['fraction']
-            df = scan['dFraction']
-            dotGeometry.blindMoveHiddenCobras(self.cc, scan['dotGlobalIdx'], scan['commandedIdx'],
-                                              scan['moves'], scan['dotGeom'],
-                                              fromFraction=f, toFraction=f + df, cmd=cmd)
-            scan['fraction'] = f + df
+        # Where the cobras were for the flat just read, before anything moves them on.
+        if spsVisit is None:
+            cmd.warn('text="dotScan: no visit for this flat, so its depth is not '
+                     'recorded and it cannot be reduced"')
+        else:
+            dotMove.recordDepths(self.cc, self.dotTracker, self.dotCobras, spsVisit,
+                                 cmd=cmd)
+
+        # Without flux there is nothing to select on, so a hiding sequence has to stop
+        # rather than step blind on every cobra including the ones already in place.
+        if not sweep and stillLit is None:
+            cmd.warn('text="dotScan: no flux to select on; not stepping"')
+        elif nRemaining > 0:
+            dotMove.blindMoveToDots(self.cc, self.dotTracker, self.dotCobras, cmd=cmd,
+                                    deltaFraction=dotMove.SCAN_STEP_FRACTION,
+                                    stillLit=stillLit)
 
         if nRemaining == 0:
-            self.dotScan = None  # release for the next dotRoach sequence
+            # release for the next dotRoach sequence
+            self.dotTracker = self.dotCobras = None
 
         cmd.finish('text="moveToDotByFlux done"')
 
