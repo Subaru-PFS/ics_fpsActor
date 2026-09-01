@@ -1958,7 +1958,7 @@ class FpsCmd(object):
                 # Diagnostic exposure post-blind-move (the move itself is
                 # pfi-only / open-loop; this frame lets us inspect the
                 # post-push detection state).
-                self.cc.exposeAndExtractPositions()
+                # self.cc.exposeAndExtractPositions()
 
             # Saving moves array
             np.save(dataPath / 'moves', moves)
