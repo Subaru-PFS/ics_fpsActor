@@ -181,6 +181,8 @@ class FpsCmd(object):
                                         keys.Key("port", types.Int(), help="opdb port"),
                                         keys.Key("designName", types.String(), help="pfsDesign name"),
                                         keys.Key("dotTarget", types.String(), help="dotTarget"),
+                                        keys.Key("dotTargetOffset", types.Float(),
+                                                 help="shift applied to every dot target"),
                                         keys.Key("nRemaining", types.Int()),
                                         keys.Key("dotLanding", types.Float(),
                                                  help="dot fraction the ramp lands at"),
