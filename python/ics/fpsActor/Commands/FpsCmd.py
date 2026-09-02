@@ -100,7 +100,7 @@ class FpsCmd(object):
             ('makeMotorMap', '@(phi|theta) <stepsize> <repeat> [<totalsteps>] [@slowOnly] [@forceMove] [<visit>]',
              self.makeMotorMap),
             ('makeMotorMapGroups', '@(phi|theta) <stepsize> <repeat> [@(slowMap|fastMap)] [<cobraGroup>] [<visit>]',
-             self.makeMotorMapwithGroups),
+             self.makeMotorMapwithGroupsCmd),
             ('makeOntimeMap', '@(phi|theta) [<visit>]', self.makeOntimeMap),
             ('angleConverge', '@(phi|theta) <angleTargets> [<visit>]', self.angleConverge),
             ('targetConverge', '@(ontime|speed) <totalTargets> <maxsteps> [<visit>]', self.targetConverge),
@@ -783,6 +783,56 @@ class FpsCmd(object):
             t2 = time.time()
             self.logger.info(f'moveSteps {i+1}/{nreps}: {t2-t1:0.3f} {t2-t0:0.3f}')
 
+    def switchFMethod(self, cmd, method):
+        """Set the method the MCS identifies fibers by.
+
+        `target` matches each spot against the position it was commanded to, which is
+        what a convergence needs; `previous` matches against the last frame, which is
+        what a sequence moving cobras with no target in hand needs.  The setting lives in
+        the MCS actor and outlives the command that changed it, so a sequence that leaves
+        it on `previous` silently mis-identifies every spot of the next convergence.
+
+        Parameters
+        ----------
+        cmd : the command being served; failed on error before returning.
+        method : `str`
+            `target` or `previous`.
+
+        Returns
+        -------
+        `bool`
+            False once the command has been failed, so the caller can simply return.
+        """
+        cmdVar = self.actor.cmdr.call(actor='mcs', cmdStr=f'switchFMethod fMethod={method}',
+                                      forUserCmd=cmd, timeLim=60)
+        if cmdVar.didFail:
+            cmd.fail(f'text="setting MCS fMethod={method} failed: '
+                     f'{cmdUtils.interpretFailure(cmdVar)}"')
+
+        return not cmdVar.didFail
+
+    def makeMotorMapwithGroupsCmd(self, cmd):
+        """Run the grouped motor maps with the MCS left as the next command expects it.
+
+        The identification method has to be `previous` throughout -- a motor map moves
+        cobras with no commanded target to match a spot against -- and `target` again
+        afterwards.  The restore runs from a finally so that a sequence which raises, or
+        is interrupted, still hands the MCS back in the state a convergence assumes,
+        rather than leaving it for the next command to discover.
+        """
+        # Motor maps move cobras with no commanded target to match against.
+        if not self.switchFMethod(cmd, 'previous'):
+            return
+
+        try:
+            self.makeMotorMapwithGroups(cmd)
+        finally:
+            cmd = self.actor.bcast
+            # Leave it as a convergence expects to find it.
+            self.switchFMethod(cmd, 'target')
+            # reloading default xml file
+            self.loadModel(cmd, doFinish=False)
+
     def makeMotorMapwithGroups(self, cmd):
         """
             Making theta and phi motor map in three groups for avoiding dots.
@@ -792,14 +842,6 @@ class FpsCmd(object):
         repeat = cmd.cmd.keywords['repeat'].values[0]
         stepsize = cmd.cmd.keywords['stepsize'].values[0]
         visit = self.actor.visitor.setOrGetVisit(cmd)
-
-        # Setting MCS 'fMethod' to 'previous'
-        cmdString = 'switchFMethod fMethod=previous'
-        cmdVar = self.actor.cmdr.call(actor='mcs', cmdStr=cmdString,
-                                      forUserCmd=cmd, timeLim=60)
-        if cmdVar.didFail:
-            cmd.fail(f'text="Setting MCS fMethod failed: {cmdUtils.interpretFailure(cmdVar)}"')
-            return
 
         slowMap = 'slowMap' in cmdKeys
         fastMap = 'fastMap' in cmdKeys
@@ -825,7 +867,7 @@ class FpsCmd(object):
                 cmd.inform(f'text="Fast motor map is {newXml}"')
 
             eng.buildPhiMotorMaps(newXml, steps=stepsize, repeat=repeat, fast=fastMap,
-                                      tries=12, homed=False)
+                                  tries=12, homed=False)
 
         elif theta:
             group = cmd.cmd.keywords['cobraGroup'].values[0]
@@ -834,25 +876,14 @@ class FpsCmd(object):
             if slowMap:
                 newXml = f'{day}-theta-slow.xml'
                 cmd.inform(f'text="Slow motor map is {newXml}"')
-                
+
             elif fastMap:
                 newXml = f'{day}-theta-fast.xml'
                 cmd.inform(f'text="Fast motor map is {newXml}"')
 
             eng.buildThetaMotorMaps(newXml, steps=stepsize, group=group, repeat=repeat,
-                                        fast=fastMap, tries=12, homed=False)
+                                    fast=fastMap, tries=12, homed=False)
 
-
-        # Switching MCS 'fMethod' back to 'previous'
-        cmdString = 'switchFMethod fMethod=target'
-        cmdVar = self.actor.cmdr.call(actor='mcs', cmdStr=cmdString,
-                                      forUserCmd=cmd, timeLim=60)
-        if cmdVar.didFail:
-            cmd.fail(f'text="Setting MCS fMethod failed: {cmdUtils.interpretFailure(cmdVar)}"')
-            raise RuntimeError(f'FAILED to setting mcs FiberID mode!')
-
-        # reloading default xml file
-        self.loadModel(cmd, doFinish=False)
         cmd.finish(f'text="Motor map sequence finished"')
 
     def makeMotorMap(self, cmd):
@@ -1641,6 +1672,13 @@ class FpsCmd(object):
         self.cc.useScaling = False
         self.cc.maxSegments = 10
         self.cc.maxTotalSteps = 2000
+
+        # The MCS keeps whichever method it was last left on, so a preceding sequence --
+        # a motor map, an interrupted one -- can hand this convergence `previous`, under
+        # which every spot is matched against the last frame instead of the target it was
+        # sent to.  Claim it here rather than assume it.
+        if not self.switchFMethod(cmd, 'target'):
+            return
 
         start = time.time()
         convergenceFailed = False
