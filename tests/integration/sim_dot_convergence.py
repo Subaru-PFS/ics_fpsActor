@@ -101,12 +101,23 @@ class FakeCmd:
 
 class FakeCmdVar:
     didFail = False
+    replyList = []
+
+
+import os
+FAIL_CMDS = [c for c in os.environ.get('SIM_FAIL_CMDS', '').split(',') if c]
 
 
 class FakeCmdr:
+    def __init__(self):
+        self.sent = []
+
     def call(self, actor, cmdStr, forUserCmd=None, timeLim=60):
-        print(f'  [cmdr→{actor}] {cmdStr}')
-        return FakeCmdVar()
+        self.sent.append(cmdStr)
+        cmdVar = FakeCmdVar()
+        cmdVar.didFail = any(cmdStr.startswith(c) for c in FAIL_CMDS)
+        print(f'  [cmdr→{actor}] {cmdStr}{" -> FAILED (injected)" if cmdVar.didFail else ""}')
+        return cmdVar
 
 
 class FakeVisitor:
@@ -824,7 +835,9 @@ def test_makeMotorMapGroups(cc, physics, db):
             'stepsize': FakeKeyword(100),
             'repeat':   FakeKeyword(3),
         })
-        fps.makeMotorMapwithGroups(cmd)
+        # The dispatched entry point, not the inner function: the fiber-id method is
+        # switched by the wrapper, so calling past it tests a path the actor never takes.
+        fps.makeMotorMapwithGroupsCmd(cmd)
 
         assert len(buildCalled) == 1, f'buildPhiMotorMaps called {len(buildCalled)}x (expected 1)'
         assert buildCalled[0]['steps']  == 100,   f'wrong steps: {buildCalled[0]["steps"]}'
@@ -832,6 +845,32 @@ def test_makeMotorMapGroups(cc, physics, db):
         assert buildCalled[0]['fast']   == False, f'expected fast=False for slowMap'
         print(f'  buildPhiMotorMaps: steps={buildCalled[0]["steps"]} '
               f'repeat={buildCalled[0]["repeat"]} fast={buildCalled[0]["fast"]} ✓')
+
+        # previous for the maps, target restored afterwards; the second must arrive even
+        # when the sequence raises, which is the whole point of running it from a finally.
+        switches = [c for c in fps.actor.cmdr.sent if c.startswith('switchFMethod')]
+        assert switches == ['switchFMethod fMethod=previous',
+                            'switchFMethod fMethod=target'], f'fMethod calls were {switches}'
+        print(f'  fMethod: {" then ".join(s.split("=")[1] for s in switches)} ✓')
+
+        # A sequence that dies must still hand the MCS back: without the finally it stays
+        # on `previous` and the next convergence matches every spot against the wrong frame.
+        def _raising(*a, **kw):
+            raise RuntimeError('motor map exploded')
+
+        eng.buildPhiMotorMaps = _raising
+        fps.actor.cmdr.sent.clear()
+        try:
+            fps.makeMotorMapwithGroupsCmd(cmd)
+        except RuntimeError as e:
+            assert 'exploded' in str(e), f'the original exception was masked: {e}'
+        else:
+            raise AssertionError('the raising motor map did not propagate')
+
+        switches = [c for c in fps.actor.cmdr.sent if c.startswith('switchFMethod')]
+        assert switches[-1] == 'switchFMethod fMethod=target', \
+            f'MCS left on the wrong method after a failed sequence: {switches}'
+        print(f'  after a raising sequence: restored to target ✓ (original error propagated)')
     finally:
         eng.buildPhiMotorMaps = _real_buildPhi
         eng.setNormalMode()
