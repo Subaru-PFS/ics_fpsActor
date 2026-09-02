@@ -168,7 +168,25 @@ def test_tooFewPairsGivesNaN(model):
     assert np.isnan(dotState.gainFromMoves(row, model, 0))
 
 
-def test_unusableGainFallsBackToOne():
+@pytest.fixture
+def applyGain(monkeypatch):
+    """Re-enable the measured gain, so its arithmetic stays under test.
+
+    The correction is off by default because the convergence's on-time loop takes out
+    the same discrepancy; the code that applies it still has to be right for the day
+    that changes back.
+    """
+    monkeypatch.setattr(dotState, 'APPLY_MEASURED_GAIN', True)
+
+
+def test_measuredGainIsNotAppliedWhileTheOnTimeLoopOwnsIt(monkeypatch):
+    """Both corrections take out the same discrepancy, so only one may be applied."""
+    monkeypatch.setattr(dotState, 'APPLY_MEASURED_GAIN', False)
+    assert dotState.usableGain(1.078) == dotState.DEFAULT_GAIN
+
+
+def test_unusableGainFallsBackToOne(monkeypatch):
+    monkeypatch.setattr(dotState, 'APPLY_MEASURED_GAIN', True)
     for gain in (np.nan, 0.0, -1.2, 0.1, 5.0):
         assert dotState.usableGain(gain) == dotState.DEFAULT_GAIN
     assert dotState.usableGain(1.078) == pytest.approx(1.078)
@@ -227,14 +245,21 @@ def test_neverSeenGivesNaN(model):
 
 # ── stepsToTarget ────────────────────────────────────────────────────────────
 
-def test_dividesByTheGain(model):
+def test_gainIsIgnoredWhileTheOnTimeLoopOwnsIt(model):
+    """With APPLY_MEASURED_GAIN off, the map alone sizes the move."""
+    target = 0.60 + 500 * RAD_PER_STEP
+    for gain in (0.8, 1.0, 1.25):
+        assert dotState.stepsToTarget(model, 0, 0.60, target, gain) == 500
+
+
+def test_dividesByTheGain(model, applyGain):
     """A cobra that overshoots the map needs FEWER steps, not more."""
     target = 0.60 + 500 * RAD_PER_STEP
     assert dotState.stepsToTarget(model, 0, 0.60, target, 1.25) == 400
     assert dotState.stepsToTarget(model, 0, 0.60, target, 1.25) != 625
 
 
-def test_undershootingCobraNeedsMoreSteps(model):
+def test_undershootingCobraNeedsMoreSteps(model, applyGain):
     target = 0.60 + 500 * RAD_PER_STEP
     assert dotState.stepsToTarget(model, 0, 0.60, target, 0.8) == 625
 
@@ -245,7 +270,7 @@ def test_closingMoveIsNegative(model):
     assert dotState.stepsToTarget(model, 0, start, target, 1.0) == -500
 
 
-def test_roundTripAgainstTheProcessModel(model):
+def test_roundTripAgainstTheProcessModel(model, applyGain):
     """stepsToTarget and estimatePhi must agree about what the gain does."""
     start, target = 0.60, 0.60 + 500 * RAD_PER_STEP
     for gain in (0.6, 0.8, 1.0, 1.078, 1.25, 1.6):

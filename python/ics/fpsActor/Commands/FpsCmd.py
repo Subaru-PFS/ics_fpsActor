@@ -1678,7 +1678,14 @@ class FpsCmd(object):
         If the convergence sequence is not completed, the parameters may continue to increase.
         Therefore, it is necessary to reset the parameters.
         """
-        self.cc.useScaling = False
+        # Let the loop adapt the motor on-time to what each cobra actually does.  The
+        # step count comes from a motor map that cannot be re-measured every night, and
+        # a cobra whose response the map under-predicts by half overshoots every move;
+        # on-time is the only term that can absorb that.  Bounded by construction: the
+        # correction is damped by cc.thetaScaleFactor, clipped at pfi.maxThetaOntime,
+        # keyed per cobra, motor and direction, and reset to 1.0 below so a convergence
+        # cannot inherit what an earlier one fitted.
+        self.cc.useScaling = True
         self.cc.maxSegments = 10
         self.cc.maxTotalSteps = 2000
 

@@ -153,8 +153,20 @@ def gainFromMoves(rowMoves, calibModel, cobraId):
     return float(np.median(ratios))
 
 
+APPLY_MEASURED_GAIN = False
+"""Whether the blind move sizes its steps from the gain it measured.
+
+The convergence adapts the motor on-time until a cobra moves as the motor map predicts,
+so the measured gain should sit near 1 and applying it as well would take out the same
+discrepancy twice.  The measurement is still made -- it is what says whether the on-time
+loop is doing its job -- and remains recoverable from moves.npy either way.
+"""
+
+
 def usableGain(gain):
     """The gain if it is believable, else `DEFAULT_GAIN`."""
+    if not APPLY_MEASURED_GAIN:
+        return DEFAULT_GAIN
     if not np.isfinite(gain) or not (GAIN_BOUNDS[0] <= gain <= GAIN_BOUNDS[1]):
         return DEFAULT_GAIN
     return float(gain)
