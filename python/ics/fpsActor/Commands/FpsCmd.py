@@ -2034,7 +2034,7 @@ class FpsCmd(object):
                                             targetOffset=dotTargetOffset)
                     # The push is open loop; this frame is the only look at what it did,
                     # and a cobra that reappears is the strongest sign it overshot.
-                    self.cc.exposeAndExtractPositions()
+                    # self.cc.exposeAndExtractPositions()
 
         except Exception:
             convergenceFailed = True
