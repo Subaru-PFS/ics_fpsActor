@@ -106,6 +106,10 @@ class TestLitFromFlux:
                                   self.N)
         assert not lit.any()
 
-    def test_thresholdSitsOnTheMeasuredPlateau(self):
-        """Above the plateau the flag would fire on cobras that are already well hidden."""
-        assert 0.0 < dotMove.HIDDEN_FLUX <= 0.05
+    def test_thresholdIsWorthTheDepthItGivesUp(self):
+        """Replayed on the three scans, 0.01 stops ~3x short of a cobra's own floor.
+
+        Above ~0.02 that grows past ten times; below ~0.005 the cobras whose floor lies
+        above the level are stepped every remaining flat and end worse than they started.
+        """
+        assert 0.005 <= dotMove.HIDDEN_FLUX <= 0.02

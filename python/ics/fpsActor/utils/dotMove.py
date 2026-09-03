@@ -24,14 +24,24 @@ from ics.fpsActor.utils import dotTargets
 SCAN_STEP_FRACTION = 0.05
 """How much deeper each flat of the flux scan drives the fleet."""
 
-HIDDEN_FLUX = 0.05
+HIDDEN_FLUX = 0.01
 """Residual flux at or below which a cobra counts as hidden and is left alone.
 
-The obscuration optimum is a broad plateau, and interpolating the 2026-07-24 scan curves
-at a perfectly placed tip puts 96.8 to 98.4 per cent of cobras under this figure across
-fractions 0.35 to 0.50.  A cobra above it is short of its dot rather than past it: the
-approach is always from the entry side, so more depth is the only correction needed and
-the never-reverse rule holds.
+A cobra above it is short of its dot rather than past it: the approach is always from the
+entry side, so more depth is the only correction needed and the never-reverse rule holds.
+
+The level is a compromise the scans measure directly.  Replaying the three 13-point scans
+of 2026-07-24 and 2026-09-01 against this rule, a cobra stops about three times short of
+the depth it went on to reach in the same scan; at 0.05 it stopped ten to fifteen times
+short.  Going lower costs more than it buys: a cobra whose floor lies above the level
+never satisfies it, is stepped on every remaining flat and climbs the far side of its own
+curve, and at 0.005 that happens to some hundred cobras against forty here.
+
+What the level cannot do is beat its own units.  flux_ratio_norm divides by the parked
+monitor fibres, but their reading moved 0.858 to 0.972 between two scans on one night and
+jumped 15 per cent within a scan, so any absolute figure is applied to a scale that
+wanders.  Stopping instead when a flat fails to improve on the last reaches each cobra's
+own floor in all three scans and needs no level at all -- see the note on observe().
 """
 
 PLAUSIBLE_FRACTION = (-1.0, 2.0)
