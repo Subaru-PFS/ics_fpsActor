@@ -99,8 +99,8 @@ class FpsCmd(object):
             ('moveToSafePosition', '[<expTime>] [<visit>] [<tolerance>] [<phiAngle>] [<thetaAngle>] [@noHome]', self.moveToSafePosition),
             ('makeMotorMap', '@(phi|theta) <stepsize> <repeat> [<totalsteps>] [@slowOnly] [@forceMove] [<visit>]',
              self.makeMotorMap),
-            ('makeMotorMapGroups', '@(phi|theta) <stepsize> <repeat> [@(slowMap|fastMap)] [<cobraGroup>] [<visit>]',
-             self.makeMotorMapwithGroupsCmd),
+            ('makeMotorMapGroups', '@(phi|theta) <stepsize> <repeat> [@(slowMap|fastMap)] [<cobraGroup>] [<visit>] [<expTime>]',
+             self.makeMotorMapwithGroups),
             ('makeOntimeMap', '@(phi|theta) [<visit>]', self.makeOntimeMap),
             ('angleConverge', '@(phi|theta) <angleTargets> [<visit>]', self.angleConverge),
             ('targetConverge', '@(ontime|speed) <totalTargets> <maxsteps> [<visit>]', self.targetConverge),
@@ -841,6 +841,7 @@ class FpsCmd(object):
 
         repeat = cmd.cmd.keywords['repeat'].values[0]
         stepsize = cmd.cmd.keywords['stepsize'].values[0]
+        exptime = cmd.cmd.keywords['expTime'].values[0] if 'expTime' in cmdKeys else 0.8
         visit = self.actor.visitor.setOrGetVisit(cmd)
 
         slowMap = 'slowMap' in cmdKeys
