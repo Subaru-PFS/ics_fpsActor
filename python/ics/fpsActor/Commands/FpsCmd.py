@@ -877,7 +877,7 @@ class FpsCmd(object):
                 cmd.inform(f'text="Fast motor map is {newXml}"')
 
             eng.buildPhiMotorMaps(newXml, steps=stepsize, repeat=repeat, fast=fastMap,
-                                  tries=12, homed=False, exptime=exptime)
+                                 homed=False, exptime=exptime)
 
         elif theta:
             group = cmd.cmd.keywords['cobraGroup'].values[0]
@@ -892,7 +892,7 @@ class FpsCmd(object):
                 cmd.inform(f'text="Fast motor map is {newXml}"')
 
             eng.buildThetaMotorMaps(newXml, steps=stepsize, group=group, repeat=repeat,
-                                    fast=fastMap, tries=12, homed=False, exptime=exptime)
+                                    fast=fastMap, homed=False, exptime=exptime)
 
         cmd.finish(f'text="Motor map sequence finished"')
 
