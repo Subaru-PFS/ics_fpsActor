@@ -687,7 +687,7 @@ class FpsCmd(object):
             frameSeq = self.actor.visitor.frameSeq
             cmd.inform(f'text="taking frame {visit}.{frameSeq} ({i + 1}/{cnt}) and measuring centroids."')
             try:
-                pos = self.cc.exposeAndExtractPositions(exptime=expTime)
+                pos = self.cc.exposeAndExtractPositions()
             except RuntimeError:
                 if not cmd.isAlive(): # failure already reported in cobraCoach.
                     return
