@@ -87,12 +87,12 @@ class FpsCmd(object):
             ('movePhiForThetaOps', '<runDir>', self.movePhiForThetaOps),
             ('movePhiForDots', '<angle> <iteration> [<visit>]', self.movePhiForDots),
             ('movePhiToAngle', '<angle> <iteration> [<visit>]', self.movePhiToAngle),
-
             ('createHomeDesign', '[@(phi|theta|all)] [<maskFile>] [<designName>]', self.createHomeDesign),
             ('createBlackDotDesign', '[<maskFile>] [<designName>]', self.createBlackDotDesign),
             ('createDotConvergenceDesign', '[<maskFile>] [<designName>]', self.createDotConvergenceDesign),
             ('createThetaPhiScanDesign', '<thetaAngle> <phiAngle> [<designName>]', self.createThetaPhiScanDesign),
             ('genPfsConfigFromMcs', '<visit> <designId> [<expTime>]', self.genPfsConfigFromMcs),
+            ('setExpTimeFromCmd', '[<expTime>]', self.setExpTimeFromCmd),
             ('moveToHome', '@(phi|theta|all) [<expTime>] [@noMCSexposure] [<visit>] [<maskFile>] '
                            '[<designId>] [@thetaCCW]', self.moveToHome),
 
@@ -652,6 +652,36 @@ class FpsCmd(object):
             # self.cc.setThetaGeometryFromRun(runDir)
             # self.logger.info(f'Using THETA geometry from {runDir}')
         cmd.finish(f"text='Setting geometry is finished'")
+
+    def setExpTimeFromCmd(self, cmd):
+        """Set the MCS exposure time from the command's expTime keyword.
+
+        Parameters
+        ----------
+        cmd : `actorcore.Command`
+            Current command, whose expTime keyword is read.  Without that keyword the
+            exposure time is left unchanged.
+        """
+        cmdKeys = cmd.cmd.keywords
+        expTime = cmdKeys['expTime'].values[0] if 'expTime' in cmdKeys else None
+        self._setExpTime(cmd, expTime=expTime)
+
+    def _setExpTime(self, cmd, expTime):
+        """Set the MCS exposure time used for subsequent exposures.
+
+        Parameters
+        ----------
+        cmd : `actorcore.Command`
+            Current command, used for logging.
+        expTime : `float` or `None`
+            Seconds.  None leaves the exposure time unchanged.
+        """
+
+        if expTime is not None:
+            self.cc.expTime = expTime
+
+        cmd.inform(f'text="MCS expTime={self.cc.expTime}"')
+
 
     def testCamera(self, cmd):
         """Test camera and non-motion data: we do not provide target data or request match table """
