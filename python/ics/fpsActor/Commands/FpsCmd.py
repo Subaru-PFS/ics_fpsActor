@@ -653,7 +653,7 @@ class FpsCmd(object):
             # self.logger.info(f'Using THETA geometry from {runDir}')
         cmd.finish(f"text='Setting geometry is finished'")
 
-    def setExpTimeFromCmd(self, cmd):
+    def setExpTimeFromCmd(self, cmd, doFinish=True):
         """Set the MCS exposure time from the command's expTime keyword.
 
         Parameters
@@ -661,10 +661,16 @@ class FpsCmd(object):
         cmd : `actorcore.Command`
             Current command, whose expTime keyword is read.  Without that keyword the
             exposure time is left unchanged.
+        doFinish : `bool`
+            Whether to finish `cmd`.  False when another command calls this as a step of
+            its own.
         """
         cmdKeys = cmd.cmd.keywords
         expTime = cmdKeys['expTime'].values[0] if 'expTime' in cmdKeys else None
         self._setExpTime(cmd, expTime=expTime)
+
+        if doFinish:
+            cmd.finish()
 
     def _setExpTime(self, cmd, expTime):
         """Set the MCS exposure time used for subsequent exposures.
@@ -674,9 +680,9 @@ class FpsCmd(object):
         cmd : `actorcore.Command`
             Current command, used for logging.
         expTime : `float` or `None`
-            Seconds.  None leaves the exposure time unchanged.
+            Seconds.  None leaves the exposure time as it stands, so a command that does
+            not name one cannot silently drop the camera back to its default.
         """
-
         if expTime is not None:
             self.cc.expTime = expTime
 
@@ -706,12 +712,7 @@ class FpsCmd(object):
             if 'cnt' in cmdKeys \
             else 1
 
-        expTime = cmdKeys["expTime"].values[0] \
-            if "expTime" in cmdKeys \
-            else None
-
-        if expTime is not None:
-            self.cc.expTime = expTime
+        self.setExpTimeFromCmd(cmd, doFinish=False)
 
         for i in range(cnt):
             frameSeq = self.actor.visitor.frameSeq
@@ -1183,7 +1184,7 @@ class FpsCmd(object):
         expTime : `float`
             MCS exposure time in seconds.
         """
-        self.cc.expTime = expTime
+        self._setExpTime(cmd, expTime=expTime)
         positions = self.cc.exposeAndExtractPositions()
 
         thetas, phis, _ = self.cc.pfi.positionsToAngles(self.cc.allCobras, positions)
@@ -1236,7 +1237,6 @@ class FpsCmd(object):
         convergenceFailed = False
         pfsConfig = None
 
-        expTime = cmdKeys['expTime'].values[0] if 'expTime' in cmdKeys else None
         maskFile = cmdKeys['maskFile'].values[0] if 'maskFile' in cmdKeys else None
         phi = 'phi' in cmdKeys
         theta = 'theta' in cmdKeys
@@ -1245,8 +1245,8 @@ class FpsCmd(object):
         designId = cmdKeys['designId'].values[0] if 'designId' in cmdKeys else None
         thetaCCW = 'thetaCCW' in cmdKeys
 
-        self.cc.expTime = expTime
-        cmd.inform(f'text="Setting moveToHome expTime={expTime}, noMCSexposure={noMCSexposure}"')
+        self.setExpTimeFromCmd(cmd, doFinish=False)
+        cmd.inform(f'text="Setting moveToHome noMCSexposure={noMCSexposure}"')
 
         # create or load design.
         if designId:
@@ -1757,8 +1757,7 @@ class FpsCmd(object):
         # Proceed even when more science targets fail validation than the limit.
         allowMaskedCobras = 'allowMaskedCobras' in cmdKeys
 
-        self.cc.expTime = expTime
-        cmd.inform(f'text="Setting moveToPfsDesign expTime={expTime}"')
+        self._setExpTime(cmd, expTime=expTime)
         cmd.inform(f'text="Running moveToPfsDesign with tolerance={tolerance} iteration={iteration} "')
         cmd.inform(f'text="moveToPfsDesign with twoSteps={twoSteps} goHome={goHome}"')
 
@@ -1987,16 +1986,13 @@ class FpsCmd(object):
                             commandedThetasVia[c] = commandedThetaRange[c]
 
                 _useScaling, _maxSegments, _maxTotalSteps = self.cc.useScaling, self.cc.maxSegments, self.cc.maxTotalSteps
+                _expTime = self.cc.expTime
                 self.cc.useScaling, self.cc.maxSegments, self.cc.maxTotalSteps = False, _maxSegments * 2, _maxTotalSteps * 2
                 cmd.inform(
                     f'text="useScaling={self.cc.useScaling}, maxSegments={self.cc.maxSegments}, maxTotalSteps={self.cc.maxTotalSteps}"')
 
-                if shortExp is True:
-                    cmd.inform(f'text="Using 0.8 second exposure time for first three iteration."')
-                    self.cc.expTime = 0.8
-                else:
-                    cmd.inform(f'text="Using {expTime} second exposure time for first three iteration."')
-                    self.cc.expTime = expTime
+                if shortExp:
+                    self._setExpTime(cmd, expTime=0.8)
 
                 cmd.inform(f'text="Cobra goHome is set to be {goHome}"')
                 # INSTRM-2976: fast motor map disabled in the two-step convergence
@@ -2007,7 +2003,7 @@ class FpsCmd(object):
                                      threshold=fastThreshold, thetaMargin=np.deg2rad(thetaMarginDeg),
                                      phiRamp=commandedPhiRamp[:2], thetaRamp=commandedThetaRamp[:2])
 
-                self.cc.expTime = expTime
+                self._setExpTime(cmd, expTime=_expTime)
                 self.cc.useScaling, self.cc.maxSegments, self.cc.maxTotalSteps = _useScaling, _maxSegments, _maxTotalSteps
                 cmd.inform(
                     f'text="useScaling={self.cc.useScaling}, maxSegments={self.cc.maxSegments}, maxTotalSteps={self.cc.maxTotalSteps}"')
