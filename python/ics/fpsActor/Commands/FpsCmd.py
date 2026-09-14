@@ -2178,7 +2178,13 @@ class FpsCmd(object):
         try:
             self.moveToDotByFluxFake(cmd)
         finally:
-            self.switchFMethod(self.actor.bcast, 'target')
+            # On the command being served, not on bcast: a reply to bcast is never
+            # matched, so the restore blocks for its whole timeout and the scan spends a
+            # minute per step waiting for a command mcs has already run.
+            restored = self.switchFMethod(cmd, 'target')
+
+        if restored:
+            cmd.finish('text="moveToDotByFluxFake done"')
 
     def moveToDotByFluxFake(self, cmd):
         """Step the dot cobras across their dots, measuring rather than blocking light.
@@ -2198,9 +2204,8 @@ class FpsCmd(object):
         nRemaining = cmdKeys['nRemaining'].values[0] if 'nRemaining' in cmdKeys else 1
 
         if self.dotTracker is None:
-            cmd.fail('text="moveToDotByFluxFake: no dot-scan state - run moveToPfsDesign '
-                     'on a BLACKSPOT (dot) design first"')
-            return
+            raise RuntimeError('moveToDotByFluxFake: no dot-scan state - run '
+                               'moveToPfsDesign on a BLACKSPOT (dot) design first')
 
         # Where the cobras actually are, which is what this scan is for: the frame lands
         # in cobra_match, so nothing has to be written alongside it.
@@ -2214,8 +2219,6 @@ class FpsCmd(object):
                                     deltaFraction=dotMove.SCAN_STEP_FRACTION)
         else:
             self.dotTracker = self.dotCobras = None
-
-        cmd.finish('text="moveToDotByFluxFake done"')
 
     def loadDotScales(self, cmd):
         """Load step scaling just for the dot traversal loop. """
