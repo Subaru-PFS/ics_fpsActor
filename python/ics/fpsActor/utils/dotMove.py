@@ -24,6 +24,15 @@ from ics.fpsActor.utils import dotTargets
 SCAN_STEP_FRACTION = 0.05
 """How much deeper each flat of the flux scan drives the fleet."""
 
+REQUIRE_HIDDEN = True
+"""Whether only the dot cobras the camera has lost are pushed the rest of the way.
+
+A cobra still in view is normally one whose ramp fell short, and sizing a confident
+open-loop move from an estimate that has already proved wrong is worse than leaving it;
+`PLAUSIBLE_FRACTION` catches the rest.  A ramp run where nothing occludes the fibre never
+loses anybody, so the test that measures the push has to be let past this.
+"""
+
 BLIND_ITERATIONS = 0
 """How many final iterations the tracker treats as unseen, whatever the run recorded.
 
@@ -174,12 +183,14 @@ def blindMoveToDots(cc, tracker, dotGlobalIdx, cmd=None, targetFraction=None,
         Number of cobras commanded.
     """
     detected = cc.cobraInfo['detected']
-    hidden = dotGlobalIdx[~detected[dotGlobalIdx]]
+    hidden = dotGlobalIdx[~detected[dotGlobalIdx]] if REQUIRE_HIDDEN else dotGlobalIdx
     if stillLit is not None:
         hidden = hidden[stillLit[hidden]]
     if cmd is not None:
+        which = ('still lit' if stillLit is not None
+                 else 'hidden' if REQUIRE_HIDDEN else 'sent to a dot, seen or not')
         cmd.inform(f'text="blindMove: {len(hidden)}/{len(dotGlobalIdx)} dot cobras '
-                   f'{"still lit" if stillLit is not None else "hidden"}"')
+                   f'{which}"')
     if not len(hidden):
         return 0
 
