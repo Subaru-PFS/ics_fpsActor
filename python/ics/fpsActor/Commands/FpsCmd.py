@@ -881,7 +881,7 @@ class FpsCmd(object):
 
         repeat = cmd.cmd.keywords['repeat'].values[0]
         stepsize = cmd.cmd.keywords['stepsize'].values[0]
-        exptime = cmd.cmd.keywords['expTime'].values[0] if 'expTime' in cmdKeys else 0.8
+        self.setExpTimeFromCmd(cmd, doFinish=False)
         visit = self.actor.visitor.setOrGetVisit(cmd)
 
         slowMap = 'slowMap' in cmdKeys
@@ -908,7 +908,7 @@ class FpsCmd(object):
                 cmd.inform(f'text="Fast motor map is {newXml}"')
 
             eng.buildPhiMotorMaps(newXml, steps=stepsize, repeat=repeat, fast=fastMap,
-                                 homed=False, exptime=exptime)
+                                  homed=False)
 
         elif theta:
             group = cmd.cmd.keywords['cobraGroup'].values[0]
@@ -923,7 +923,7 @@ class FpsCmd(object):
                 cmd.inform(f'text="Fast motor map is {newXml}"')
 
             eng.buildThetaMotorMaps(newXml, steps=stepsize, group=group, repeat=repeat,
-                                    fast=fastMap, homed=False, exptime=exptime)
+                                    fast=fastMap, homed=False)
 
         cmd.finish(f'text="Motor map sequence finished"')
 
