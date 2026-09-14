@@ -125,7 +125,8 @@ class FpsCmd(object):
             ('testDotMove', '[<stepsPerMove>]', self.testDotMove),
             ('setDb', '[<host>] [<user>] [<port>] [<dbname>]', self.setDb),
             ('updateCobrasCenters', '[@brokenOnly]', self.updateCobrasCenters),
-            ('moveToDotByFlux', '[@sweep] [<nRemaining>]', self.moveToDotByFlux)
+            ('moveToDotByFlux', '[@sweep] [<nRemaining>]', self.moveToDotByFlux),
+            ('moveToDotByFluxFake', '[<nRemaining>]', self.moveToDotByFluxFakeCmd)
         ]
 
         # Define typed command arguments for the above commands.
@@ -2161,6 +2162,60 @@ class FpsCmd(object):
             self.dotTracker = self.dotCobras = None
 
         cmd.finish('text="moveToDotByFlux done"')
+
+    def moveToDotByFluxFakeCmd(self, cmd):
+        """Run a step of the fake dot scan with the MCS left as the next command expects it.
+
+        Identification has to be `previous` for the frame: the scan steps cobras nobody
+        commanded, so there is no cobra_target for mcs to match against and it would
+        invent one from the cobra centres -- which a cobra near full extension is no
+        closer to than to its neighbour's.  The restore runs from a finally so that a
+        scan which raises still hands the MCS back as a convergence assumes it.
+        """
+        if not self.switchFMethod(cmd, 'previous'):
+            return
+
+        try:
+            self.moveToDotByFluxFake(cmd)
+        finally:
+            self.switchFMethod(self.actor.bcast, 'target')
+
+    def moveToDotByFluxFake(self, cmd):
+        """Step the dot cobras across their dots, measuring rather than blocking light.
+
+        The twin of `moveToDotByFlux`, for dots declared where nothing occludes the
+        fibre: the flux that names the depth behind a real dot is replaced by the frame
+        that measures where the cobra actually is, which is the quantity a scan behind a
+        dot can only predict.
+
+        Command keyword
+        ---------------
+        nRemaining : int (default 1)
+            Remaining calls including this one.  Pass 0 for the final call: take the
+            frame, step nothing, release the state.
+        """
+        cmdKeys = cmd.cmd.keywords
+        nRemaining = cmdKeys['nRemaining'].values[0] if 'nRemaining' in cmdKeys else 1
+
+        if self.dotTracker is None:
+            cmd.fail('text="moveToDotByFluxFake: no dot-scan state - run moveToPfsDesign '
+                     'on a BLACKSPOT (dot) design first"')
+            return
+
+        # Where the cobras actually are, which is what this scan is for: the frame lands
+        # in cobra_match, so nothing has to be written alongside it.
+        self.cc.exposeAndExtractPositions()
+        nSeen = int(self.cc.cobraInfo['detected'].sum())
+        cmd.inform(f'text="fakeDotScan: measured {nSeen} cobras, '
+                   f'visit={self.actor.visitor.visit}, nRemaining={nRemaining}"')
+
+        if nRemaining > 0:
+            dotMove.blindMoveToDots(self.cc, self.dotTracker, self.dotCobras, cmd=cmd,
+                                    deltaFraction=dotMove.SCAN_STEP_FRACTION)
+        else:
+            self.dotTracker = self.dotCobras = None
+
+        cmd.finish('text="moveToDotByFluxFake done"')
 
     def loadDotScales(self, cmd):
         """Load step scaling just for the dot traversal loop. """
