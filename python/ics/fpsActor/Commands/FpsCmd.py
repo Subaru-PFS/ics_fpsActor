@@ -740,8 +740,9 @@ class FpsCmd(object):
         theta = 'theta' in cmdKeys
         maskFile = cmdKeys['maskFile'].values[0] if 'maskFile' in cmdKeys else None
         designId = cmdKeys['designId'].values[0] if 'designId' in cmdKeys else None
-        expTime = cmdKeys['expTime'].values[0] if 'expTime' in cmdKeys else None
         doGenPfsConfig = 'genPfsConfig' in cmdKeys
+
+        self.setExpTimeFromCmd(cmd, doFinish=False)
         # loading mask file and moving only cobra with bitMask==1
         goodIdx = self.loadGoodIdx(maskFile)
 
@@ -1590,11 +1591,12 @@ class FpsCmd(object):
         """
         cmdKeys = cmd.cmd.keywords
         visit = self.actor.visitor.setOrGetVisit(cmd)
-        expTime = cmdKeys['expTime'].values[0] if 'expTime' in cmdKeys else None
         tolerance = cmdKeys['tolerance'].values[0] if 'tolerance' in cmdKeys else 0.1
         phiAngle = cmdKeys['phiAngle'].values[0] if 'phiAngle' in cmdKeys else 80
         thetaAngle = cmdKeys['thetaAngle'].values[0] if 'thetaAngle' in cmdKeys else 60
         goHome = 'noHome' not in cmdKeys
+
+        self.setExpTimeFromCmd(cmd, doFinish=False)
 
         thetas = np.full(len(self.cc.goodIdx), np.deg2rad(thetaAngle))
         phis = np.full(len(self.cc.goodIdx), np.deg2rad(phiAngle))
