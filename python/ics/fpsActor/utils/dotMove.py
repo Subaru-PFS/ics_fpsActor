@@ -24,7 +24,7 @@ from ics.fpsActor.utils import dotTargets
 SCAN_STEP_FRACTION = 0.05
 """How much deeper each flat of the flux scan drives the fleet."""
 
-REQUIRE_HIDDEN = True
+REQUIRE_HIDDEN = False
 """Whether only the dot cobras the camera has lost are pushed the rest of the way.
 
 A cobra still in view is normally one whose ramp fell short, and sizing a confident
@@ -33,7 +33,7 @@ open-loop move from an estimate that has already proved wrong is worse than leav
 loses anybody, so the test that measures the push has to be let past this.
 """
 
-BLIND_ITERATIONS = 0
+BLIND_ITERATIONS = 1
 """How many final iterations the tracker treats as unseen, whatever the run recorded.
 
 Behind a dot the ramp's last steps are not measured, so the blind move departs from a
