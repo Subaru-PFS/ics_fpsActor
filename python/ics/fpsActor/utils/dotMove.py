@@ -24,6 +24,15 @@ from ics.fpsActor.utils import dotTargets
 SCAN_STEP_FRACTION = 0.05
 """How much deeper each flat of the flux scan drives the fleet."""
 
+BLIND_ITERATIONS = 0
+"""How many final iterations the tracker treats as unseen, whatever the run recorded.
+
+Behind a dot the ramp's last steps are not measured, so the blind move departs from a
+prediction; a cobra ramped where nothing occludes it is measured to the end and would set
+off from a far better position than the real one.  Discarding those measurements at the
+read reproduces the handicap without falsifying what the run wrote down.
+"""
+
 HIDDEN_FLUX = 0.01
 """Residual flux at or below which a cobra counts as hidden and is left alone.
 
@@ -106,6 +115,13 @@ def makeTracker(cc, cmd=None):
         if cmd is not None:
             cmd.warn(f'text="blindMove: cannot read the run directory ({e}); skipped"')
         return None, None
+
+    if BLIND_ITERATIONS:
+        rows = rows.copy()
+        rows['detected'][:, -BLIND_ITERATIONS:] = False
+        if cmd is not None:
+            cmd.inform(f'text="blindMove: the last {BLIND_ITERATIONS} iteration(s) read '
+                       f'as undetected, so the estimate is predicted rather than measured"')
 
     nCobras = len(cc.allCobras)
     armLength, _ = dotGeometry._sgfmArrays()
