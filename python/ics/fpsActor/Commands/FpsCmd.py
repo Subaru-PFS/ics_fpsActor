@@ -27,6 +27,7 @@ from ics.fpsActor import najaVenator
 from ics.fpsActor.utils import display as vis
 from ics.fpsActor.utils import dotGeometry
 from ics.fpsActor.utils import dotMove
+from ics.fpsActor.utils import dotState
 from ics.fpsActor.utils import motorScales
 from ics.cobraCharmer import targetValidation
 from ics.fpsActor.utils.cobraCenters import updateCobraCenters
@@ -1679,9 +1680,11 @@ class FpsCmd(object):
         If the convergence sequence is not completed, the parameters may continue to increase.
         Therefore, it is necessary to reset the parameters.
         """
-        self.cc.useScaling = False
+        self.cc.useScaling = True
         self.cc.maxSegments = 10
         self.cc.maxTotalSteps = 2000
+        cmd.inform(f'text="useScaling={self.cc.useScaling}, '
+                   f'applyMeasuredGain={dotState.APPLY_MEASURED_GAIN}"')
 
         # The MCS keeps whichever method it was last left on, so a preceding sequence --
         # a motor map, an interrupted one -- can hand this convergence `previous`, under
