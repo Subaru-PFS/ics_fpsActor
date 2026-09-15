@@ -33,6 +33,21 @@ value to the boundary would still assert a depth nobody observed.
 """
 
 
+def _instdataPath(filename):
+    """Path to a file in pfs_instdata's dot directory.
+
+    The butler is asked first, so a registered product keeps working; a pfs_utils that
+    predates the product falls back to the checked-out pfs_instdata.
+    """
+    try:
+        return Butler().getPath(PRODUCT) if filename is None else os.path.join(
+            os.path.dirname(Butler().getPath(PRODUCT)), filename)
+    except Exception:
+        root = os.environ['PFS_INSTDATA_DIR']
+        return os.path.join(root, 'data', 'pfi', 'dot',
+                            filename or 'cobra_dot_target.csv')
+
+
 def loadDotTargets(nCobras, path=None, cmd=None):
     """Fitted dot depth per cobra, in dot fraction.
 
@@ -55,8 +70,7 @@ def loadDotTargets(nCobras, path=None, cmd=None):
 
     try:
         if path is None:
-            # KeyError here means the pfs_utils in use predates the product.
-            path = Butler().getPath(PRODUCT)
+            path = _instdataPath(None)
         table = pd.read_csv(path, comment='#')
 
         cobraId = pd.to_numeric(table.cobraId, errors='coerce').to_numpy()
@@ -150,8 +164,7 @@ def loadResponse(nCobras, path=None, cmd=None):
 
     try:
         if path is None:
-            path = os.path.join(os.path.dirname(Butler().getPath(PRODUCT)),
-                                RESPONSE_FILENAME)
+            path = _instdataPath(RESPONSE_FILENAME)
         table = pd.read_csv(path, comment='#')
 
         cobraId = pd.to_numeric(table.cobraId, errors='coerce').to_numpy()
