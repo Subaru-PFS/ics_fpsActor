@@ -138,7 +138,48 @@ def makeTracker(cc, cmd=None):
                                      cmd=cmd)
     tracker = dotState.DotTracker.fromMoves(cc.calibModel, rows, rowCobraId, gains,
                                             armLength, nCobras)
+
+    # The angle of the last iteration the loop could still see, which is where the
+    # landing move set off from.  Sizing the move to the dot target from here rather
+    # than from the nominal landing depth is what the response calibration needs.
+    tracker.phiBeforeLanding = np.full(nCobras, np.nan)
+    if BLIND_ITERATIONS and rows['phiAngle'].shape[1] > BLIND_ITERATIONS:
+        tracker.phiBeforeLanding[rowCobraId] = rows['phiAngle'][:, -1 - BLIND_ITERATIONS]
+
     return tracker, dotGlobalIdx
+
+
+def _commandFor(wanted, tracker, phiCenter, direction, halfDot, cmd=None):
+    """Depth to command so a cobra arrives at the depth `wanted`.
+
+    Two open-loop moves separate the last measured angle from the dot target, and each
+    has its own gain.  The first carries the cobra from that angle towards the landing
+    depth; the second is commanded as a fraction of the chord from the landing depth the
+    tracker believes it reached.  Composing them gives the depth to ask for.
+
+    A cobra without a measured response, or without a last measured angle, keeps the
+    depth it was going to be sent to.
+    """
+    landingGain, targetGain = dotTargets.loadResponse(len(wanted), cmd=cmd)
+    phi7 = getattr(tracker, 'phiBeforeLanding', None)
+    if phi7 is None:
+        return wanted
+
+    chord = 2 * direction * halfDot
+    landingPhi = dotGeometry.computePhiAtFraction(phiCenter, halfDot, direction,
+                                                  dotGeometry.RAMP_LANDING_FRACTION)
+    wantedPhi = dotGeometry.computePhiAtFraction(phiCenter, halfDot, direction, wanted)
+
+    with np.errstate(invalid='ignore', divide='ignore'):
+        landed = phi7 + landingGain * (landingPhi - phi7)
+        command = (dotGeometry.RAMP_LANDING_FRACTION
+                   + (wantedPhi - landed) / (targetGain * chord))
+
+    usable = np.isfinite(command) & (command > 0.0) & (command < 1.5)
+    if cmd is not None:
+        cmd.inform(f'text="blindMove: {int(usable.sum())}/{len(wanted)} cobras aimed '
+                   f'through the response model"')
+    return np.where(usable, command, wanted)
 
 
 def blindMoveToDots(cc, tracker, dotGlobalIdx, cmd=None, targetFraction=None,
@@ -205,9 +246,13 @@ def blindMoveToDots(cc, tracker, dotGlobalIdx, cmd=None, targetFraction=None,
     elif targetFraction is None:
         fractions, measured = dotTargets.resolveTargets(
             nCobras, dotGeometry.BLIND_TARGET_FRACTION, cmd=cmd)
+        fractions = _commandFor(fractions, tracker, phiCenter, direction, halfDot,
+                                cmd=cmd)
     else:
         fractions = np.full(nCobras, float(targetFraction))
         measured = np.zeros(nCobras, dtype=bool)
+        fractions = _commandFor(fractions, tracker, phiCenter, direction, halfDot,
+                                cmd=cmd)
     fractions = fractions + targetOffset
     phiTarget = dotGeometry.computePhiAtFraction(phiCenter, halfDot, direction, fractions)
 
