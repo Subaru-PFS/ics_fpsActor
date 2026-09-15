@@ -153,7 +153,7 @@ def gainFromMoves(rowMoves, calibModel, cobraId):
     return float(np.median(ratios))
 
 
-APPLY_MEASURED_GAIN = True
+APPLY_MEASURED_GAIN = False
 """Whether the blind move sizes its steps from the gain measured for the cobra.
 
 The gain is the cobra's response against the motor map, measured from the convergence

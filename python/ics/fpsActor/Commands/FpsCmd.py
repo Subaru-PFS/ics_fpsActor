@@ -1711,7 +1711,7 @@ class FpsCmd(object):
         If the convergence sequence is not completed, the parameters may continue to increase.
         Therefore, it is necessary to reset the parameters.
         """
-        self.cc.useScaling = False
+        self.cc.useScaling = True
         self.cc.maxSegments = 10
         self.cc.maxTotalSteps = 2000
 
