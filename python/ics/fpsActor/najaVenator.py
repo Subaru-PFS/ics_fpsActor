@@ -251,6 +251,56 @@ class CobraTargetTable(object):
         self.dataTable = pd.DataFrame(targetTable)
         return self.dataTable
 
+    def makeTargetTableFromFinalTargetPositions(self, targetPositions, cobraCoach, goodIdx):
+        """Make a target table containing only the final commanded position.
+
+        Parameters
+        ----------
+        targetPositions : ndarray, shape (len(goodIdx), nIter), complex
+            Commanded focal-plane positions for moving cobras. Only the final
+            position for each cobra is included in the returned table.
+        cobraCoach : CobraCoach
+        goodIdx : ndarray
+            Global cobra indices of cobras that will move.
+        """
+        cc = cobraCoach
+
+        goodIdxSet = set(goodIdx)
+        goodIdxMap = {int(idx): i for i, idx in enumerate(goodIdx)}
+
+        targetTable = {'pfs_visit_id': [],
+                       'iteration': [],
+                       'cobra_id': [],
+                       'pfs_config_id': [],
+                       'pfi_nominal_x_mm': [],
+                       'pfi_nominal_y_mm': [],
+                       'pfi_target_x_mm': [],
+                       'pfi_target_y_mm': [],
+                       'flags': []
+                       }
+
+        for idx in range(cc.nCobras):
+            center = self.calibModel.centers[idx]
+            targetTable['pfs_visit_id'].append(self.visitid)
+            targetTable['iteration'].append(0)
+            targetTable['cobra_id'].append(idx + 1)
+            targetTable['pfs_config_id'].append(self.designID)
+            targetTable['pfi_nominal_x_mm'].append(center.real)
+            targetTable['pfi_nominal_y_mm'].append(center.imag)
+            targetTable['flags'].append(0)
+
+            if idx in cc.badIdx or idx not in goodIdxSet:
+                targetPosition = center
+            else:
+                localIdx = goodIdxMap[idx]
+                targetPosition = targetPositions[localIdx, -1]
+
+            targetTable['pfi_target_x_mm'].append(targetPosition.real)
+            targetTable['pfi_target_y_mm'].append(targetPosition.imag)
+
+        self.dataTable = pd.DataFrame(targetTable)
+        return self.dataTable
+
     def writeTargetTable(self):
         """Write self.dataTable to cobra_target table."""
 
