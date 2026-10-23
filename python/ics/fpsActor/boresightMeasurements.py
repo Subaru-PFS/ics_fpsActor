@@ -249,14 +249,14 @@ def loadTelescopeParametersFromDB(db, frameId):
     return zenithAngle, insRot
 
 def writeBoresightToDB(db, pfsVisitId, boresight):
-    """ write boresight to database with current timestamp """
+    """ write a measured boresight to mcs_boresight_meas with the current timestamp """
     
     dt = datetime.now(timezone.utc)
    
     df = pd.DataFrame({'pfs_visit_id': [pfsVisitId], 'mcs_boresight_x_pix': [boresight[0]], 'mcs_boresight_y_pix': [boresight[1]],
                        'calculated_at': [dt]})
 
-    db.insert('mcs_boresight', df)
+    db.insert('mcs_boresight_meas', df)
 
 def calcAffineTransform(pos1, pos2):
     """
