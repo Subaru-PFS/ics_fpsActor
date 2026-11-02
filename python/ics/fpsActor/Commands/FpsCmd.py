@@ -88,7 +88,8 @@ class FpsCmd(object):
             ('movePhiForDots', '<angle> <iteration> [<visit>]', self.movePhiForDots),
             ('movePhiToAngle', '<angle> <iteration> [<visit>]', self.movePhiToAngle),
             ('createHomeDesign', '[@(phi|theta|all)] [<maskFile>] [<designName>]', self.createHomeDesign),
-            ('createBlackDotDesign', '[<maskFile>] [<designName>]', self.createBlackDotDesign),
+            ('createBlackDotDesign', '[<maskFile>] [<designName>] [<dotThetaOffset>]',
+             self.createBlackDotDesign),
             ('createDotConvergenceDesign', '[<maskFile>] [<designName>]', self.createDotConvergenceDesign),
             ('createThetaPhiScanDesign', '<thetaAngle> <phiAngle> [<designName>]', self.createThetaPhiScanDesign),
             ('genPfsConfigFromMcs', '<visit> <designId> [<expTime>]', self.genPfsConfigFromMcs),
@@ -186,6 +187,9 @@ class FpsCmd(object):
                                         keys.Key("nRemaining", types.Int()),
                                         keys.Key("dotLanding", types.Float(),
                                                  help="dot fraction the ramp lands at"),
+                                        keys.Key("dotThetaOffset", types.Float(),
+                                                 help="degrees the black dots are turned about "
+                                                      "their cobra centres, to measure the blind move"),
                                         )
 
         self.logger = logging.getLogger('fps')
@@ -1107,10 +1111,17 @@ class FpsCmd(object):
         else:
             designName = self._makeDesignName('blackDots', maskFile)
 
+        # Turned dots put every fibre in view of MCS, so the blind move can be measured.
+        dotThetaOffset = cmdKeys['dotThetaOffset'].values[0] if 'dotThetaOffset' in cmdKeys else 0.0
+        if dotThetaOffset:
+            cmd.warn(f'text="black dots turned by {dotThetaOffset} deg about their cobra centres: '
+                     f'not the real dots"')
+
         versions = self._collectVersions()
         pfsDesign = pfsDesignUtils.createBlackDotDesign(self.cc.calibModel, movingIdx,
                                                         designName=designName,
-                                                        versions=versions)
+                                                        versions=versions,
+                                                        dotThetaOffset=dotThetaOffset)
         doWrite, fullPath = pfsDesignUtils.writeDesign(pfsDesign)
         if doWrite:
             cmd.inform(f'text="wrote {fullPath} to disk !"')
@@ -1787,6 +1798,15 @@ class FpsCmd(object):
         pfsConfig = self.getPfsConfig(cmd, visit=visit, pfsDesign=pfsDesign)
         cmd.inform(f'pfsConfig=0x{designId:016x},{visit},Preparing')
 
+        # A design built on turned dots (createBlackDotDesign dotThetaOffset=) is converged on
+        # the same turned dots, and its pfsConfig says so.
+        dotThetaOffset = dotGeometry.dotThetaOffsetOf(pfsDesign.header)
+        if dotThetaOffset:
+            pfsConfig.header[dotGeometry.DOT_THETA_OFFSET_CARD] = (dotThetaOffset,
+                                                                   dotGeometry.DOT_THETA_OFFSET_COMMENT)
+            cmd.warn(f'text="design dots turned by {dotThetaOffset} deg about their cobra centres: '
+                     f'not the real dots"')
+
         if doTweak:
             # Last minute tweaking for proper motion / parallax ..
             cmd.inform(f'text="Tweaking designed targets position..."')
@@ -1850,7 +1870,7 @@ class FpsCmd(object):
         # design position.  buildSafeRamp returns (nCobras,) and (nIter, nCobras).
         dotGlobalIdx = np.flatnonzero(toBlackDot)
         thetaDot, phiStart, phiRamp, thetaRamp, dotGeom = dotGeometry.buildSafeRamp(
-            self.cc, dotGlobalIdx, iteration, landingFraction=dotLanding)
+            self.cc, dotGlobalIdx, iteration, landingFraction=dotLanding, dotThetaOffset=dotThetaOffset)
         thetas[toBlackDot] = thetaDot[toBlackDot]
         phis[toBlackDot] = phiStart[toBlackDot]
 
@@ -2060,7 +2080,10 @@ class FpsCmd(object):
             # also makes this convergence simply the newest run when the gain is
             # measured, instead of a case of its own.
             if len(dotGlobalIdx):
-                self.dotTracker, self.dotCobras = dotMove.makeTracker(self.cc, cmd=cmd)
+                # On turned dots the fibre stays in view: read the last iteration as unseen, as
+                # behind a real dot, and push every dot cobra rather than only the lost ones.
+                self.dotTracker, self.dotCobras = dotMove.makeTracker(
+                    self.cc, cmd=cmd, blindIterations=1 if dotThetaOffset else 0)
 
                 if noBlindMove:
                     cmd.inform('text="blindMove: skipped; the fleet stays at the ramp '
@@ -2068,7 +2091,9 @@ class FpsCmd(object):
                 else:
                     dotMove.blindMoveToDots(self.cc, self.dotTracker, self.dotCobras,
                                             cmd=cmd, targetFraction=dotTarget,
-                                            targetOffset=dotTargetOffset)
+                                            targetOffset=dotTargetOffset,
+                                            requireHidden=not dotThetaOffset,
+                                            dotThetaOffset=dotThetaOffset)
                     # The push is open loop; this frame is the only look at what it did,
                     # and a cobra that reappears is the strongest sign it overshot.
                     # self.cc.exposeAndExtractPositions()
