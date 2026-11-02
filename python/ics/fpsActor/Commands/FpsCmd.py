@@ -198,8 +198,8 @@ class FpsCmd(object):
 
         self.xml = None
 
-        if self.cc is not None:
-            eng.setCobraCoach(self.cc)
+        if self.actor.cc is not None:
+            eng.setCobraCoach(self.actor.cc)
 
         self.atPhis = None
         self.atThetas = None
@@ -207,6 +207,24 @@ class FpsCmd(object):
     # .cc and .db live in the actor, so that we can reload safely.
     @property
     def cc(self):
+        """The CobraCoach, connected to the FPGA.
+
+        When fps has none, connecting is tried once more.
+
+        Raises
+        ------
+        RuntimeError
+            No FPGA connection could be made.
+        """
+        if self.actor.cc is None:
+            cmd = self.actor.bcast
+            cmd.warn('text="fps has no FPGA connection, reconnecting..."')
+            try:
+                self._connectCobraCoach(cmd)
+            except Exception as e:
+                raise RuntimeError(f'fps has no FPGA connection and reconnecting failed ({e}); '
+                                   'check the PFI is powered, then run "fps loadModel"') from e
+
         return self.actor.cc
 
     @cc.setter
@@ -316,28 +334,36 @@ class FpsCmd(object):
             # If no new XML is specified but a previously loaded XML exists, use the loaded one
             xml = str(self.xml)  # Convert to string for later use
             cmd.inform(f'text="Using previously loaded XML file: {xml}"')
-        else:
-            # If both are None, load default XML
-            butlerResource = butler.Butler()
-            xml = butlerResource.getPath("moduleXml", moduleName="ALL", version="")
-            self.xml = pathlib.Path(xml)
-            cmd.inform(f'text="Loading default XML file: {xml}"')
-
-        self.logger.info(f'Input XML file = {xml}')
-
-        cmd.inform(f"text='Connecting to %s FPGA, simDataPath=%s'" % ('real' if self.fpgaHost == 'fpga' else 'simulator',
-                                                                      self.simDataPath))
-        if self.simDataPath is None:
-            self.cc = cobraCoach.CobraCoach(self.fpgaHost, loadModel=False, actor=self.actor, cmd=cmd)
-        else:
-            self.cc = cobraCoach.CobraCoach(self.fpgaHost, loadModel=False, simDataPath=self.simDataPath,
-                                            actor=self.actor, cmd=cmd)
-
-        self.cc.loadModel(file=pathlib.Path(self.xml))
-        eng.setCobraCoach(self.cc)
+        self._connectCobraCoach(cmd)
 
         diag = cmd.finish if doFinish else cmd.inform
         diag(f"text='Loaded model = {self.xml}'")
+
+    def _connectCobraCoach(self, cmd):
+        """Build a CobraCoach on self.xml, connect it to the FPGA and make it fps's.
+
+        The CobraCoach is only handed over once connected: when connecting fails, fps keeps
+        the one it had, or none.
+
+        Parameters
+        ----------
+        cmd : `actorcore.Command`
+        """
+        if self.xml is None:
+            butlerResource = butler.Butler()
+            self.xml = pathlib.Path(butlerResource.getPath("moduleXml", moduleName="ALL", version=""))
+            cmd.inform(f'text="Loading default XML file: {self.xml}"')
+
+        self.logger.info(f'Input XML file = {self.xml}')
+        cmd.inform(f"text='Connecting to %s FPGA, simDataPath=%s'" % ('real' if self.fpgaHost == 'fpga' else 'simulator',
+                                                                      self.simDataPath))
+
+        cc = cobraCoach.CobraCoach(self.fpgaHost, loadModel=False, simDataPath=self.simDataPath,
+                                   actor=self.actor, cmd=cmd)
+        cc.loadModel(file=pathlib.Path(self.xml))
+
+        self.cc = cc
+        eng.setCobraCoach(cc)
 
     def writeModel(self, cmd):
         """Save current model to XML file"""
@@ -546,21 +572,10 @@ class FpsCmd(object):
         res = self.cc.pfi.diag()
         cmd.inform(f'text="diag = {res}"')
 
-        if self.xml is None:
-            butlerResource = butler.Butler()
-            xml = butlerResource.getPath("moduleXml", moduleName="ALL", version="")
-            self.logger.info(f'Input XML file = {xml}')
-            self.xml = pathlib.Path(xml)
-            self.logger.info(f'Loading default XML file: {self.xml}')
-            cmd.inform(f'text="Using default XML file: {self.xml}"')
-        else:
+        if self.xml is not None:
             cmd.inform(f'text="Using previously loaded XML file: {self.xml}"')
 
-        self.logger.info(f'Input XML file = {self.xml}')
-        cmd.inform(f"text='Connecting to %s FPGA'" % ('real' if self.fpgaHost == 'fpga' else 'simulator'))
-        self.cc = cobraCoach.CobraCoach(self.fpgaHost, loadModel=False, actor=self.actor, cmd=cmd)
-        self.cc.loadModel(file=self.xml)
-        eng.setCobraCoach(self.cc)
+        self._connectCobraCoach(cmd)
 
         cmd.finish(f"text='FPGA connected with model = {self.xml}'")
 
