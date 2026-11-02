@@ -17,6 +17,7 @@ import pathlib
 
 import numpy as np
 
+from ics.cobraCharmer import cobraState
 from ics.fpsActor.utils import dotGeometry
 from ics.fpsActor.utils import dotState
 from ics.fpsActor.utils import dotTargets
@@ -53,6 +54,49 @@ run of moves that the map cannot account for.  Acting on one of those commands a
 open-loop push in an unknown direction, which is how a cobra ends up out of its dot and
 fully lit for the rest of the sequence.
 """
+
+DOT_PHI_SCALING_MODES = ('resetBeforeBlind', 'holdThroughRamp')
+"""How the adaptive phi on-time scale is used on a dot cobra's convergence.
+
+The two blind moves, the ramp landing and the push, always run at scale 1.0: the scale
+in the direction they use is learned from small ramp steps and fits measurement noise,
+and on a move nobody measures it can only add error.  'resetBeforeBlind' keeps the
+learned scale on every closed-loop move before them; 'holdThroughRamp' runs every phi
+move of the dot cobra at 1.0.  Scales start each convergence at 1.0, so in effect
+'holdThroughRamp' keeps the dot cobra from learning one.
+"""
+
+DEFAULT_DOT_PHI_SCALING = 'resetBeforeBlind'
+
+
+def unscaledPhiRows(toDot, nIter, mode=DEFAULT_DOT_PHI_SCALING):
+    """Which phi moves of a convergence run at scale 1.0, per iteration and cobra.
+
+    Parameters
+    ----------
+    toDot : `numpy.ndarray` of `bool`
+        Per commanded cobra, True for a cobra sent to a black dot.
+    nIter : `int`
+        Iterations of the convergence; its last is the ramp landing.
+    mode : `str`
+        One of `DOT_PHI_SCALING_MODES`.
+
+    Returns
+    -------
+    `numpy.ndarray` of `bool`, (nIter, len(toDot))
+        The `unscaledPhi` argument of `engineer.moveThetaPhi`.  Rows of cobras not sent
+        to a dot are all False.
+    """
+    if mode not in DOT_PHI_SCALING_MODES:
+        raise ValueError(f'dotPhiScaling must be one of {DOT_PHI_SCALING_MODES}, not {mode!r}')
+
+    toDot = np.asarray(toDot, dtype=bool)
+    rows = np.zeros((nIter, len(toDot)), dtype=bool)
+    if mode == 'holdThroughRamp':
+        rows[:, toDot] = True
+    else:
+        rows[-1, toDot] = True
+    return rows
 
 
 def withoutInvalidTurnedDots(toBlackDot, isInvalid, dotThetaOffset):
@@ -258,9 +302,11 @@ def blindMoveToDots(cc, tracker, dotGlobalIdx, cmd=None, targetFraction=None,
         # cc.pfi.moveSteps is pure FPGA: a genuine open-loop move, and no per-call MCS
         # frame.  phiFast=False because the gain is measured against the slow map, which
         # every in-patrol move of the ramp ran on; sending slow-sized steps through the
-        # fast map overshoots badly.
-        cc.pfi.moveSteps(cobras, np.zeros(nCommanded, dtype=int),
-                         np.asarray(phiSteps, dtype=int), phiFast=False)
+        # fast map overshoots badly.  The push is blind, so it runs at phi scale 1.0
+        # (see DOT_PHI_SCALING_MODES).
+        with cobraState.unscaled(movable, motor='phi'):
+            cc.pfi.moveSteps(cobras, np.zeros(nCommanded, dtype=int),
+                             np.asarray(phiSteps, dtype=int), phiFast=False)
         # Only now is the cobra where the estimate should say it is.
         tracker.applied(movable, phiSteps)
 
