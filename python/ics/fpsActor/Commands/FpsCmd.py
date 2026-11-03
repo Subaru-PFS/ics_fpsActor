@@ -27,6 +27,7 @@ from ics.fpsActor import najaVenator
 from ics.fpsActor.utils import display as vis
 from ics.fpsActor.utils import dotGeometry
 from ics.fpsActor.utils import dotMove
+from ics.fpsActor.utils import dotState
 from ics.fpsActor.utils import motorScales
 from ics.cobraCharmer import targetValidation
 from ics.fpsActor.utils.cobraCenters import updateCobraCenters
@@ -99,7 +100,7 @@ class FpsCmd(object):
             ('setCobraMode', '@(phi|theta|normal)', self.setCobraMode),
             ('setGeometry', '@(phi|theta) <runDir>', self.setGeometry),
             ('moveToPfsDesign',
-             '<designId> [@twoStepsOff] [@shortExpOff] [@goHome] [@noTweak] [@skipFiducialInterferenceCheck] [@allowMaskedCobras] [@noBlindMove] [<visit>] [<expTime>] [<iteration>] [<tolerance>] [<maskFile>] [<dotTarget>] [<dotTargetOffset>] [<dotLanding>]',
+             '<designId> [@twoStepsOff] [@shortExpOff] [@goHome] [@noTweak] [@skipFiducialInterferenceCheck] [@allowMaskedCobras] [@noBlindMove] [<visit>] [<expTime>] [<iteration>] [<tolerance>] [<maskFile>] [<dotTarget>] [<dotTargetOffset>] [<dotLanding>] [<dotPhiScaling>]',
              self.moveToPfsDesign),
             ('moveToSafePosition', '[<expTime>] [<visit>] [<tolerance>] [<phiAngle>] [<thetaAngle>] [@noHome]', self.moveToSafePosition),
             ('makeMotorMap', '@(phi|theta) <stepsize> <repeat> [<totalsteps>] [@slowOnly] [@forceMove] [<visit>]',
@@ -186,6 +187,9 @@ class FpsCmd(object):
                                         keys.Key("nRemaining", types.Int()),
                                         keys.Key("dotLanding", types.Float(),
                                                  help="dot fraction the ramp lands at"),
+                                        keys.Key("dotPhiScaling", types.String(),
+                                                 help="phi on-time scaling of dot cobras: "
+                                                      "resetBeforeBlind or holdThroughRamp"),
                                         )
 
         self.logger = logging.getLogger('fps')
@@ -1765,6 +1769,15 @@ class FpsCmd(object):
         targetFallback = pfsConfigUtils.resolveTargetFallback(convergenceCfg)
         notConvergedDistanceThreshold = convergenceCfg.get('notConvergedDistanceThreshold', 0.05)
         notConvergedDistanceThreshold = max(notConvergedDistanceThreshold, 5 * tolerance)
+        # How dot cobras use the learned phi scale; their two blind moves run at 1.0 either way.
+        dotPhiScaling = (cmdKeys['dotPhiScaling'].values[0] if 'dotPhiScaling' in cmdKeys
+                         else convergenceCfg.get('dotPhiScaling', dotMove.DEFAULT_DOT_PHI_SCALING))
+        if dotPhiScaling not in dotMove.DOT_PHI_SCALING_MODES:
+            cmd.fail(f'text="dotPhiScaling must be one of {dotMove.DOT_PHI_SCALING_MODES}, '
+                     f'not {dotPhiScaling}"')
+            return
+        cmd.inform(f'text="useScaling={self.cc.useScaling}, '
+                   f'applyMeasuredGain={dotState.APPLY_MEASURED_GAIN}, dotPhiScaling={dotPhiScaling}"')
 
         shortExp = 'shortExpOff' not in cmdKeys
         twoSteps = 'twoStepsOff' not in cmdKeys
@@ -1866,6 +1879,7 @@ class FpsCmd(object):
         commandedToDot = toBlackDot[commanded]
         commandedPhiRamp = phiRamp[:, commanded]
         commandedThetaRamp = thetaRamp[:, commanded]
+        commandedUnscaledPhi = dotMove.unscaledPhiRows(commandedToDot, iteration, dotPhiScaling)
 
         # Drives FiberStatus in finalize(): a science fiber parked on a black dot is
         # commanded but not good, or the DRP extracts a deliberately dark fiber.
@@ -2018,7 +2032,8 @@ class FpsCmd(object):
                                      relative=False, local=True, tolerance=tolerance,
                                      tries=2, homed=goHome, newDir=False, thetaFast=False, phiFast=False,
                                      threshold=fastThreshold, thetaMargin=np.deg2rad(thetaMarginDeg),
-                                     phiRamp=commandedPhiRamp[:2], thetaRamp=commandedThetaRamp[:2])
+                                     phiRamp=commandedPhiRamp[:2], thetaRamp=commandedThetaRamp[:2],
+                                     unscaledPhi=commandedUnscaledPhi[:2])
 
                 self._setExpTime(cmd, expTime=_expTime)
                 self.cc.useScaling, self.cc.maxSegments, self.cc.maxTotalSteps = _useScaling, _maxSegments, _maxTotalSteps
@@ -2034,6 +2049,7 @@ class FpsCmd(object):
                                      newDir=False, thetaFast=False, phiFast=False, threshold=fastThreshold,
                                      thetaMargin=np.deg2rad(thetaMarginDeg),
                                      phiRamp=commandedPhiRamp[2:], thetaRamp=commandedThetaRamp[2:],
+                                     unscaledPhi=commandedUnscaledPhi[2:],
                                      )
 
             else:
@@ -2045,6 +2061,7 @@ class FpsCmd(object):
                                                                      thetaMargin=np.deg2rad(thetaMarginDeg),
                                                                      phiRamp=commandedPhiRamp,
                                                                      thetaRamp=commandedThetaRamp,
+                                                                     unscaledPhi=commandedUnscaledPhi,
                                                                      )
             self.atThetas = atThetas
             self.atPhis = atPhis
