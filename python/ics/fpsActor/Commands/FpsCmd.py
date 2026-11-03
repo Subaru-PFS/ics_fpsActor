@@ -102,6 +102,7 @@ class FpsCmd(object):
             ('moveToPfsDesign',
              '<designId> [@twoStepsOff] [@shortExpOff] [@goHome] [@noTweak] [@skipFiducialInterferenceCheck] [@allowMaskedCobras] [@noBlindMove] [<visit>] [<expTime>] [<iteration>] [<tolerance>] [<maskFile>] [<dotTarget>] [<dotTargetOffset>] [<dotLanding>]',
              self.moveToPfsDesign),
+            ('measureBlindMove', '', self.measureBlindMove),
             ('moveToSafePosition', '[<expTime>] [<visit>] [<tolerance>] [<phiAngle>] [<thetaAngle>] [@noHome]', self.moveToSafePosition),
             ('makeMotorMap', '@(phi|theta) <stepsize> <repeat> [<totalsteps>] [@slowOnly] [@forceMove] [<visit>]',
              self.makeMotorMap),
@@ -842,6 +843,37 @@ class FpsCmd(object):
             self.cc.pfi.moveSteps(cobras, thetaSteps, phiSteps, thetaFast=False, phiFast=False)
             t2 = time.time()
             self.logger.info(f'moveSteps {i+1}/{nreps}: {t2-t1:0.3f} {t2-t0:0.3f}')
+
+    def measureBlindMove(self, cmd):
+        """Take one MCS frame of the fleet where the last dot convergence left it.
+
+        On turned dots (createBlackDotDesign dotThetaOffset=) the push of moveToPfsDesign
+        ends in view of MCS, and this frame, the next of the same visit, is what measures
+        it.  Taken after moveToPfsDesign has written its pfsConfig, it is never the
+        iteration that pfsConfig is finalised from.
+
+        Identification is `previous`: this frame has no cobra_target, and against the cobra
+        centres mcs would match a cobra near full extension to its neighbour.  The restore
+        runs from a finally and replies on this command, so the MCS is left as the next
+        convergence expects it.
+        """
+        if self.dotTracker is None:
+            cmd.fail('text="measureBlindMove: no dot convergence to measure; '
+                     'run moveToPfsDesign on a black-dot design first"')
+            return
+
+        if not self.switchFMethod(cmd, 'previous'):
+            return
+        try:
+            self.cc.exposeAndExtractPositions()
+            nSeen = int(self.cc.cobraInfo['detected'].sum())
+            cmd.inform(f'text="measureBlindMove: {nSeen} cobras measured, '
+                       f'visit={self.actor.visitor.visit}"')
+        finally:
+            restored = self.switchFMethod(cmd, 'target')
+
+        if restored:
+            cmd.finish('text="measureBlindMove done"')
 
     def switchFMethod(self, cmd, method):
         """Set the method the MCS identifies fibers by.
