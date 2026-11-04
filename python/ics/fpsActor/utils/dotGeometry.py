@@ -90,6 +90,41 @@ def _sgfmArrays():
     return sgfm.L2.to_numpy(), sgfm.rDot.to_numpy()
 
 
+DOT_THETA_OFFSET_CARD = 'W_DOTROT'
+"""Header card of a design or pfsConfig whose black dots are turned, see `dotPositions`."""
+
+DOT_THETA_OFFSET_COMMENT = '[deg] dots turned about cobra: NOT real dots'
+
+
+def dotThetaOffsetOf(header):
+    """Degrees the black dots of a design or pfsConfig are turned; 0 for real dots."""
+    return float(header.get(DOT_THETA_OFFSET_CARD, 0.0))
+
+
+def dotPositions(centers, thetaOffset=0.0):
+    """Black dot centres, optionally turned about their own cobra centres.
+
+    A turned dot keeps its distance to the cobra centre, so the phi angle that reaches it
+    is unchanged and only theta differs: the fibre lands where MCS can see it.  That is
+    how a blind move is measured; such dots do not exist.
+
+    Parameters
+    ----------
+    centers : `numpy.ndarray` of `complex`, (nCobras,)
+        Cobra centres, mm.
+    thetaOffset : `float`
+        Turn in degrees.  0 returns the calibrated dots unchanged.
+
+    Returns
+    -------
+    `numpy.ndarray` of `complex`, (nCobras,)
+    """
+    dots = sgfm.xDot.to_numpy() + 1j * sgfm.yDot.to_numpy()
+    if not thetaOffset:
+        return dots
+    return centers + (dots - centers) * np.exp(1j * np.deg2rad(thetaOffset))
+
+
 def _applyThetaMargin(thetaTarget, thetaMargin=0.1):
     """Bump theta angles below margin up by 2π (avoid CW hard stop)."""
     t = thetaTarget.copy()
@@ -99,7 +134,7 @@ def _applyThetaMargin(thetaTarget, thetaMargin=0.1):
 
 # ── public API ────────────────────────────────────────────────────────────────
 
-def computeDotAngles(cc, phiFloor=np.radians(15.0), minRangeDeg=30.0):
+def computeDotAngles(cc, phiFloor=np.radians(15.0), minRangeDeg=30.0, dotThetaOffset=0.0):
     """Compute per-cobra dot geometry for the phi-crossing strategy.
 
     Parameters
@@ -111,6 +146,8 @@ def computeDotAngles(cc, phiFloor=np.radians(15.0), minRangeDeg=30.0):
         Minimum ramp travel required for CCW approach (degrees). Default 30°.
         CCW is chosen only when phiMin >= phiFloor + minRange, guaranteeing
         a full run-up.  Cobras below that threshold use CW.
+    dotThetaOffset : float
+        Degrees the dots are turned about their cobra centres, see `dotPositions`.
 
     Returns
     -------
@@ -132,7 +169,7 @@ def computeDotAngles(cc, phiFloor=np.radians(15.0), minRangeDeg=30.0):
     L2, rDot = _sgfmArrays()
     nCobras = len(cc.allCobras)
 
-    dotPos = sgfm.xDot.to_numpy() + 1j * sgfm.yDot.to_numpy()
+    dotPos = dotPositions(cc.calibModel.centers, dotThetaOffset)
 
     # IK: theta that places the elbow so phi sweeps through the dot center
     thetaSol, phiSol, _ = cc.pfi.positionsToAngles(cc.allCobras, dotPos)
@@ -183,7 +220,7 @@ def thetaOffsetForPhi(L1, L2, rDot, phi_rad, motorMarginMm=0.05):
 
 
 def buildDotRamp(cc, dotCobras, nIter, capIters=2, motorMarginMm=0.2,
-                 landingFraction=RAMP_LANDING_FRACTION):
+                 landingFraction=RAMP_LANDING_FRACTION, dotThetaOffset=0.0):
     """Build theta/phi starts and phi/theta ramp arrays for dot cobras.
 
     One-call wrapper used by moveToPfsDesign.  All heavy geometry stays here.
@@ -211,6 +248,8 @@ def buildDotRamp(cc, dotCobras, nIter, capIters=2, motorMarginMm=0.2,
     landingFraction : float
         Dot fraction the last ramp row lands at.  The run-up before it is unchanged,
         so only the length of the final jump across the edge varies.
+    dotThetaOffset : float
+        Degrees the dots are turned about their cobra centres, see `dotPositions`.
 
     Returns
     -------
@@ -246,7 +285,7 @@ def buildDotRamp(cc, dotCobras, nIter, capIters=2, motorMarginMm=0.2,
     thetaRamp = np.zeros((nIter, nCobras))
 
     thetaStartAll, phiCenter, phiMin, phiMax, phiEnter, direction, halfDot = \
-        computeDotAngles(cc)
+        computeDotAngles(cc, dotThetaOffset=dotThetaOffset)
 
     # The ramp starts a fixed run-up before the nominal landing, whatever depth the
     # last row is asked for.  Anchoring the start to RAMP_LANDING_FRACTION rather than
@@ -336,9 +375,9 @@ def capCommandedAngle(thetaStart, phiStart, phiRamp, thetaRamp, iterPhiCapsDeg=(
     return thetaStart, phiStart, phiRamp, thetaRamp
 
 
-def buildSafeRamp(cc, dotCobras, nIter, landingFraction=RAMP_LANDING_FRACTION):
+def buildSafeRamp(cc, dotCobras, nIter, landingFraction=RAMP_LANDING_FRACTION, dotThetaOffset=0.0):
     thetaStart, phiStart, phiRamp, thetaRamp, dotGeom = buildDotRamp(
-        cc, dotCobras, nIter, landingFraction=landingFraction)
+        cc, dotCobras, nIter, landingFraction=landingFraction, dotThetaOffset=dotThetaOffset)
     thetaStart, phiStart, phiRamp, thetaRamp = capCommandedAngle(thetaStart, phiStart, phiRamp, thetaRamp)
     return thetaStart, phiStart, phiRamp, thetaRamp, dotGeom
 

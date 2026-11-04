@@ -55,6 +55,28 @@ fully lit for the rest of the sequence.
 """
 
 
+def withoutInvalidTurnedDots(toBlackDot, isInvalid, dotThetaOffset):
+    """Drop the cobras whose target fails validation from the dots, when the dots are turned.
+
+    An invalid target is normally parked on its black dot, a vetted position.  A turned dot
+    (`dotGeometry.dotPositions`) is not vetted: it is the target itself, so parking there
+    is the move that failed validation.
+
+    Parameters
+    ----------
+    toBlackDot, isInvalid : `numpy.ndarray` of `bool`, (nCobras,)
+    dotThetaOffset : `float`
+        Degrees the dots are turned; 0 leaves `toBlackDot` unchanged.
+
+    Returns
+    -------
+    (`numpy.ndarray`, `numpy.ndarray`) of `bool`, (nCobras,)
+        The dot cobras kept, and the ones left out.
+    """
+    unsafe = toBlackDot & isInvalid if dotThetaOffset else np.zeros_like(toBlackDot)
+    return toBlackDot & ~unsafe, unsafe
+
+
 def loadRunInputs(cc):
     """Move history and cobra bookkeeping from the run directory just written.
 
@@ -87,13 +109,18 @@ def loadRunInputs(cc):
     return rows, rowCobraId, dotGlobalIdx
 
 
-def makeTracker(cc, cmd=None):
+def makeTracker(cc, cmd=None, blindIterations=0):
     """Seed a position estimate for every cobra from the convergence just run.
 
     Parameters
     ----------
     cc : `CobraCoach`
     cmd : optional
+    blindIterations : `int`
+        Final iterations read as undetected, whatever the run recorded.  Behind a real dot
+        the last ramp step is not measured, so the push departs from a prediction; on dots
+        turned into view (`dotGeometry.dotPositions`) it is measured, and discarding it
+        here gives the push the same starting point without altering the run directory.
 
     Returns
     -------
@@ -107,6 +134,13 @@ def makeTracker(cc, cmd=None):
             cmd.warn(f'text="blindMove: cannot read the run directory ({e}); skipped"')
         return None, None
 
+    if blindIterations:
+        rows = rows.copy()
+        rows['detected'][:, -blindIterations:] = False
+        if cmd is not None:
+            cmd.inform(f'text="blindMove: the last {blindIterations} iteration(s) read as '
+                       f'undetected, so the estimate is predicted rather than measured"')
+
     nCobras = len(cc.allCobras)
     armLength, _ = dotGeometry._sgfmArrays()
     gains = dotState.loadRecentGains(cc.runManager.rootDir, nCobras, cc.calibModel,
@@ -117,7 +151,8 @@ def makeTracker(cc, cmd=None):
 
 
 def blindMoveToDots(cc, tracker, dotGlobalIdx, cmd=None, targetFraction=None,
-                    targetOffset=0.0, deltaFraction=None, stillLit=None):
+                    targetOffset=0.0, deltaFraction=None, stillLit=None, requireHidden=True,
+                    dotThetaOffset=0.0):
     """Step every hidden dot cobra to its target depth, open loop.
 
     The tracker is advanced by whatever is commanded, so calling this repeatedly -- as
@@ -151,6 +186,13 @@ def blindMoveToDots(cc, tracker, dotGlobalIdx, cmd=None, targetFraction=None,
         job is to hide rather than to map the curve leaves a cobra alone once its flux
         says it is behind the dot, so the ones already there stop accumulating open-loop
         error while the rest catch up.
+    requireHidden : `bool`
+        Push only the dot cobras the camera has lost.  A cobra still in view is normally
+        one whose ramp fell short, and sizing an open-loop move from an estimate already
+        proved wrong is worse than leaving it.  On dots turned into view nobody is lost,
+        so the measurement of the push needs this off.
+    dotThetaOffset : `float`
+        Degrees the dots are turned about their cobra centres, see `dotGeometry.dotPositions`.
 
     Returns
     -------
@@ -158,17 +200,19 @@ def blindMoveToDots(cc, tracker, dotGlobalIdx, cmd=None, targetFraction=None,
         Number of cobras commanded.
     """
     detected = cc.cobraInfo['detected']
-    hidden = dotGlobalIdx[~detected[dotGlobalIdx]]
+    hidden = dotGlobalIdx[~detected[dotGlobalIdx]] if requireHidden else dotGlobalIdx
     if stillLit is not None:
         hidden = hidden[stillLit[hidden]]
     if cmd is not None:
-        cmd.inform(f'text="blindMove: {len(hidden)}/{len(dotGlobalIdx)} dot cobras '
-                   f'{"still lit" if stillLit is not None else "hidden"}"')
+        which = ('still lit' if stillLit is not None
+                 else 'hidden' if requireHidden else 'sent to a dot, seen or not')
+        cmd.inform(f'text="blindMove: {len(hidden)}/{len(dotGlobalIdx)} dot cobras {which}"')
     if not len(hidden):
         return 0
 
     nCobras = len(cc.allCobras)
-    _, phiCenter, _, _, _, direction, halfDot = dotGeometry.computeDotAngles(cc)
+    _, phiCenter, _, _, _, direction, halfDot = dotGeometry.computeDotAngles(
+        cc, dotThetaOffset=dotThetaOffset)
 
     if deltaFraction is not None:
         with np.errstate(invalid='ignore'):

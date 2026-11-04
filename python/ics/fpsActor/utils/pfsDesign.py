@@ -10,6 +10,7 @@ from pfs.utils.pfsDesignUtils import fakeRaDecFromPfiNominal
 
 pfsDesignDir = '/data/pfsDesign'
 from ics.fpsActor.utils.alfUtils import sgfm, dots
+from ics.fpsActor.utils import dotGeometry
 
 
 def readDesign(pfsDesignId):
@@ -78,15 +79,28 @@ def createHomeDesign(calibModel, positions, movingIdx, designName='', versions=N
                            versions=versions)
 
 
-def createBlackDotDesign(calibModel, movingIdx, designName='', versions=None):
-    """Create black dots design from current dots position, ra and dec are faked."""
-    xy = np.column_stack((dots.x.to_numpy(), dots.y.to_numpy()))
+def createBlackDotDesign(calibModel, movingIdx, designName='', versions=None, dotThetaOffset=0.0):
+    """Create black dots design from current dots position, ra and dec are faked.
+
+    With dotThetaOffset, the dots are turned that many degrees about their cobra centres
+    (`dotGeometry.dotPositions`) and the design says so in its header, which is what
+    moveToPfsDesign reads to converge on the same turned dots.
+    """
+    if dotThetaOffset:
+        positions = dotGeometry.dotPositions(calibModel.centers, dotThetaOffset)
+        xy = np.column_stack((positions.real, positions.imag))
+    else:
+        xy = np.column_stack((dots.x.to_numpy(), dots.y.to_numpy()))
     MOVE_MASK = np.isin(sgfm.cobraId.to_numpy() - 1, movingIdx)
 
-    return createPfsDesign(calibModel, xy, TargetType.BLACKSPOT,
-                           MOVE_MASK=MOVE_MASK,
-                           designName=designName,
-                           versions=versions)
+    pfsDesign = createPfsDesign(calibModel, xy, TargetType.BLACKSPOT,
+                                MOVE_MASK=MOVE_MASK,
+                                designName=designName,
+                                versions=versions)
+    if dotThetaOffset:
+        pfsDesign.header[dotGeometry.DOT_THETA_OFFSET_CARD] = (float(dotThetaOffset),
+                                                               dotGeometry.DOT_THETA_OFFSET_COMMENT)
+    return pfsDesign
 
 
 def createDotConvergenceDesign(calibModel, pfi, allCobras, thetaAngleStart, phiAngleStart,
