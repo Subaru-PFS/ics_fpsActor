@@ -24,6 +24,7 @@ from ics.cobraCharmer.cobraCoach import engineer as eng
 from ics.fpsActor import fpsFunction as fpstool
 from ics.fpsActor import fpsState
 from ics.fpsActor import najaVenator
+from ics.fpsActor.utils import blindMoveCalib
 from ics.fpsActor.utils import display as vis
 from ics.fpsActor.utils import dotGeometry
 from ics.fpsActor.utils import dotMove
@@ -106,6 +107,9 @@ class FpsCmd(object):
              '<designId> [@twoStepsOff] [@shortExpOff] [@goHome] [@noTweak] [@skipFiducialInterferenceCheck] [@allowMaskedCobras] [@noBlindMove] [<visit>] [<expTime>] [<iteration>] [<tolerance>] [<maskFile>] [<dotTarget>] [<dotTargetOffset>] [<dotLanding>] [<dotPhiScaling>]',
              self.moveToPfsDesign),
             ('measureBlindMove', '', self.measureBlindMove),
+            ('calibrateBlindMove', '<visits> [@dryRun]', self.calibrateBlindMove),
+            ('validateBlindMove', '<calibId> <visits> [@dryRun]', self.validateBlindMove),
+            ('rollbackBlindMove', '[<calibId>] [@dryRun]', self.rollbackBlindMove),
             ('moveToSafePosition', '[<expTime>] [<visit>] [<tolerance>] [<phiAngle>] [<thetaAngle>] [@noHome]', self.moveToSafePosition),
             ('makeMotorMap', '@(phi|theta) <stepsize> <repeat> [<totalsteps>] [@slowOnly] [@forceMove] [<visit>]',
              self.makeMotorMap),
@@ -197,6 +201,10 @@ class FpsCmd(object):
                                         keys.Key("dotThetaOffset", types.Float(),
                                                  help="degrees the black dots are turned about "
                                                       "their cobra centres, to measure the blind move"),
+                                        keys.Key("visits", types.Int() * (1,),
+                                                 help="visits of cobra_blind_move"),
+                                        keys.Key("calibId", types.Int(),
+                                                 help="blind-move calibration identifier"),
                                         )
 
         self.logger = logging.getLogger('fps')
@@ -849,6 +857,122 @@ class FpsCmd(object):
             self.cc.pfi.moveSteps(cobras, thetaSteps, phiSteps, thetaFast=False, phiFast=False)
             t2 = time.time()
             self.logger.info(f'moveSteps {i+1}/{nreps}: {t2-t1:0.3f} {t2-t0:0.3f}')
+
+    @staticmethod
+    def _depthText(stats):
+        """One line of `blindMoveCalib.depthStatistics`, for an inform."""
+        line = (f'n={stats["n"]} bias={stats["bias"]:+.3f} spread={stats["spread"]:.3f} '
+                f'within0.05={stats["within_05"]:.0%}')
+        if 'coverage' in stats:
+            line += f' within0.10={stats["within_10"]:.0%} coverage={stats["coverage"]:.0%}'
+        return line
+
+    def calibrateBlindMove(self, cmd):
+        """Fit a blind-move calibration from the cobra_blind_move rows of turned-dot visits.
+
+        Every visit given enters the fit; leaving each out in turn estimates its error.  The
+        calibration is inserted, not made the default: that is validateBlindMove's.
+        """
+        cmdKeys = cmd.cmd.keywords
+        visits = [int(v) for v in cmdKeys['visits'].values]
+        db = self.connectToDB(cmd)
+        try:
+            meas = blindMoveCalib.loadMeasurements(db, visits)
+        except ValueError as e:
+            cmd.fail(f'text="calibrateBlindMove: {e}"')
+            return
+
+        gains = blindMoveCalib.fitGains(meas)
+        calibrated = gains[gains.calibrated]
+        if not len(calibrated):
+            cmd.fail(f'text="calibrateBlindMove: no cobra calibrated over visits {visits}"')
+            return
+        loo = blindMoveCalib.depthStatistics(blindMoveCalib.leaveOneOut(meas))
+        cmd.inform(f'text="calibrateBlindMove: {len(calibrated)} of {len(gains)} cobras '
+                   f'calibrated over {len(visits)} visits, median gains '
+                   f'{calibrated.landing_gain.median():.3f} / {calibrated.target_gain.median():.3f}"')
+        if loo['n']:
+            cmd.inform(f'text="calibrateBlindMove: leave-one-out {self._depthText(loo)}"')
+        else:
+            cmd.warn(f'text="calibrateBlindMove: leave-one-out scored no cobra; it needs at least '
+                     f'{blindMoveCalib.MIN_RUNS + 1} visits"')
+
+        if 'dryRun' in cmdKeys:
+            cmd.finish('text="calibrateBlindMove: dry run, nothing inserted"')
+            return
+        calibId = blindMoveCalib.insertCalibration(db, visits, gains, loo)
+        cmd.finish(f'text="calibrateBlindMove: inserted calibration {calibId}, the default only '
+                   f'once validateBlindMove passes"')
+
+    def validateBlindMove(self, cmd):
+        """Make a blind-move calibration the default, if the visits aimed through it pass."""
+        cmdKeys = cmd.cmd.keywords
+        calibId = int(cmdKeys['calibId'].values[0])
+        visits = [int(v) for v in cmdKeys['visits'].values]
+        self._validateBlindMove(cmd, calibId, visits, reason='validation',
+                                dryRun='dryRun' in cmdKeys)
+
+    def rollbackBlindMove(self, cmd):
+        """Make an earlier blind-move calibration the default again, re-checked on the visits
+        of its last validation.
+
+        Without calibId, the newest validated calibration other than the current default,
+        so two rollbacks in a row return to where they started; calibId reaches further back.
+        """
+        cmdKeys = cmd.cmd.keywords
+        db = self.connectToDB(cmd)
+        current = blindMoveCalib.defaultCalibId(db)
+        if current is None:
+            cmd.fail('text="rollbackBlindMove: no default calibration to roll back from"')
+            return
+
+        if 'calibId' in cmdKeys:
+            calibId = int(cmdKeys['calibId'].values[0])
+            if calibId == current:
+                cmd.fail(f'text="rollbackBlindMove: calibration {calibId} is already the default"')
+                return
+            previous = blindMoveCalib.lastValidation(db, calibId=calibId)
+            if previous is None:
+                cmd.fail(f'text="rollbackBlindMove: calibration {calibId} was never validated"')
+                return
+        else:
+            previous = blindMoveCalib.lastValidation(db, notCalibId=current)
+            if previous is None:
+                cmd.fail('text="rollbackBlindMove: no earlier validated calibration; to stop '
+                         'aiming, turn convergence.dotCalibration off"')
+                return
+
+        self._validateBlindMove(cmd, previous['blind_move_calib_id'], previous['visits'],
+                                reason=f'rollback from {current}', dryRun='dryRun' in cmdKeys)
+
+    def _validateBlindMove(self, cmd, calibId, visits, reason, dryRun=False):
+        """Check calibration `calibId` on `visits` and, if it passes, make it the default."""
+        db = self.connectToDB(cmd)
+        try:
+            gains = blindMoveCalib.loadGains(db, calibId)
+            meas = blindMoveCalib.loadMeasurements(db, visits)
+        except ValueError as e:
+            cmd.fail(f'text="validateBlindMove: {e}"')
+            return
+
+        criteria = self.actor.actorConfig.get('blindMoveValidation', {})
+        try:
+            passed, stats, failures = blindMoveCalib.validate(meas, gains, criteria=criteria)
+        except KeyError as e:
+            cmd.fail(f'text="validateBlindMove: blindMoveValidation in fps.yaml: {e}"')
+            return
+        cmd.inform(f'text="validateBlindMove: calibration {calibId} on visits {visits}: '
+                   f'{self._depthText(stats)}"')
+        if not passed:
+            cmd.fail(f'text="validateBlindMove: calibration {calibId} not validated: '
+                     f'{"; ".join(failures)}"')
+            return
+        if dryRun:
+            cmd.finish(f'text="validateBlindMove: calibration {calibId} passes; dry run, the '
+                       f'default is unchanged"')
+            return
+        blindMoveCalib.insertValidation(db, calibId, visits, stats, reason)
+        cmd.finish(f'text="validateBlindMove: calibration {calibId} is the default ({reason})"')
 
     def measureBlindMove(self, cmd):
         """Take one MCS frame of the fleet where the last dot convergence left it.
