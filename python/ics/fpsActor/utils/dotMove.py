@@ -171,9 +171,58 @@ def makeTracker(cc, cmd=None, blindIterations=0):
     return tracker, dotGlobalIdx
 
 
+def phiBeforeLanding(cc):
+    """Measured phi, radians, at the start of the convergence's last move, per cobra.
+
+    The last move of a dot cobra is the ramp landing, so this is the angle it set off
+    from.  NaN for a cobra the run did not move or did not see at that frame.
+    """
+    rows, rowCobraId, _ = loadRunInputs(cc)
+    phi = np.full(len(cc.allCobras), np.nan)
+    if rows.shape[1] < 2:
+        return phi
+    seen = rows['detected'][:, -2]
+    phi[rowCobraId[seen]] = rows['phiAngle'][seen, -2]
+    return phi
+
+
+def aimThroughResponse(wanted, phiStart, landingFraction, phiCenter, direction, halfDot,
+                       landingGain, targetGain):
+    """Depth to command so a cobra arrives at the depth `wanted`.
+
+    Two open-loop moves separate the measured `phiStart` from the dot target, each with
+    its own gain.  The landing carries the cobra from `phiStart` towards
+    `landingFraction`; the push is commanded as a fraction of the chord from the landing
+    depth the tracker believes it reached:
+
+        landed  = phiStart + landingGain * (phiAt(landingFraction) - phiStart)
+        command = landingFraction + (phiAt(wanted) - landed) / (targetGain * chord)
+
+    All arguments but `landingFraction` are per cobra, (nCobras,); angles in radians,
+    depths in dot fraction.
+
+    Returns
+    -------
+    (`numpy.ndarray`, `numpy.ndarray`)
+        Depth to command, and the mask of cobras aimed.  A cobra without a gain or a
+        `phiStart` keeps `wanted`.
+    """
+    chord = 2 * direction * halfDot
+    landingPhi = dotGeometry.computePhiAtFraction(phiCenter, halfDot, direction,
+                                                  landingFraction)
+    wantedPhi = dotGeometry.computePhiAtFraction(phiCenter, halfDot, direction, wanted)
+
+    with np.errstate(invalid='ignore', divide='ignore'):
+        landed = phiStart + landingGain * (landingPhi - phiStart)
+        command = landingFraction + (wantedPhi - landed) / (targetGain * chord)
+        aimed = np.isfinite(command) & (command > 0.0) & (command < 1.5)
+    return np.where(aimed, command, wanted), aimed
+
+
 def blindMoveToDots(cc, tracker, dotGlobalIdx, cmd=None, targetFraction=None,
                     targetOffset=0.0, deltaFraction=None, stillLit=None, requireHidden=True,
-                    dotThetaOffset=0.0):
+                    dotThetaOffset=0.0, responsePath=None,
+                    landingFraction=dotGeometry.RAMP_LANDING_FRACTION):
     """Step every hidden dot cobra to its target depth, open loop.
 
     The tracker is advanced by whatever is commanded, so calling this repeatedly -- as
@@ -214,6 +263,12 @@ def blindMoveToDots(cc, tracker, dotGlobalIdx, cmd=None, targetFraction=None,
         so the measurement of the push needs this off.
     dotThetaOffset : `float`
         Degrees the dots are turned about their cobra centres, see `dotGeometry.dotPositions`.
+    responsePath : `str`, optional
+        Calibration file of the two blind-move gains, see `dotTargets.loadResponse`.
+        When given, the depth wanted is converted into the depth to command, see
+        `aimThroughResponse`.  Ignored with `deltaFraction`.
+    landingFraction : `float`
+        Depth the ramp landed the dot cobras at.
 
     Returns
     -------
@@ -247,6 +302,15 @@ def blindMoveToDots(cc, tracker, dotGlobalIdx, cmd=None, targetFraction=None,
         fractions = np.full(nCobras, float(targetFraction))
         measured = np.zeros(nCobras, dtype=bool)
     fractions = fractions + targetOffset
+    if responsePath is not None and deltaFraction is None:
+        landingGain, targetGain = dotTargets.loadResponse(nCobras, responsePath, cmd=cmd)
+        fractions, aimed = aimThroughResponse(fractions, phiBeforeLanding(cc),
+                                              landingFraction, phiCenter, direction, halfDot,
+                                              landingGain, targetGain)
+        if cmd is not None:
+            cmd.inform(f'text="blindMove: {int(aimed[hidden].sum())}/{len(hidden)} cobras '
+                       f'aimed through the response, median command '
+                       f'{np.nanmedian(fractions[hidden]):.3f}"')
     phiTarget = dotGeometry.computePhiAtFraction(phiCenter, halfDot, direction, fractions)
 
     movable, cobras, phiSteps = [], [], []

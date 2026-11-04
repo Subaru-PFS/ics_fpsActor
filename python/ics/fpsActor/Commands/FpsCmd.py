@@ -101,7 +101,7 @@ class FpsCmd(object):
             ('setCobraMode', '@(phi|theta|normal)', self.setCobraMode),
             ('setGeometry', '@(phi|theta) <runDir>', self.setGeometry),
             ('moveToPfsDesign',
-             '<designId> [@twoStepsOff] [@shortExpOff] [@goHome] [@noTweak] [@skipFiducialInterferenceCheck] [@allowMaskedCobras] [@noBlindMove] [<visit>] [<expTime>] [<iteration>] [<tolerance>] [<maskFile>] [<dotTarget>] [<dotTargetOffset>] [<dotLanding>] [<dotPhiScaling>]',
+             '<designId> [@twoStepsOff] [@shortExpOff] [@goHome] [@noTweak] [@skipFiducialInterferenceCheck] [@allowMaskedCobras] [@noBlindMove] [<visit>] [<expTime>] [<iteration>] [<tolerance>] [<maskFile>] [<dotTarget>] [<dotTargetOffset>] [<dotLanding>] [<dotPhiScaling>] [<dotResponse>]',
              self.moveToPfsDesign),
             ('measureBlindMove', '', self.measureBlindMove),
             ('moveToSafePosition', '[<expTime>] [<visit>] [<tolerance>] [<phiAngle>] [<thetaAngle>] [@noHome]', self.moveToSafePosition),
@@ -192,6 +192,8 @@ class FpsCmd(object):
                                         keys.Key("dotPhiScaling", types.String(),
                                                  help="phi on-time scaling of dot cobras: "
                                                       "resetBeforeBlind or holdThroughRamp"),
+                                        keys.Key("dotResponse", types.String(),
+                                                 help="blind-move gains file to aim through"),
                                         keys.Key("dotThetaOffset", types.Float(),
                                                  help="degrees the black dots are turned about "
                                                       "their cobra centres, to measure the blind move"),
@@ -1806,6 +1808,8 @@ class FpsCmd(object):
         # dotLanding moves only the last ramp row, not the run-up before it.
         dotLanding = (cmdKeys['dotLanding'].values[0] if 'dotLanding' in cmdKeys
                       else dotGeometry.RAMP_LANDING_FRACTION)
+        # dotResponse aims the push through the measured gains of the two blind moves.
+        dotResponse = cmdKeys['dotResponse'].values[0] if 'dotResponse' in cmdKeys else None
 
         convergenceCfg = self.actor.actorConfig.get('convergence', {})
         maxInvalidScienceTargets = convergenceCfg.get('maxInvalidScienceTargets', 25)
@@ -2142,7 +2146,9 @@ class FpsCmd(object):
                                             cmd=cmd, targetFraction=dotTarget,
                                             targetOffset=dotTargetOffset,
                                             requireHidden=not dotThetaOffset,
-                                            dotThetaOffset=dotThetaOffset)
+                                            dotThetaOffset=dotThetaOffset,
+                                            responsePath=dotResponse,
+                                            landingFraction=dotLanding)
                     # The push is open loop; this frame is the only look at what it did,
                     # and a cobra that reappears is the strongest sign it overshot.
                     # self.cc.exposeAndExtractPositions()

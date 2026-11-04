@@ -111,3 +111,61 @@ def resolveTargets(nCobras, default, path=None, cmd=None):
     targets = loadDotTargets(nCobras, path=path, cmd=cmd)
     measured = np.isfinite(targets)
     return np.where(measured, targets, default), measured
+
+
+GAIN_BOUNDS = (0.5, 2.0)
+"""Gains outside this are rejected: a blind move that missed by more than a factor of
+two measured something other than the motor."""
+
+
+def loadResponse(nCobras, path, cmd=None):
+    """Open-loop gain of each of the two blind moves, per cobra.
+
+    The ramp's landing move and the push to the dot target have their own gains: the
+    first is commanded from a measured angle, the second from the tracker's belief.
+
+    Parameters
+    ----------
+    nCobras : `int`
+    path : `str`
+        Calibration file, columns cobraId, landingGain, targetGain, calibrated.
+    cmd : optional
+
+    Returns
+    -------
+    (`numpy.ndarray`, `numpy.ndarray`)
+        landingGain and targetGain, each (nCobras,), NaN where there is no measurement.
+        Both all-NaN if the file is unreadable, which reproduces the uncalibrated blind
+        move.
+    """
+    landing = np.full(nCobras, np.nan)
+    target = np.full(nCobras, np.nan)
+
+    try:
+        table = pd.read_csv(path, comment='#')
+
+        cobraId = pd.to_numeric(table.cobraId, errors='coerce').to_numpy()
+        g1 = pd.to_numeric(table.landingGain, errors='coerce').to_numpy()
+        g2 = pd.to_numeric(table.targetGain, errors='coerce').to_numpy()
+        calibrated = table.calibrated.astype(str).str.strip().str.lower()
+        calibrated = calibrated.isin(('true', '1', 'yes')).to_numpy()
+
+        keep = (calibrated & np.isfinite(cobraId) & (cobraId >= 1) & (cobraId <= nCobras)
+                & np.isfinite(g1) & np.isfinite(g2)
+                & (g1 >= GAIN_BOUNDS[0]) & (g1 <= GAIN_BOUNDS[1])
+                & (g2 >= GAIN_BOUNDS[0]) & (g2 <= GAIN_BOUNDS[1]))
+
+        idx = cobraId[keep].astype(int) - 1
+        landing[idx] = g1[keep]
+        target[idx] = g2[keep]
+
+        if cmd is not None:
+            cmd.inform(f'text="dotResponse: {path}: {int(keep.sum())} of {nCobras} '
+                       f'calibrated, median gains {np.nanmedian(landing):.3f} / '
+                       f'{np.nanmedian(target):.3f}"')
+
+    except Exception as e:
+        if cmd is not None:
+            cmd.warn(f'text="dotResponse: read of {path} failed ({e}); blind move uncalibrated"')
+
+    return landing, target
