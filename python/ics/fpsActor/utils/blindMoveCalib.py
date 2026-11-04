@@ -187,16 +187,34 @@ def leaveOneOut(meas, cut=RAMP_RESIDUAL_CUT, minRuns=MIN_RUNS):
     return np.concatenate(errors) if errors else np.array([])
 
 
+def gainsFor(gains, cobraIds):
+    """Landing and push gain of each cobra, 1.0 where `gains` does not calibrate it.
+
+    Parameters
+    ----------
+    gains : `pandas.DataFrame`
+        `cobra_blind_move_gain` rows, indexed by cobra_id.
+    cobraIds : `numpy.ndarray` of `int`
+        One-based.
+
+    Returns
+    -------
+    (`numpy.ndarray`, `numpy.ndarray`, `numpy.ndarray`)
+        landingGain, targetGain, and the calibrated mask, one value per cobra id.
+    """
+    g = gains.reindex(np.asarray(cobraIds))
+    calibrated = g.calibrated.astype('boolean').fillna(False).to_numpy(dtype=bool)
+    return (np.where(calibrated, g.landing_gain.to_numpy(dtype=float), 1.0),
+            np.where(calibrated, g.target_gain.to_numpy(dtype=float), 1.0), calibrated)
+
+
 def checkAimedBy(meas, gains):
     """Rows whose recorded command is not the one `gains` gives, as a boolean mask.
 
     A cobra without calibrated gains is aimed with gain 1.0, so its command is its wanted
     depth.
     """
-    g = gains.reindex(meas.cobra_id)
-    calibrated = g.calibrated.astype('boolean').fillna(False).to_numpy(dtype=bool)
-    g1 = np.where(calibrated, g.landing_gain.to_numpy(dtype=float), 1.0)
-    g2 = np.where(calibrated, g.target_gain.to_numpy(dtype=float), 1.0)
+    g1, g2, _ = gainsFor(gains, meas.cobra_id.to_numpy())
     expected, _ = aimedCommand(meas.dot_target.to_numpy(), meas.dot_landing.to_numpy(),
                                meas.phi_start.to_numpy(), meas.phi_landing_target.to_numpy(),
                                chordOf(meas), g1, g2)
