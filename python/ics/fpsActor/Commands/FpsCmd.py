@@ -28,7 +28,6 @@ from ics.fpsActor.utils import blindMoveCalib
 from ics.fpsActor.utils import display as vis
 from ics.fpsActor.utils import dotGeometry
 from ics.fpsActor.utils import dotMove
-from ics.fpsActor.utils import dotState
 from ics.fpsActor.utils import motorScales
 from ics.cobraCharmer import targetValidation
 from ics.fpsActor.utils.cobraCenters import updateCobraCenters
@@ -104,7 +103,7 @@ class FpsCmd(object):
             ('setCobraMode', '@(phi|theta|normal)', self.setCobraMode),
             ('setGeometry', '@(phi|theta) <runDir>', self.setGeometry),
             ('moveToPfsDesign',
-             '<designId> [@twoStepsOff] [@shortExpOff] [@goHome] [@noTweak] [@skipFiducialInterferenceCheck] [@allowMaskedCobras] [@noBlindMove] [<visit>] [<expTime>] [<iteration>] [<tolerance>] [<maskFile>] [<dotTarget>] [<dotTargetOffset>] [<dotLanding>] [<dotPhiScaling>]',
+             '<designId> [@twoStepsOff] [@shortExpOff] [@goHome] [@noTweak] [@skipFiducialInterferenceCheck] [@allowMaskedCobras] [@noBlindMove] [<visit>] [<expTime>] [<iteration>] [<tolerance>] [<maskFile>] [<dotTarget>] [<dotTargetOffset>] [<dotLanding>] [<dotPhiScaling>] [<dotCalib>]',
              self.moveToPfsDesign),
             ('measureBlindMove', '', self.measureBlindMove),
             ('calibrateBlindMove', '<visits> [@dryRun]', self.calibrateBlindMove),
@@ -205,6 +204,9 @@ class FpsCmd(object):
                                                  help="visits of cobra_blind_move"),
                                         keys.Key("calibId", types.Int(),
                                                  help="blind-move calibration identifier"),
+                                        keys.Key("dotCalib", types.String(),
+                                                 help="blind-move calibration to aim through: "
+                                                      "an id, or none"),
                                         )
 
         self.logger = logging.getLogger('fps')
@@ -1008,6 +1010,61 @@ class FpsCmd(object):
 
         if restored:
             cmd.finish('text="measureBlindMove done"')
+
+    def _dotCalibration(self, cmd, requested, enabled):
+        """The blind-move calibration a convergence aims its dot cobras through.
+
+        Parameters
+        ----------
+        cmd : `Command`
+        requested : `str` or None
+            dotCalib keyword: a calibration id, or none.
+        enabled : `bool`
+            convergence.dotCalibration: whether to use the default calibration otherwise.
+
+        Returns
+        -------
+        (`int`, `pandas.DataFrame`) or (None, None)
+            The calibration id and its gains, None for no aiming.
+
+        Raises
+        ------
+        Exception
+            If a requested calibration cannot be loaded, an unknown id or no database
+            alike.  The default failing to load only warns, and the convergence goes
+            unaimed.
+        """
+        if requested is not None and requested.strip().lower() == 'none':
+            cmd.inform('text="dotCalib: none requested, the push is not aimed"')
+            return None, None
+
+        if requested is not None:
+            try:
+                calibId = int(requested)
+            except ValueError:
+                raise ValueError(f'{requested!r} is neither a calibration id nor none')
+            gains = blindMoveCalib.loadGains(self.connectToDB(cmd), calibId)
+            cmd.inform(f'text="dotCalib: aiming through calibration {calibId}, as requested"')
+            return calibId, gains
+
+        if not enabled:
+            cmd.inform('text="dotCalib: convergence.dotCalibration is off, the push is not aimed"')
+            return None, None
+
+        try:
+            db = self.connectToDB(cmd)
+            calibId = blindMoveCalib.defaultCalibId(db)
+            if calibId is None:
+                cmd.warn('text="dotCalib: no validated calibration, the push is not aimed"')
+                return None, None
+            gains = blindMoveCalib.loadGains(db, calibId)
+        except Exception as e:
+            reason = str(e).replace('"', "'")
+            cmd.warn(f'text="dotCalib: default calibration not loaded ({reason}), the push is '
+                     f'not aimed"')
+            return None, None
+        cmd.inform(f'text="dotCalib: aiming through calibration {calibId}, the default"')
+        return calibId, gains
 
     def _recordBlindMoves(self, cmd, positions):
         """Insert the measured landing and push of every dot cobra into opdb, once.
@@ -1983,7 +2040,15 @@ class FpsCmd(object):
                      f'not {dotPhiScaling}"')
             return
         cmd.inform(f'text="useScaling={self.cc.useScaling}, '
-                   f'applyMeasuredGain={dotState.APPLY_MEASURED_GAIN}, dotPhiScaling={dotPhiScaling}"')
+                   f'dotPhiScaling={dotPhiScaling}"')
+        dotCalib = cmdKeys['dotCalib'].values[0] if 'dotCalib' in cmdKeys else None
+        try:
+            dotCalibId, dotGains = self._dotCalibration(cmd, dotCalib,
+                                                        convergenceCfg.get('dotCalibration', False))
+        except Exception as e:
+            reason = str(e).replace('"', "'")
+            cmd.fail(f'text="dotCalib: {reason}"')
+            return
 
         shortExp = 'shortExpOff' not in cmdKeys
         twoSteps = 'twoStepsOff' not in cmdKeys
@@ -2291,9 +2356,7 @@ class FpsCmd(object):
             # next convergence resets it to 1.0 and the correction is lost.
             motorScales.saveMotorScales(self.cc, dataPath, cmd=cmd)
 
-            # The blind move reads the run directory, so it comes after that write.  It
-            # also makes this convergence simply the newest run when the gain is
-            # measured, instead of a case of its own.
+            # The blind move reads the run directory, so it comes after that write.
             if len(dotGlobalIdx):
                 # On turned dots the fibre stays in view: read the last iteration as unseen, as
                 # behind a real dot, and push every dot cobra rather than only the lost ones.
@@ -2311,7 +2374,13 @@ class FpsCmd(object):
                                             cmd=cmd, targetFraction=dotTarget,
                                             targetOffset=dotTargetOffset,
                                             requireHidden=not dotThetaOffset,
-                                            dotThetaOffset=dotThetaOffset)
+                                            dotThetaOffset=dotThetaOffset,
+                                            gains=dotGains, landingFraction=dotLanding)
+                    # Recorded only if it changed what was commanded to at least one cobra.
+                    push = self.dotTracker.lastPush
+                    if (dotCalibId is not None and push is not None
+                            and (push.dotCommand != push.dotTarget).any()):
+                        pfsConfig.convergenceParams['blindMoveCalibId'] = dotCalibId
                     # The push is open loop; this frame is the only look at what it did,
                     # and a cobra that reappears is the strongest sign it overshot.
                     # self.cc.exposeAndExtractPositions()

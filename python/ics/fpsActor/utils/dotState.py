@@ -7,7 +7,7 @@ position is estimated instead, from the moves the cobra was actually given.
 
 Three quantities, at three timescales:
 
-    gain g   how far the cobra moves per map-predicted radian     (this visit, or recent)
+    gain g   how far the cobra moves per map-predicted radian     (given; 1.0 by default)
     phiNow   where it is now, given the moves since the last look (this iteration)
     steps    what to send to reach a target angle                 (terminal, open loop)
 
@@ -21,37 +21,13 @@ hidden cobra still has a `phiAngle`: cobra_match falls back to the dot centre an
 positionsToAngles returns phiCenter, so the array carries a plausible angle whether or
 not anything was seen.  `detected` is the only gate.
 """
-import glob
-import os
-import time
-
 import numpy as np
-
-RECENT_RUNS = 3
-"""How many previous convergences to average a gain over."""
-
-MAX_RUN_AGE_S = 24 * 3600
-"""Older runs are ignored.
-
-A run from a previous night was taken against a different calibModel, different on-time
-scaling and possibly different motor maps, so its gain describes a machine that no longer
-exists -- and blending it in would say nothing about having done so.
-"""
 
 PROCESS_NOISE_UM = 18.0
 """Positioning scatter of one move, micrometres of tip travel."""
 
 MEASURE_NOISE_UM = 3.7
 """MCS centroid scatter, micrometres, measured per cobra about its own median."""
-
-MIN_PAIRS = 3
-"""Consecutive measured moves below which a gain is not worth fitting."""
-
-MIN_STEPS_FOR_GAIN = 10
-"""Moves smaller than this are dominated by quantisation and backlash.
-
-cobraCoach declines to scale on-time below the same figure.
-"""
 
 GAIN_BOUNDS = (0.5, 2.0)
 """Gains outside this are not believed: dividing by one would size an unbounded move."""
@@ -104,69 +80,8 @@ def mapSpan(calibModel, cobraId, deltaSteps, fromAngle):
     return float(np.interp(cumulative + deltaSteps, steps, angles))
 
 
-def gainFromMoves(rowMoves, calibModel, cobraId):
-    """Achieved motion over map-predicted motion, from the measured iterations.
-
-    Signed rather than absolute: the step count carries the direction and the map is
-    monotonic, so a cobra moving as commanded gives a positive ratio whichever way it
-    turns.  Taking the magnitude would hide a cobra travelling backwards, which is the
-    one failure this number exists to expose.
-
-    The last measured move before the cobra vanishes is dropped.  Surviving that move is
-    anti-correlated with gain -- the cobras still visible are the ones that moved least --
-    so including it biases the estimate low on exactly the cobras that then need it most.
-
-    Parameters
-    ----------
-    rowMoves : structured `numpy.ndarray`
-        One cobra's row of the moves array; needs phiAngle, phiSteps, detected.
-    calibModel : `ics.cobraCharmer.pfiDesign.PFIDesign`
-    cobraId : `int`
-        Zero-based, global.
-
-    Returns
-    -------
-    `float`
-        NaN when fewer than `MIN_PAIRS` usable moves remain.
-    """
-    phi = np.asarray(rowMoves['phiAngle'], dtype=float)
-    steps = np.asarray(rowMoves['phiSteps'], dtype=float)
-    detected = np.asarray(rowMoves['detected'], dtype=bool)
-
-    usable = (detected[:-1] & detected[1:]
-              & (np.abs(steps[1:]) >= MIN_STEPS_FOR_GAIN))
-
-    # Drop the move into darkness, but only when the cobra actually went dark: if it was
-    # seen to the end there is no survival selection and nothing to correct for.
-    visible = np.flatnonzero(detected)
-    if len(visible) and visible[-1] < len(detected) - 1 and usable.any():
-        usable[np.flatnonzero(usable)[-1]] = False
-
-    ratios = []
-    for i in np.flatnonzero(usable):
-        predicted = mapSpan(calibModel, cobraId, steps[i + 1], phi[i]) - phi[i]
-        if np.isfinite(predicted) and predicted != 0:
-            ratios.append((phi[i + 1] - phi[i]) / predicted)
-
-    if len(ratios) < MIN_PAIRS:
-        return np.nan
-    return float(np.median(ratios))
-
-
-APPLY_MEASURED_GAIN = False
-"""Whether the blind move sizes its steps from the gain measured for the cobra.
-
-The gain is the cobra's response against the motor map, measured from the convergence
-just run; with it applied, a cobra the map mispredicts by a fifth is still pushed the
-distance intended.  `usableGain` falls back to `DEFAULT_GAIN` where the measurement is
-missing or outside `GAIN_BOUNDS`.
-"""
-
-
 def usableGain(gain):
     """The gain if it is believable, else `DEFAULT_GAIN`."""
-    if not APPLY_MEASURED_GAIN:
-        return DEFAULT_GAIN
     if not np.isfinite(gain) or not (GAIN_BOUNDS[0] <= gain <= GAIN_BOUNDS[1]):
         return DEFAULT_GAIN
     return float(gain)
@@ -274,95 +189,6 @@ def stepsToTarget(calibModel, cobraId, phiNow, phiTarget, gain, maxSteps=None):
     if maxSteps is not None:
         ceiling = min(ceiling, abs(maxSteps))
     return int(round(np.clip(commanded, -ceiling, ceiling)))
-
-
-def loadRecentGains(dataRoot, nCobras, calibModel, nRuns=RECENT_RUNS,
-                    maxAge=MAX_RUN_AGE_S, cmd=None):
-    """Per-cobra gain from the most recent convergences on disk.
-
-    A gain measured over several runs is steadier than one measured over the handful of
-    iterations of a single visit, but only while the machine has not changed underneath
-    it, hence `maxAge`.
-
-    A run is used only if it carries both the move history and the cobra ids that go with
-    it: `moves.npy` records rows in commanded order and nothing else, so without
-    `cobra_filtering.npz` the rows cannot be attributed and the file is skipped rather
-    than guessed at.  That also excludes motor-map and convergence-test runs, whose
-    `moves.npy` has a different shape entirely.
-
-    Parameters
-    ----------
-    dataRoot : `str`
-        Directory holding the dated run directories.
-    nCobras : `int`
-    calibModel : `ics.cobraCharmer.pfiDesign.PFIDesign`
-    nRuns : `int`
-    maxAge : `float`
-        Seconds.
-    cmd : optional
-        Command handle for inform/warn messages.
-
-    Returns
-    -------
-    `numpy.ndarray` of `float`, (nCobras,)
-        Median gain per cobra, NaN where no recent run measured it.  The convergence
-        that is about to move is itself one of these runs: its moves are on disk by the
-        time the blind move runs, so it needs no separate treatment.
-    """
-    gains = np.full(nCobras, np.nan)
-    collected = [[] for _ in range(nCobras)]
-    used = []
-
-    try:
-        candidates = sorted(glob.glob(os.path.join(dataRoot, '*', 'data', 'moves.npy')),
-                            key=os.path.getmtime, reverse=True)
-    except OSError as e:
-        if cmd is not None:
-            cmd.warn(f'text="dotGain: cannot list {dataRoot} ({e}); assuming unit gain"')
-        return gains
-
-    now = time.time()
-    for path in candidates:
-        if len(used) >= nRuns:
-            break
-        if now - os.path.getmtime(path) > maxAge:
-            break
-
-        mapping = os.path.join(os.path.dirname(path), 'cobra_filtering.npz')
-        if not os.path.exists(mapping):
-            continue
-        try:
-            moves = np.load(path)
-            cobraIds = np.load(mapping)['final_moving_cobras']
-        except Exception:
-            continue
-
-        rows = moves[0] if moves.ndim == 3 else moves
-        if rows.ndim != 2 or len(rows) != len(cobraIds):
-            continue
-
-        for row, cobraId in enumerate(np.asarray(cobraIds, dtype=int)):
-            if not (0 <= cobraId < nCobras):
-                continue
-            gain = gainFromMoves(rows[row], calibModel, cobraId)
-            if np.isfinite(gain):
-                collected[cobraId].append(gain)
-        used.append(os.path.basename(os.path.dirname(os.path.dirname(path))))
-
-    for cobraId, values in enumerate(collected):
-        if values:
-            gains[cobraId] = float(np.median(values))
-
-    if cmd is not None:
-        found = int(np.isfinite(gains).sum())
-        if used:
-            cmd.inform(f'text="dotGain: {len(used)} runs ({", ".join(used)}) — '
-                       f'{found} of {nCobras} cobras, median '
-                       f'{np.nanmedian(gains) if found else float("nan"):.3f}"')
-        else:
-            cmd.inform('text="dotGain: no recent run on disk; assuming unit gain"')
-
-    return gains
 
 
 class DotTracker:

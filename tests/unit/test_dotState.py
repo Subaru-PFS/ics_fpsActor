@@ -8,9 +8,6 @@ test that fails loudly rather than a comment.
 The fake motor map is linear, so every expectation below is exact arithmetic rather than
 a tolerance chosen to make the test pass.
 """
-import os
-import time
-
 import numpy as np
 import pytest
 
@@ -105,83 +102,7 @@ def test_flatMapIsRejected():
     assert np.isnan(dotState.mapSpan(FakeModel(pos=flat), 0, 400, 0.5))
 
 
-# ── gainFromMoves ────────────────────────────────────────────────────────────
-
-def test_gainRecoversAKnownValue(model):
-    steps = np.array([0, 400, 400, 400, 400, 400])
-    phi = 0.60 + np.cumsum(steps) * RAD_PER_STEP * 1.30
-    row = makeRow(phi, steps, np.ones(len(steps), bool))
-    assert dotState.gainFromMoves(row, model, 0) == pytest.approx(1.30, rel=1e-3)
-
-
-def test_undetectedAngleIsIgnored(model):
-    """The recorded angle of a hidden cobra is the dot-centre artefact, not a measurement.
-
-    Using it here would drag the gain toward the artefact and look entirely plausible.
-    """
-    steps = np.array([0, 400, 400, 400, 400, 400, 400])
-    phi = 0.60 + np.cumsum(steps) * RAD_PER_STEP * 1.30
-    phi[-1] = phi[-2] + 0.5 * 400 * RAD_PER_STEP        # would read as gain 0.5
-    row = makeRow(phi, steps, [True] * 6 + [False])
-    assert dotState.gainFromMoves(row, model, 0) == pytest.approx(1.30, rel=0.05)
-
-
-def test_backwardsCobraGivesNegativeGain(model):
-    """Signed, not absolute: a cobra moving against its command must be visible as such."""
-    steps = np.array([0, -400, -400, -400, -400])
-    phi = 1.20 + np.cumsum(steps) * RAD_PER_STEP * -1.0   # moving the wrong way
-    row = makeRow(phi, steps, np.ones(len(steps), bool))
-    assert dotState.gainFromMoves(row, model, 0) < 0
-
-
-def test_closingCobraGivesPositiveGain(model):
-    steps = np.array([0, -400, -400, -400, -400])
-    phi = 1.20 + np.cumsum(steps) * RAD_PER_STEP
-    row = makeRow(phi, steps, np.ones(len(steps), bool))
-    assert dotState.gainFromMoves(row, model, 0) == pytest.approx(1.0, rel=1e-3)
-
-
-def test_lastMoveBeforeGoingDarkIsDropped(model):
-    """Surviving that move is anti-correlated with gain, so it biases the estimate low."""
-    steps = np.array([0] + [400] * 8)
-    phi = np.empty(len(steps))
-    phi[0] = 0.60
-    for i in range(1, len(steps) - 1):
-        phi[i] = phi[i - 1] + 1.20 * 400 * RAD_PER_STEP
-    phi[-1] = phi[-2] + 0.40 * 400 * RAD_PER_STEP        # the slow, surviving move
-    row = makeRow(phi, steps, [True] * 8 + [False])
-    assert dotState.gainFromMoves(row, model, 0) == pytest.approx(1.20, rel=0.05)
-
-
-def test_tinyMovesAreExcluded(model):
-    """Below ~10 steps quantisation and backlash dominate the ratio."""
-    steps = np.array([0, 2, 3, 2, 3, 2])
-    phi = 0.60 + np.cumsum(steps) * RAD_PER_STEP
-    row = makeRow(phi, steps, np.ones(len(steps), bool))
-    assert np.isnan(dotState.gainFromMoves(row, model, 0))
-
-
-def test_tooFewPairsGivesNaN(model):
-    steps = np.array([0, 400, 400])
-    phi = 0.60 + np.cumsum(steps) * RAD_PER_STEP
-    row = makeRow(phi, steps, [True, True, False])
-    assert np.isnan(dotState.gainFromMoves(row, model, 0))
-
-
-@pytest.fixture
-def applyGain(monkeypatch):
-    """Pin the measured gain on, so these tests do not depend on the module default."""
-    monkeypatch.setattr(dotState, 'APPLY_MEASURED_GAIN', True)
-
-
-def test_measuredGainIsNotAppliedWhileTheOnTimeLoopOwnsIt(monkeypatch):
-    """Both corrections take out the same discrepancy, so only one may be applied."""
-    monkeypatch.setattr(dotState, 'APPLY_MEASURED_GAIN', False)
-    assert dotState.usableGain(1.078) == dotState.DEFAULT_GAIN
-
-
-def test_unusableGainFallsBackToOne(monkeypatch):
-    monkeypatch.setattr(dotState, 'APPLY_MEASURED_GAIN', True)
+def test_unusableGainFallsBackToOne():
     for gain in (np.nan, 0.0, -1.2, 0.1, 5.0):
         assert dotState.usableGain(gain) == dotState.DEFAULT_GAIN
     assert dotState.usableGain(1.078) == pytest.approx(1.078)
@@ -248,14 +169,14 @@ def test_unbelievableGainLeavesTheMapAlone(model):
         assert dotState.stepsToTarget(model, 0, 0.60, target, gain) == 500
 
 
-def test_dividesByTheGain(model, applyGain):
+def test_dividesByTheGain(model):
     """A cobra that overshoots the map needs FEWER steps, not more."""
     target = 0.60 + 500 * RAD_PER_STEP
     assert dotState.stepsToTarget(model, 0, 0.60, target, 1.25) == 400
     assert dotState.stepsToTarget(model, 0, 0.60, target, 1.25) != 625
 
 
-def test_undershootingCobraNeedsMoreSteps(model, applyGain):
+def test_undershootingCobraNeedsMoreSteps(model):
     target = 0.60 + 500 * RAD_PER_STEP
     assert dotState.stepsToTarget(model, 0, 0.60, target, 0.8) == 625
 
@@ -266,7 +187,7 @@ def test_closingMoveIsNegative(model):
     assert dotState.stepsToTarget(model, 0, start, target, 1.0) == -500
 
 
-def test_roundTripAgainstTheProcessModel(model, applyGain):
+def test_roundTripAgainstTheProcessModel(model):
     """stepsToTarget and estimatePhi must agree about what the gain does."""
     start, target = 0.60, 0.60 + 500 * RAD_PER_STEP
     for gain in (0.6, 0.8, 1.0, 1.078, 1.25, 1.6):
@@ -290,109 +211,6 @@ def test_unusableInputGivesZero(model):
     assert dotState.stepsToTarget(model, 0, np.nan, 0.60, 1.0) == 0
     assert dotState.stepsToTarget(model, 0, 0.60, np.nan, 1.0) == 0
     assert dotState.stepsToTarget(model, 0, 0.60, ANGLES[-1] + 1.0, 1.0) == 0
-
-
-# ── loadRecentGains ──────────────────────────────────────────────────────────
-
-def makeRun(root, name, cobraIds, gain, ageDays=0.0, withMapping=True, nIter=6):
-    """A run directory carrying a move history with a known gain."""
-    data = root / name / 'data'
-    data.mkdir(parents=True)
-
-    steps = np.array([0] + [400] * (nIter - 1))
-    rows = np.zeros((len(cobraIds), nIter), dtype=moveDtype)
-    for row in range(len(cobraIds)):
-        rows[row]['phiSteps'] = steps
-        rows[row]['phiAngle'] = 0.60 + np.cumsum(steps) * RAD_PER_STEP * gain
-        rows[row]['detected'] = True
-    np.save(data / 'moves.npy', rows)
-    if withMapping:
-        np.savez(data / 'cobra_filtering.npz', final_moving_cobras=np.asarray(cobraIds))
-
-    when = time.time() - ageDays * 24 * 3600
-    for path in (data / 'moves.npy', data / 'cobra_filtering.npz'):
-        if path.exists():
-            os.utime(path, (when, when))
-    return data
-
-
-def test_recentGainsAverageOverRuns(tmp_path, model):
-    for i, gain in enumerate((1.10, 1.20, 1.30)):
-        makeRun(tmp_path, f'20260808_00{i}', [0], gain, ageDays=0.01 * i)
-    gains = dotState.loadRecentGains(str(tmp_path), 1, model)
-    assert gains[0] == pytest.approx(1.20, rel=0.02)
-
-
-def test_staleRunsAreExcluded(tmp_path, model):
-    """A run from a previous night measured a machine that no longer exists."""
-    makeRun(tmp_path, '20260808_000', [0], 1.10, ageDays=0.01)
-    makeRun(tmp_path, '20260805_000', [0], 1.90, ageDays=3.0)
-    gains = dotState.loadRecentGains(str(tmp_path), 1, model)
-    assert gains[0] == pytest.approx(1.10, rel=0.02)
-
-
-def test_runWithoutTheCobraMappingIsSkipped(tmp_path, model):
-    """moves.npy records rows in commanded order and nothing else.
-
-    Without the ids that go with them the rows cannot be attributed, and guessing would
-    apply one cobra's gain to another.
-    """
-    makeRun(tmp_path, '20260808_000', [0], 1.90, ageDays=0.01, withMapping=False)
-    makeRun(tmp_path, '20260808_001', [0], 1.10, ageDays=0.02)
-    gains = dotState.loadRecentGains(str(tmp_path), 1, model)
-    assert gains[0] == pytest.approx(1.10, rel=0.02)
-
-
-def test_rowsAreAttributedToTheirOwnCobra(tmp_path, model):
-    """Rows are positions within the commanded set, not cobra ids."""
-    data = tmp_path / '20260808_000' / 'data'
-    data.mkdir(parents=True)
-    steps = np.array([0] + [400] * 5)
-    rows = np.zeros((2, 6), dtype=moveDtype)
-    for row, gain in enumerate((1.10, 1.60)):
-        rows[row]['phiSteps'] = steps
-        rows[row]['phiAngle'] = 0.60 + np.cumsum(steps) * RAD_PER_STEP * gain
-        rows[row]['detected'] = True
-    np.save(data / 'moves.npy', rows)
-    np.savez(data / 'cobra_filtering.npz', final_moving_cobras=np.array([3, 1]))
-
-    gains = dotState.loadRecentGains(str(tmp_path), 5, FakeModel(nCobras=5))
-    assert gains[3] == pytest.approx(1.10, rel=0.02)
-    assert gains[1] == pytest.approx(1.60, rel=0.02)
-    assert np.isnan(gains[0]) and np.isnan(gains[2]) and np.isnan(gains[4])
-
-
-def test_mismatchedRowCountIsSkipped(tmp_path, model):
-    """A motor-map or convergence-test run has a moves.npy of another shape entirely."""
-    data = tmp_path / '20260808_000' / 'data'
-    data.mkdir(parents=True)
-    rows = np.zeros((4, 6), dtype=moveDtype)
-    rows['detected'] = True
-    np.save(data / 'moves.npy', rows)
-    np.savez(data / 'cobra_filtering.npz', final_moving_cobras=np.array([0, 1]))
-    assert np.isnan(dotState.loadRecentGains(str(tmp_path), 3, FakeModel(nCobras=3))).all()
-
-
-def test_missingRootIsNotFatal(model):
-    gains = dotState.loadRecentGains('/no/such/root', 4, FakeModel(nCobras=4))
-    assert gains.shape == (4,) and np.isnan(gains).all()
-
-
-def test_reportsWhichRunsItUsed(tmp_path, model):
-    class Cmd:
-        def __init__(self):
-            self.informs, self.warns = [], []
-
-        def inform(self, text):
-            self.informs.append(text)
-
-        def warn(self, text):
-            self.warns.append(text)
-
-    makeRun(tmp_path, '20260808_000', [0], 1.10, ageDays=0.01)
-    cmd = Cmd()
-    dotState.loadRecentGains(str(tmp_path), 1, model, cmd=cmd)
-    assert any('20260808_000' in m for m in cmd.informs)
 
 
 # ── DotTracker ───────────────────────────────────────────────────────────────

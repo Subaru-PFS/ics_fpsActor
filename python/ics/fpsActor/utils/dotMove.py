@@ -19,6 +19,7 @@ import numpy as np
 import pandas as pd
 
 from ics.cobraCharmer import cobraState
+from ics.fpsActor.utils import blindMoveCalib
 from ics.fpsActor.utils import dotGeometry
 from ics.fpsActor.utils import dotState
 from ics.fpsActor.utils import dotTargets
@@ -190,16 +191,64 @@ def makeTracker(cc, cmd=None, blindIterations=0):
 
     nCobras = len(cc.allCobras)
     armLength, _ = dotGeometry._sgfmArrays()
-    gains = dotState.loadRecentGains(cc.runManager.rootDir, nCobras, cc.calibModel,
-                                     cmd=cmd)
+    gains = np.full(nCobras, dotState.DEFAULT_GAIN)
     tracker = dotState.DotTracker.fromMoves(cc.calibModel, rows, rowCobraId, gains,
                                             armLength, nCobras)
     return tracker, dotGlobalIdx
 
 
+def phiBeforeLanding(cc):
+    """Measured phi, radians, at the start of the convergence's last move, per cobra.
+
+    The last move of a dot cobra is the ramp landing, so this is the angle it set off
+    from.  NaN for a cobra the run did not move or did not see at that frame.
+    """
+    rows, rowCobraId, _ = loadRunInputs(cc)
+    phi = np.full(len(cc.allCobras), np.nan)
+    if rows.shape[1] < 2:
+        return phi
+    seen = rows['detected'][:, -2]
+    phi[rowCobraId[seen]] = rows['phiAngle'][seen, -2]
+    return phi
+
+
+def aimThroughCalibration(cc, wanted, gains, landingFraction, phiCenter, direction, halfDot):
+    """Depth to command so that each cobra arrives at the depth `wanted`.
+
+    See `blindMoveCalib.aimedCommand`.  The start of the landing is the measured
+    `phiBeforeLanding`, so a cobra not seen there keeps `wanted`; a cobra the calibration
+    does not calibrate is aimed with gain 1.0, which also keeps it.
+
+    Parameters
+    ----------
+    cc : `CobraCoach`
+    wanted : `numpy.ndarray` of `float`, (nCobras,)
+        Dot fraction.
+    gains : `pandas.DataFrame`
+        `cobra_blind_move_gain` rows, indexed by cobra_id.
+    landingFraction : `float`
+    phiCenter, direction, halfDot : `numpy.ndarray`, (nCobras,)
+        As `dotGeometry.computeDotAngles`.
+
+    Returns
+    -------
+    (`numpy.ndarray`, `numpy.ndarray`)
+        Depth to command, and the mask of cobras aimed through calibrated gains.
+    """
+    landingGain, targetGain, calibrated = blindMoveCalib.gainsFor(
+        gains, np.arange(1, len(wanted) + 1))
+
+    phiLandingTarget = dotGeometry.computePhiAtFraction(phiCenter, halfDot, direction,
+                                                        landingFraction)
+    command, aimed = blindMoveCalib.aimedCommand(wanted, landingFraction, phiBeforeLanding(cc),
+                                                 phiLandingTarget, 2 * direction * halfDot,
+                                                 landingGain, targetGain)
+    return command, aimed & calibrated
+
+
 def blindMoveToDots(cc, tracker, dotGlobalIdx, cmd=None, targetFraction=None,
                     targetOffset=0.0, deltaFraction=None, stillLit=None, requireHidden=True,
-                    dotThetaOffset=0.0):
+                    dotThetaOffset=0.0, gains=None, landingFraction=dotGeometry.RAMP_LANDING_FRACTION):
     """Step every hidden dot cobra to its target depth, open loop.
 
     The tracker is advanced by whatever is commanded, so calling this repeatedly -- as
@@ -240,6 +289,11 @@ def blindMoveToDots(cc, tracker, dotGlobalIdx, cmd=None, targetFraction=None,
         so the measurement of the push needs this off.
     dotThetaOffset : `float`
         Degrees the dots are turned about their cobra centres, see `dotGeometry.dotPositions`.
+    gains : `pandas.DataFrame`, optional
+        Blind-move calibration to aim through, see `aimThroughCalibration`.  Ignored with
+        `deltaFraction`.
+    landingFraction : `float`
+        Depth the ramp landed at.
 
     Returns
     -------
@@ -274,7 +328,23 @@ def blindMoveToDots(cc, tracker, dotGlobalIdx, cmd=None, targetFraction=None,
         fractions = np.full(nCobras, float(targetFraction))
         measured = np.zeros(nCobras, dtype=bool)
     fractions = fractions + targetOffset
-    phiTarget = dotGeometry.computePhiAtFraction(phiCenter, halfDot, direction, fractions)
+    command = fractions
+    if gains is not None and deltaFraction is None:
+        # Before anything moves: a calibration that cannot be applied leaves the push
+        # unaimed rather than the convergence failed.
+        try:
+            command, aimed = aimThroughCalibration(cc, fractions, gains, landingFraction,
+                                                   phiCenter, direction, halfDot)
+        except Exception as e:
+            command = fractions
+            if cmd is not None:
+                reason = str(e).replace('"', "'")
+                cmd.warn(f'text="blindMove: calibration not applied ({reason}); unaimed"')
+        else:
+            if cmd is not None:
+                cmd.inform(f'text="blindMove: {int(aimed[hidden].sum())}/{len(hidden)} cobras '
+                           f'aimed through the calibration, the others at their wanted depth"')
+    phiTarget = dotGeometry.computePhiAtFraction(phiCenter, halfDot, direction, command)
 
     movable, cobras, phiSteps = [], [], []
     nNoEstimate = nImplausible = 0
@@ -305,7 +375,7 @@ def blindMoveToDots(cc, tracker, dotGlobalIdx, cmd=None, targetFraction=None,
     movable = np.asarray(movable, dtype=int)
     if nCommanded:
         # cc.pfi.moveSteps is pure FPGA: a genuine open-loop move, and no per-call MCS
-        # frame.  phiFast=False because the gain is measured against the slow map, which
+        # frame.  phiFast=False because the steps are sized through the slow map, which
         # every in-patrol move of the ramp ran on; sending slow-sized steps through the
         # fast map overshoots badly.  The push is blind, so it runs at phi scale 1.0
         # (see DOT_PHI_SCALING_MODES).
@@ -315,7 +385,7 @@ def blindMoveToDots(cc, tracker, dotGlobalIdx, cmd=None, targetFraction=None,
         # Only now is the cobra where the estimate should say it is.
         tracker.applied(movable, phiSteps)
     tracker.lastPush = pd.DataFrame(dict(cobraIdx=movable, dotTarget=fractions[movable],
-                                         dotCommand=fractions[movable],
+                                         dotCommand=command[movable],
                                          phiPushTarget=phiTarget[movable]))
 
     if cmd is not None:
