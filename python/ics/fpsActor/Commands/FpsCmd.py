@@ -63,6 +63,8 @@ class FpsCmd(object):
         # is also what says no flux scan can be stepped.
         self.dotTracker = None
         self.dotCobras = None
+        # The conditions of the last dot convergence, as dotMove.blindMoveRecords takes them.
+        self.dotRun = None
         # Declare the commands we implement. When the actor is started
         # these are registered with the parser, which will call the
         # associated methods when matched. The callbacks will be
@@ -871,15 +873,41 @@ class FpsCmd(object):
         # The frame is taken for this command, in the visit of the convergence.
         self.actor.visitor.cmd = cmd
         try:
-            self.cc.exposeAndExtractPositions()
+            positions = self.cc.exposeAndExtractPositions()
             nSeen = int(self.cc.cobraInfo['detected'][self.dotCobras].sum())
             cmd.inform(f'text="measureBlindMove: {nSeen}/{len(self.dotCobras)} dot cobras '
                        f'measured, visit={self.actor.visitor.visit}"')
+            if self.dotRun is not None and self.dotRun['dotThetaOffset']:
+                self._recordBlindMoves(cmd, positions)
         finally:
             restored = self.switchFMethod(cmd, 'target')
 
         if restored:
             cmd.finish('text="measureBlindMove done"')
+
+    def _recordBlindMoves(self, cmd, positions):
+        """Insert the measured landing and push of every dot cobra into opdb, once.
+
+        A failure is reported, not raised: the frame is taken either way.
+        """
+        visit = self.actor.visitor.visit
+        if self.dotTracker.lastPush is None:
+            cmd.warn(f'text="measureBlindMove: no push of visit {visit} to record"')
+            return
+        try:
+            db = self.connectToDB(cmd)
+            run = self.dotRun
+            records = dotMove.blindMoveRecords(self.cc, self.dotTracker, self.dotCobras, visit,
+                                               db, positions, run['landingFraction'],
+                                               goHome=run['goHome'], dataDir=run['dataDir'],
+                                               theta=run['theta'])
+            db.insert_dataframe(dotMove.BLIND_MOVE_TABLE, records)
+            cmd.inform(f'text="measureBlindMove: {len(records)} rows inserted into '
+                       f'{dotMove.BLIND_MOVE_TABLE}, visit={visit}"')
+            self.dotRun = None
+        except Exception as e:
+            reason = str(e).replace('"', "'")
+            cmd.warn(f'text="measureBlindMove: blind moves of visit {visit} not recorded ({reason})"')
 
     def switchFMethod(self, cmd, method):
         """Set the method the MCS identifies fibers by.
@@ -2062,7 +2090,7 @@ class FpsCmd(object):
 
         # Drop any previous visit's scan state up front: if this convergence
         # raises, moveToDotByFlux must not blind-move on stale indices.
-        self.dotTracker = self.dotCobras = None
+        self.dotTracker = self.dotCobras = self.dotRun = None
 
         try:
             if twoSteps:
@@ -2145,6 +2173,9 @@ class FpsCmd(object):
             if len(dotGlobalIdx):
                 # On turned dots the fibre stays in view: read the last iteration as unseen, as
                 # behind a real dot, and push every dot cobra rather than only the lost ones.
+                self.dotRun = dict(landingFraction=dotLanding, dotThetaOffset=dotThetaOffset,
+                                   goHome=goHome, dataDir=self.cc.runManager.dataDir,
+                                   theta=thetaDot.copy())
                 self.dotTracker, self.dotCobras = dotMove.makeTracker(
                     self.cc, cmd=cmd, blindIterations=1 if dotThetaOffset else 0)
 
@@ -2286,7 +2317,7 @@ class FpsCmd(object):
 
         if nRemaining == 0:
             # release for the next dotRoach sequence
-            self.dotTracker = self.dotCobras = None
+            self.dotTracker = self.dotCobras = self.dotRun = None
 
         cmd.finish('text="moveToDotByFlux done"')
 
