@@ -382,6 +382,40 @@ def buildSafeRamp(cc, dotCobras, nIter, landingFraction=RAMP_LANDING_FRACTION, d
     return thetaStart, phiStart, phiRamp, thetaRamp, dotGeom
 
 
+def phiNearTheta(cc, cobraIdx, positions, theta):
+    """Phi, radians from the phi CCW stop, of measured positions of cobras at known theta.
+
+    A position has two inverse-kinematic solutions; the one meant is the one whose theta is
+    nearest `theta`.  Local theta runs past 2*pi while the solutions are wrapped into
+    [0, 2*pi), so the two are compared modulo 2*pi.
+
+    Parameters
+    ----------
+    cc : `CobraCoach`
+    cobraIdx : `numpy.ndarray` of `int`, (n,)
+    positions : `numpy.ndarray` of `complex`, (n,)
+        PFI mm; NaN gives NaN.
+    theta : `numpy.ndarray` of `float`, (n,)
+        Local theta, radians, each cobra is known to be at.
+
+    Returns
+    -------
+    `numpy.ndarray` of `float`, (n,)
+    """
+    cobraIdx = np.asarray(cobraIdx, dtype=int)
+    positions = np.asarray(positions, dtype=complex)
+    theta = np.asarray(theta, dtype=float)
+    bad = ~np.isfinite(positions) | ~np.isfinite(theta)
+    safe = np.where(bad, cc.calibModel.centers[cobraIdx] + cc.calibModel.L1[cobraIdx], positions)
+
+    thetaSol, phiSol, _ = cc.pfi.positionsToAngles(cc.allCobras[cobraIdx], safe)
+    delta = (thetaSol - np.nan_to_num(theta)[:, None] + np.pi) % (2 * np.pi) - np.pi
+    best = np.argmin(np.abs(np.nan_to_num(delta, nan=np.inf)), axis=1)
+    phi = phiSol[np.arange(len(cobraIdx)), best]
+    phi[bad] = np.nan
+    return phi
+
+
 def computePhiAtFraction(phiCenter, halfDot, direction, fraction):
     """Phi angle at a given fractional position through the dot.
 

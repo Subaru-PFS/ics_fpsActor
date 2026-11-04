@@ -16,6 +16,7 @@ the gain is measured, with no special case.
 import pathlib
 
 import numpy as np
+import pandas as pd
 
 from ics.cobraCharmer import cobraState
 from ics.fpsActor.utils import dotGeometry
@@ -121,12 +122,14 @@ def withoutInvalidTurnedDots(toBlackDot, isInvalid, dotThetaOffset):
     return toBlackDot & ~unsafe, unsafe
 
 
-def loadRunInputs(cc):
+def loadRunInputs(cc, dataDir=None):
     """Move history and cobra bookkeeping from the run directory just written.
 
     Parameters
     ----------
     cc : `CobraCoach`
+    dataDir : `str`, optional
+        Run data directory; defaults to the current one of `cc`.
 
     Returns
     -------
@@ -139,7 +142,7 @@ def loadRunInputs(cc):
     FileNotFoundError
         If the convergence did not leave a run directory to read.
     """
-    dataDir = pathlib.Path(cc.runManager.dataDir)
+    dataDir = pathlib.Path(cc.runManager.dataDir if dataDir is None else dataDir)
     moves = np.load(dataDir / 'moves.npy')
     filtering = np.load(dataDir / 'cobra_filtering.npz')
 
@@ -259,6 +262,7 @@ def blindMoveToDots(cc, tracker, dotGlobalIdx, cmd=None, targetFraction=None,
         cc, dotThetaOffset=dotThetaOffset)
 
     if deltaFraction is not None:
+        tracker.lastPush = None
         with np.errstate(invalid='ignore'):
             atFraction = 0.5 + (tracker.phi - phiCenter) / (2 * direction * halfDot)
         fractions = atFraction + deltaFraction
@@ -298,6 +302,7 @@ def blindMoveToDots(cc, tracker, dotGlobalIdx, cmd=None, targetFraction=None,
         phiSteps.append(int(steps))
 
     nCommanded = len(cobras)
+    movable = np.asarray(movable, dtype=int)
     if nCommanded:
         # cc.pfi.moveSteps is pure FPGA: a genuine open-loop move, and no per-call MCS
         # frame.  phiFast=False because the gain is measured against the slow map, which
@@ -309,6 +314,9 @@ def blindMoveToDots(cc, tracker, dotGlobalIdx, cmd=None, targetFraction=None,
                              np.asarray(phiSteps, dtype=int), phiFast=False)
         # Only now is the cobra where the estimate should say it is.
         tracker.applied(movable, phiSteps)
+    tracker.lastPush = pd.DataFrame(dict(cobraIdx=movable, dotTarget=fractions[movable],
+                                         dotCommand=fractions[movable],
+                                         phiPushTarget=phiTarget[movable]))
 
     if cmd is not None:
         cmd.inform(f'text="blindMove: commanded {nCommanded}/{len(hidden)} '
@@ -396,3 +404,109 @@ def recordDepths(cc, tracker, dotGlobalIdx, visitId, cmd=None):
     except Exception as e:
         if cmd is not None:
             cmd.warn(f'text="dotDepth: could not record ({e}); the scan is not reducible"')
+
+
+BLIND_MOVE_TABLE = 'cobra_blind_move'
+"""opdb table the rows of `blindMoveRecords` go to."""
+
+
+def rampResidual(db, visit, iteration, nCobras):
+    """Distance, mm, of each cobra from its target at one iteration of a visit.
+
+    Parameters
+    ----------
+    db : `pfs.utils.database.opdb.OpDB`
+    visit, iteration, nCobras : `int`
+
+    Returns
+    -------
+    `numpy.ndarray` of `float`, (nCobras,)
+        Indexed by cobra index, NaN where the cobra was not matched.
+    """
+    rows = db.query_dataframe(
+        'SELECT t.cobra_id, t.pfi_target_x_mm tx, t.pfi_target_y_mm ty, '
+        'm.pfi_center_x_mm mx, m.pfi_center_y_mm my, m.spot_id '
+        'FROM cobra_target t JOIN cobra_match m USING (pfs_visit_id, iteration, cobra_id) '
+        f'WHERE t.pfs_visit_id = {int(visit)} AND t.iteration = {int(iteration)}')
+    out = np.full(nCobras, np.nan)
+    seen = rows.spot_id.to_numpy() != -1          # an unmatched row keeps a stale position
+    out[rows.cobra_id.to_numpy()[seen] - 1] = np.abs(
+        (rows.mx.to_numpy()[seen] - rows.tx.to_numpy()[seen])
+        + 1j * (rows.my.to_numpy()[seen] - rows.ty.to_numpy()[seen]))
+    return out
+
+
+def blindMoveRecords(cc, tracker, dotGlobalIdx, visit, db, positions, landingFraction, *,
+                     goHome, dataDir, theta):
+    """The landing and the push of every dot cobra, as rows of `BLIND_MOVE_TABLE`.
+
+    `positions` is the frame after the push; the run directory holds the angles before and
+    after the landing, the convergence's last move, and tracker.lastPush what the push
+    was commanded to.
+
+    Parameters
+    ----------
+    cc : `CobraCoach`
+    tracker : `dotState.DotTracker`
+    dotGlobalIdx : `numpy.ndarray` of `int`
+        Cobras sent to a dot.
+    visit : `int`
+    db : `pfs.utils.database.opdb.OpDB`
+        Source of the distance from target before the landing.
+    positions : `numpy.ndarray` of `complex`, (nCobras,)
+        PFI mm after the push, by cobra index, as `CobraCoach.exposeAndExtractPositions`
+        returns them; read with cc.cobraInfo['detected'] of that frame.
+    landingFraction : `float`
+        Depth the ramp landed at.
+    goHome : `bool`
+        Whether the convergence started with a move home, which takes cobra_target
+        iteration 0.
+    dataDir : `str`
+        Run data directory of the convergence.
+    theta : `numpy.ndarray` of `float`, (nCobras,)
+        Local theta, radians, the dot cobras were sent to; picks the IK branch.
+
+    Returns
+    -------
+    `pandas.DataFrame`
+        One row per cobra of `dotGlobalIdx`.  Angles are radians, NaN where the cobra was
+        not seen; push columns are NaN for a cobra not pushed.
+    """
+    rows, rowCobraId, _ = loadRunInputs(cc, dataDir=dataDir)
+    if rows.shape[1] < 2:
+        raise ValueError(f'{rows.shape[1]} moves: no landing to measure')
+    nCobras = len(cc.allCobras)
+
+    def perCobra(values):
+        out = np.full(nCobras, np.nan)
+        out[rowCobraId] = values
+        return out
+
+    phiStart = perCobra(np.where(rows['detected'][:, -2], rows['phiAngle'][:, -2], np.nan))
+    phiLanded = perCobra(np.where(rows['detected'][:, -1], rows['phiAngle'][:, -1], np.nan))
+
+    idx = np.asarray(dotGlobalIdx, dtype=int)
+    pushed = np.where(cc.cobraInfo['detected'][idx], np.asarray(positions)[idx], np.nan)
+    phiPushed = dotGeometry.phiNearTheta(cc, idx, pushed, np.asarray(theta)[idx])
+
+    # Phi at a depth is the same on turned dots as on real ones.
+    _, phiCenter, _, _, _, direction, halfDot = dotGeometry.computeDotAngles(cc)
+    phiLandingTarget = dotGeometry.computePhiAtFraction(phiCenter, halfDot, direction,
+                                                        landingFraction)
+    columns = ['dotTarget', 'dotCommand', 'phiPushTarget']
+    push = (pd.DataFrame(columns=['cobraIdx'] + columns) if tracker.lastPush is None
+            else tracker.lastPush).set_index('cobraIdx').reindex(idx)
+
+    # The landing starts after move nIter - 2, which is cobra_target iteration nIter - 1
+    # when a move home took iteration 0.
+    nIter = rows.shape[1]
+    residual = rampResidual(db, visit, nIter - 1 if goHome else nIter - 2, nCobras)
+
+    return pd.DataFrame(dict(
+        pfs_visit_id=int(visit), cobra_id=idx + 1, dot_landing=float(landingFraction),
+        dot_target=push.dotTarget.to_numpy(dtype=float),
+        dot_command=push.dotCommand.to_numpy(dtype=float),
+        phi_landing_target=phiLandingTarget[idx],
+        phi_push_target=push.phiPushTarget.to_numpy(dtype=float),
+        phi_start=phiStart[idx], phi_landed=phiLanded[idx], phi_pushed=phiPushed,
+        ramp_residual=residual[idx]))

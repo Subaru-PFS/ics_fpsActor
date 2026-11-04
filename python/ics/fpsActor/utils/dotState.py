@@ -383,6 +383,8 @@ class DotTracker:
         self.variance = np.asarray(variance, dtype=float)
         self.gain = np.asarray(gain, dtype=float)
         self.armLength = np.asarray(armLength, dtype=float)
+        # The last push of `dotMove.blindMoveToDots`, one row per cobra commanded.
+        self.lastPush = None
 
     @classmethod
     def fromMoves(cls, calibModel, rows, rowCobraId, gains, armLength, nCobras):
