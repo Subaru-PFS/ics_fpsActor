@@ -95,9 +95,12 @@ camera see where they went:
 
 ```bash
 setsid nohup bash -l tests/integration/start_pfiSim.sh --seed 0 > /tmp/pfiSim.log 2>&1 </dev/null &
-# then restart fps with COBRACHARMER_FPGA_HOST=localhost
-#      and mcs with MCS_SIM_TRUTH=localhost:4002
+# then (re)start mcs and fps
 ```
+
+The `alefur/tests_offline` tables of cobraCharmer and mcsActor set the two variables below,
+so the simulator has to be running before fps connects; unset them to go back to the
+stubs of section 2.
 
 - `COBRACHARMER_FPGA_HOST` switches the `alefur/tests_offline` cobraCharmer from its stubs
   to the real FPGA path (RUN commands, on-time adjustment) against that host.
