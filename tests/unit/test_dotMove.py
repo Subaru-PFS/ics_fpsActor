@@ -137,10 +137,10 @@ def test_dotDepthsRefuseAMissingConfigValue():
         dotMove.dotDepths(dict(dotTarget=None))
 
 
-def test_dotDepthsHaveNoTargetWithoutABlindMove():
+def test_dotDepthsTargetTheLandingWithoutABlindMove():
     config = dict(dotLanding=0.1, dotTarget=0.5)
 
-    assert dotMove.dotDepths(config, dotLanding=0.6, noBlindMove=True) == (0.6, None)
-    assert dotMove.dotDepths(config, dotTarget=0.4, noBlindMove=True) == (0.1, None)
+    assert dotMove.dotDepths(config, dotLanding=0.6, noBlindMove=True) == (0.6, 0.6)
+    assert dotMove.dotDepths(config, dotTarget=0.4, noBlindMove=True) == (0.1, 0.1)
     with pytest.raises(ValueError, match='dotLanding'):
         dotMove.dotDepths(config, dotLanding=1.0, noBlindMove=True)

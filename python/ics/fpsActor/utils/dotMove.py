@@ -82,12 +82,12 @@ def dotDepths(convergenceCfg, dotLanding=None, dotTarget=None, noBlindMove=False
     dotLanding, dotTarget : `float`, optional
         moveToPfsDesign keywords.
     noBlindMove : `bool`
-        The cobras stay at the landing, so there is no target.
+        The cobras stay at the landing, which is then also the target.
 
     Returns
     -------
-    (`float`, `float` or None)
-        The landing and the target, None if `noBlindMove`.
+    (`float`, `float`)
+        The landing, and the depth the cobras are meant to end at.
 
     Raises
     ------
@@ -100,7 +100,7 @@ def dotDepths(convergenceCfg, dotLanding=None, dotTarget=None, noBlindMove=False
     if noBlindMove:
         if not 0 < landing < 1:
             raise ValueError(f'dot depths need 0 < dotLanding < 1, not dotLanding={landing}')
-        return landing, None
+        return landing, landing
 
     target = float(convergenceCfg.get('dotTarget', dotGeometry.BLIND_TARGET_FRACTION)
                    if dotTarget is None else dotTarget)

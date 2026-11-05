@@ -2025,7 +2025,7 @@ class FpsCmd(object):
         fastThreshold = cmdKeys['fastThreshold'].values[0] if 'fastThreshold' in cmdKeys else 99.9
 
         # Every dot cobra lands at dotLanding, the ramp's last row, and is pushed to
-        # dotTarget.  noBlindMove leaves the fleet at the landing.
+        # dotTarget; under noBlindMove it stays at the landing, which is then its target.
         noBlindMove = 'noBlindMove' in cmdKeys
         convergenceCfg = self.actor.actorConfig.get('convergence', {})
         try:
@@ -2174,6 +2174,8 @@ class FpsCmd(object):
         pfsConfig.convergenceParams = pfsConfigUtils.convergenceParams(
             targetFallback, notConvergedDistanceThreshold, skipFiducialInterferenceCheck,
             numIterations=iteration, requestedTolerance=tolerance)
+        if len(dotGlobalIdx):
+            pfsConfig.convergenceParams.update(dotLanding=dotLanding, dotTarget=dotTarget)
 
         # Nothing to command means the design is not one this command can act on -- every
         # target type unaccepted, or every cobra masked.  Say so: the engineer API takes
