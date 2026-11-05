@@ -37,7 +37,7 @@ log = logging.getLogger('pfiSimServer')
 # Motor-map inversion: steps → angle delta
 # ─────────────────────────────────────────────────────────────────────────────
 
-def stepsToAngle(calibModel, cId, stepsMag, isCCW, currentAngle, arm='theta'):
+def stepsToAngle(calibModel, cId, stepsMag, isCCW, currentAngle, arm='theta', fast=False):
     """Invert motor map: magnitude of steps + direction → angle delta (radians).
 
     Uses the current angle to look up the cumulative step count from the hard stop,
@@ -51,6 +51,7 @@ def stepsToAngle(calibModel, cId, stepsMag, isCCW, currentAngle, arm='theta'):
         isCCW        : True = CCW direction (negative angle delta)
         currentAngle : current local angle of this arm (radians), used as baseline
         arm          : 'theta' or 'phi'
+        fast         : invert the fast map rather than the slow one
 
     Returns:
         Signed angle delta in radians.
@@ -58,10 +59,16 @@ def stepsToAngle(calibModel, cId, stepsMag, isCCW, currentAngle, arm='theta'):
     if stepsMag == 0:
         return 0.0
     if arm == 'theta':
-        stepArr = calibModel.negThtSlowSteps[cId] if isCCW else calibModel.posThtSlowSteps[cId]
+        if fast:
+            stepArr = calibModel.negThtSteps[cId] if isCCW else calibModel.posThtSteps[cId]
+        else:
+            stepArr = calibModel.negThtSlowSteps[cId] if isCCW else calibModel.posThtSlowSteps[cId]
         angArr  = calibModel.thtOffsets[cId]
     else:
-        stepArr = calibModel.negPhiSlowSteps[cId] if isCCW else calibModel.posPhiSlowSteps[cId]
+        if fast:
+            stepArr = calibModel.negPhiSteps[cId] if isCCW else calibModel.posPhiSteps[cId]
+        else:
+            stepArr = calibModel.negPhiSlowSteps[cId] if isCCW else calibModel.posPhiSlowSteps[cId]
         angArr  = calibModel.phiOffsets[cId]
     # Current cumulative steps from hard stop at currentAngle
     cumFrom = float(np.interp(currentAngle, angArr, stepArr))
@@ -70,6 +77,80 @@ def stepsToAngle(calibModel, cId, stepsMag, isCCW, currentAngle, arm='theta'):
     # Invert back to angle
     targetAngle = float(np.interp(cumTarget, stepArr, angArr))
     return targetAngle - currentAngle
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MotorModel — how the simulated motors depart from their maps
+# ─────────────────────────────────────────────────────────────────────────────
+
+class MotorModel:
+    """Per-cobra gains, per-move scatter and on-time dependence of the simulated motors.
+
+    A move covers what the motor maps predict for its steps at the on-time sent, times the
+    cobra's gain for that axis and direction, plus a random scatter.  At the slow and fast
+    nominal on-times that is the slow and the fast map; between them it is interpolated
+    linearly in on-time, and beyond them each map is scaled in proportion, so a scaled
+    on-time moves the cobra further or less far as a real motor would.  Gains are drawn
+    once, from `seed`.
+
+    Parameters
+    ----------
+    calibModel : `ics.cobraCharmer.pfiDesign.PFIDesign`
+    gainMean, gainSigma : (`float`, `float`)
+        Theta and phi gain distribution.
+    scatterMm : `float`
+        Tip scatter of one move, mm, turned into an angle with the arm moved.
+    seed : `int`
+    """
+
+    def __init__(self, calibModel, gainMean=(1.0, 1.05), gainSigma=(0.05, 0.10), scatterMm=0.018,
+                 seed=0):
+        self.calibModel = calibModel
+        rng = np.random.default_rng(seed)
+        nCobras = calibModel.nCobras
+        # gain[cobra, axis, direction]: axis 0 theta, 1 phi; direction 0 CCW, 1 CW.
+        self.gain = np.empty((nCobras, 2, 2))
+        for axis in (0, 1):
+            self.gain[:, axis, :] = gainMean[axis] + gainSigma[axis] * rng.standard_normal((nCobras, 2))
+        self.scatterRad = np.stack([scatterMm / calibModel.L1, scatterMm / calibModel.L2], axis=1)
+        self.rng = np.random.default_rng(seed + 1)
+
+    def nominalOntimes(self, cId, axis, isCCW):
+        """Fast and slow nominal on-times, ms, of `axis` in a direction."""
+        m = self.calibModel
+        if axis == 0:
+            return ((m.motorOntimeRev1 if isCCW else m.motorOntimeFwd1)[cId],
+                    (m.motorOntimeSlowRev1 if isCCW else m.motorOntimeSlowFwd1)[cId])
+        return ((m.motorOntimeRev2 if isCCW else m.motorOntimeFwd2)[cId],
+                (m.motorOntimeSlowRev2 if isCCW else m.motorOntimeSlowFwd2)[cId])
+
+    def move(self, cId, axis, stepsMag, isCCW, currentAngle, pulseWidth):
+        """Signed angle change, radians, of one axis of one cobra for a RUN entry."""
+        # Pulse widths travel as whole microseconds, as the maps were measured with.
+        fastNominal, slowNominal = (int(1000 * t) / 1000.0 for t in self.nominalOntimes(cId, axis, isCCW))
+        onTime = pulseWidth / 1000.0
+        if onTime <= 0 or slowNominal <= 0:
+            return 0.0
+
+        arm = 'theta' if axis == 0 else 'phi'
+        slow = stepsToAngle(self.calibModel, cId, stepsMag, isCCW, currentAngle, arm)
+        if onTime <= slowNominal or fastNominal <= slowNominal:
+            mapped = slow * onTime / slowNominal
+        else:
+            fast = stepsToAngle(self.calibModel, cId, stepsMag, isCCW, currentAngle, arm, fast=True)
+            if onTime >= fastNominal:
+                mapped = fast * onTime / fastNominal
+            else:
+                mapped = slow + (fast - slow) * (onTime - slowNominal) / (fastNominal - slowNominal)
+
+        delta = mapped * self.gain[cId, axis, 0 if isCCW else 1]
+        return delta + self.scatterRad[cId, axis] * self.rng.standard_normal()
+
+    def toDataFrame(self):
+        """The injected gains, one row per cobra id."""
+        return pd.DataFrame(dict(cobraId=np.arange(1, self.calibModel.nCobras + 1),
+                                 thetaGainCcw=self.gain[:, 0, 0], thetaGainCw=self.gain[:, 0, 1],
+                                 phiGainCcw=self.gain[:, 1, 0], phiGainCw=self.gain[:, 1, 1]))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -83,8 +164,10 @@ class PhysicsState:
     The expose function (test thread) reads them to compute measured positions.
     """
 
-    def __init__(self, calibModel):
+    def __init__(self, calibModel, motorModel=None):
         self.calibModel = calibModel
+        # Without one, a move covers exactly what the slow map predicts for its steps.
+        self.motorModel = motorModel
         nAll = calibModel.nCobras
         # Start at home position (theta CW hard stop, phi CCW hard stop)
         self.trueThetas = ((calibModel.tht1 - calibModel.tht0 + np.pi)
@@ -156,7 +239,9 @@ class PhysicsState:
                 phiDir_ccw    = bool((flags >> 1) & 1)   # bit 1
                 thetaEn       = bool((flags >> 2) & 1)   # bit 2
                 phiEn         = bool((flags >> 3) & 1)   # bit 3
+                thetaPulse    = struct.unpack('>H', chunk[2:4])[0]
                 thetaStepsMag = struct.unpack('>H', chunk[4:6])[0]   # unsigned magnitude
+                phiPulse      = struct.unpack('>H', chunk[8:10])[0]
                 phiStepsMag   = struct.unpack('>H', chunk[10:12])[0]
 
                 cId = self._cobraLUT.get((boardId, cobraOnBoard))
@@ -165,14 +250,22 @@ class PhysicsState:
                     continue
 
                 if thetaEn and thetaStepsMag:
-                    delta = stepsToAngle(self.calibModel, cId, thetaStepsMag,
-                                         thetaDir_ccw, self.trueThetas[cId], 'theta')
+                    if self.motorModel is None:
+                        delta = stepsToAngle(self.calibModel, cId, thetaStepsMag,
+                                             thetaDir_ccw, self.trueThetas[cId], 'theta')
+                    else:
+                        delta = self.motorModel.move(cId, 0, thetaStepsMag, thetaDir_ccw,
+                                                     self.trueThetas[cId], thetaPulse)
                     self.trueThetas[cId] = np.clip(
                         self.trueThetas[cId] + delta, 0.0, self._thetaMax(cId))
 
                 if phiEn and phiStepsMag:
-                    delta = stepsToAngle(self.calibModel, cId, phiStepsMag,
-                                         phiDir_ccw, self.truePhis[cId], 'phi')
+                    if self.motorModel is None:
+                        delta = stepsToAngle(self.calibModel, cId, phiStepsMag,
+                                             phiDir_ccw, self.truePhis[cId], 'phi')
+                    else:
+                        delta = self.motorModel.move(cId, 1, phiStepsMag, phiDir_ccw,
+                                                     self.truePhis[cId], phiPulse)
                     self.truePhis[cId] = np.clip(
                         self.truePhis[cId] + delta, 0.0, self._phiMax(cId))
 
@@ -308,3 +401,78 @@ def makeSimExpose(physics, cc):
         return positions
 
     return _expose
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Truth server — the positions a camera would see, for a process-external MCS
+# ─────────────────────────────────────────────────────────────────────────────
+
+def startTruthServer(physics, pfi, allCobras, host='localhost', port=4002):
+    """Serve the true fibre positions over TCP, one JSON reply per connection.
+
+    The reply is ``{"x": [...], "y": [...]}``, PFI mm, indexed by cobra_id - 1.  Returns
+    the daemon thread.
+    """
+    import json
+    import socketserver
+
+    class Handler(socketserver.StreamRequestHandler):
+        def handle(self):
+            with physics.lock:
+                thetas, phis = physics.trueThetas.copy(), physics.truePhis.copy()
+            positions = np.asarray(pfi.anglesToPositions(allCobras, thetas, phis))
+            self.wfile.write(json.dumps(dict(x=positions.real.tolist(),
+                                             y=positions.imag.tolist())).encode() + b'\n')
+
+    class Server(socketserver.ThreadingTCPServer):
+        allow_reuse_address = True
+        daemon_threads = True
+
+    server = Server((host, port), Handler)
+    t = threading.Thread(target=server.serve_forever, daemon=True, name='physics-truth-server')
+    t.start()
+    print(f'  truth server running on {host}:{port}')
+    return t
+
+
+def main():
+    """Run the physics FPGA and its truth server as a daemon for the live offline stack."""
+    import argparse
+    import os
+
+    from ics.cobraCharmer import func
+    from ics.cobraCharmer import pfi as pfiControl
+    from ics.fpsActor.utils.alfUtils import calibModel
+
+    parser = argparse.ArgumentParser(description=main.__doc__)
+    parser.add_argument('--port', type=int, default=4001, help='FPGA protocol port')
+    parser.add_argument('--truthPort', type=int, default=4002, help='truth position port')
+    parser.add_argument('--seed', type=int, default=0)
+    parser.add_argument('--thetaGain', type=float, nargs=2, default=(1.0, 0.05), metavar=('MEAN', 'SIGMA'))
+    parser.add_argument('--phiGain', type=float, nargs=2, default=(1.05, 0.10), metavar=('MEAN', 'SIGMA'))
+    parser.add_argument('--scatterMm', type=float, default=0.018, help='tip scatter of one move, mm')
+    parser.add_argument('--outDir', default='/tmp/pfiSim', help='where the injected gains are written')
+    args = parser.parse_args()
+
+    logging.basicConfig(level=logging.INFO)
+    motorModel = MotorModel(calibModel, gainMean=(args.thetaGain[0], args.phiGain[0]),
+                            gainSigma=(args.thetaGain[1], args.phiGain[1]),
+                            scatterMm=args.scatterMm, seed=args.seed)
+    os.makedirs(args.outDir, exist_ok=True)
+    gainsPath = os.path.join(args.outDir, f'truthGains-seed{args.seed}.csv')
+    motorModel.toDataFrame().to_csv(gainsPath, index=False, float_format='%.6f')
+    print(f'  injected gains written to {gainsPath}')
+
+    physics = PhysicsState(calibModel, motorModel=motorModel)
+    pfi = pfiControl.PFI(fpgaHost='localhost', doConnect=False, doLoadModel=False)
+    pfi.calibModel = calibModel
+    allCobras = np.array([func.Cobra(calibModel.moduleIds[i], calibModel.positionerIds[i])
+                          for i in calibModel.findAllCobras()])
+
+    startPhysicsServer(physics, port=args.port)
+    startTruthServer(physics, pfi, allCobras, port=args.truthPort)
+    threading.Event().wait()
+
+
+if __name__ == '__main__':
+    main()

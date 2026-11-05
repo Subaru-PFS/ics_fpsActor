@@ -86,6 +86,32 @@ ssh pfsa01 'source /work/stack/loadLSST.bash && conda activate "$LSST_CONDA_ENV_
 pfs_utils has no `sconsUtils` in its table, so set datamodel up first, then `setup -k -r .`
 for pfs_utils and run pytest directly.
 
+## 5. Physics in the live stack
+
+The offline stack of section 2 moves nothing: the dummy mcs reports every frame as the
+target fps commanded, so a move fps sizes itself (the black-dot push, a flux-scan step)
+leaves no trace.  Attaching `pfiSimServer` makes the cobras move as motors would, and the
+camera see where they went:
+
+```bash
+setsid nohup bash -l tests/integration/start_pfiSim.sh --seed 0 > /tmp/pfiSim.log 2>&1 </dev/null &
+# then restart fps with COBRACHARMER_FPGA_HOST=localhost
+#      and mcs with MCS_SIM_TRUTH=localhost:4002
+```
+
+- `COBRACHARMER_FPGA_HOST` switches the `alefur/tests_offline` cobraCharmer from its stubs
+  to the real FPGA path (RUN commands, on-time adjustment) against that host.
+- `pfiSimServer` turns each RUN into motion: the motor maps at the on-time sent (slow and
+  fast at their nominals, interpolated between), times a per-cobra, per-axis, per-direction
+  gain (`--thetaGain`, `--phiGain` MEAN SIGMA), plus a per-move tip scatter (`--scatterMm`).
+  The gains it drew are written to `/tmp/pfiSim/truthGains-seed<N>.csv`.
+- `MCS_SIM_TRUTH` makes the dummy mcs measure every frame from the simulator's truth port,
+  with centroid noise, the 1.5% blind fraction and the real-dot occultation of section 2.
+  The other MCS tables stay replayed.
+
+A blind-move calibration (`iic calibrateBlindMove start`) on this stack should recover the
+injected phi gains: compare `cobra_blind_move_gain` with the truth file.
+
 ## Traps
 
 - **Never `pkill -f "ics.fpsActor.main"`** from a shell whose command line contains that
