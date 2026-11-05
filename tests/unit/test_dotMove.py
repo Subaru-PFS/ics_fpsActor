@@ -9,7 +9,7 @@ import pandas as pd
 import pytest
 
 from ics.cobraCharmer.cobraCoach.engineer import moveDtype
-from ics.fpsActor.utils import dotMove
+from ics.fpsActor.utils import dotGeometry, dotMove
 
 
 def test_mismatchedRunDirectoryIsRejected(tmp_path):
@@ -113,3 +113,34 @@ class TestLitFromFlux:
         above the level are stepped every remaining flat and end worse than they started.
         """
         assert 0.005 <= dotMove.HIDDEN_FLUX <= 0.02
+
+
+def test_dotDepthsTakeTheKeywordThenTheConfigThenTheDefaults():
+    config = dict(dotLanding=0.15, dotTarget=0.45)
+
+    assert dotMove.dotDepths(config, dotLanding=0.12, dotTarget=0.4) == (0.12, 0.4)
+    assert dotMove.dotDepths(config) == (0.15, 0.45)
+    assert dotMove.dotDepths(config, dotTarget=0.6) == (0.15, 0.6)
+    assert dotMove.dotDepths({}) == (dotGeometry.RAMP_LANDING_FRACTION,
+                                     dotGeometry.BLIND_TARGET_FRACTION)
+
+
+@pytest.mark.parametrize('landing, target', [(0.1, 0.1), (0.3, 0.2), (0.0, 0.5), (0.1, 1.0),
+                                             (0.1, 5.0), (-0.1, 0.5)])
+def test_dotDepthsRefuseAPushThatDoesNotGoDeeper(landing, target):
+    with pytest.raises(ValueError, match='dotLanding'):
+        dotMove.dotDepths({}, dotLanding=landing, dotTarget=target)
+
+
+def test_dotDepthsRefuseAMissingConfigValue():
+    with pytest.raises(TypeError):
+        dotMove.dotDepths(dict(dotTarget=None))
+
+
+def test_dotDepthsHaveNoTargetWithoutABlindMove():
+    config = dict(dotLanding=0.1, dotTarget=0.5)
+
+    assert dotMove.dotDepths(config, dotLanding=0.6, noBlindMove=True) == (0.6, None)
+    assert dotMove.dotDepths(config, dotTarget=0.4, noBlindMove=True) == (0.1, None)
+    with pytest.raises(ValueError, match='dotLanding'):
+        dotMove.dotDepths(config, dotLanding=1.0, noBlindMove=True)
