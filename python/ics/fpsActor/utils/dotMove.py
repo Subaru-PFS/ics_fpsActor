@@ -22,7 +22,6 @@ from ics.cobraCharmer import cobraState
 from ics.fpsActor.utils import blindMoveCalib
 from ics.fpsActor.utils import dotGeometry
 from ics.fpsActor.utils import dotState
-from ics.fpsActor.utils import dotTargets
 
 SCAN_STEP_FRACTION = 0.05
 """How much deeper each flat of the flux scan drives the fleet."""
@@ -69,6 +68,46 @@ move of the dot cobra at 1.0.  Scales start each convergence at 1.0, so in effec
 """
 
 DEFAULT_DOT_PHI_SCALING = 'resetBeforeBlind'
+
+
+def dotDepths(convergenceCfg, dotLanding=None, dotTarget=None, noBlindMove=False):
+    """Depths a dot convergence lands its cobras at and pushes them to, in dot fraction.
+
+    Parameters
+    ----------
+    convergenceCfg : `dict`
+        The fps `convergence` config section; its `dotLanding` and `dotTarget` apply where
+        the keyword is None, and `dotGeometry.RAMP_LANDING_FRACTION` and
+        `BLIND_TARGET_FRACTION` where the section has none.
+    dotLanding, dotTarget : `float`, optional
+        moveToPfsDesign keywords.
+    noBlindMove : `bool`
+        The cobras stay at the landing, so there is no target.
+
+    Returns
+    -------
+    (`float`, `float` or None)
+        The landing and the target, None if `noBlindMove`.
+
+    Raises
+    ------
+    `ValueError`
+        Unless 0 < landing < target < 1, the push going deeper into the dot; with
+        `noBlindMove`, unless 0 < landing < 1.
+    """
+    landing = float(convergenceCfg.get('dotLanding', dotGeometry.RAMP_LANDING_FRACTION)
+                    if dotLanding is None else dotLanding)
+    if noBlindMove:
+        if not 0 < landing < 1:
+            raise ValueError(f'dot depths need 0 < dotLanding < 1, not dotLanding={landing}')
+        return landing, None
+
+    target = float(convergenceCfg.get('dotTarget', dotGeometry.BLIND_TARGET_FRACTION)
+                   if dotTarget is None else dotTarget)
+    if not 0 < landing < target < 1:
+        raise ValueError(f'dot depths need 0 < dotLanding < dotTarget < 1, not '
+                         f'dotLanding={landing}, dotTarget={target}')
+    return landing, target
 
 
 def unscaledPhiRows(toDot, nIter, mode=DEFAULT_DOT_PHI_SCALING):
@@ -247,7 +286,7 @@ def aimThroughCalibration(cc, wanted, gains, landingFraction, phiCenter, directi
 
 
 def blindMoveToDots(cc, tracker, dotGlobalIdx, cmd=None, targetFraction=None,
-                    targetOffset=0.0, deltaFraction=None, stillLit=None, requireHidden=True,
+                    deltaFraction=None, stillLit=None, requireHidden=True,
                     dotThetaOffset=0.0, gains=None, landingFraction=dotGeometry.RAMP_LANDING_FRACTION):
     """Step every hidden dot cobra to its target depth, open loop.
 
@@ -266,13 +305,8 @@ def blindMoveToDots(cc, tracker, dotGlobalIdx, cmd=None, targetFraction=None,
     cmd : optional
         Command handle for inform/warn messages.
     targetFraction : `float`, optional
-        One depth for every cobra, overriding the measured optima.  The flux scan walks
-        the fleet through a common series of depths and needs that; a convergence leaves
-        it unset so each cobra goes to its own.
-    targetOffset : `float`
-        Added to every target, measured or default.  A fine-tuning sequence walks the
-        whole fleet a little shallower or deeper without discarding the per-cobra
-        differences the calibration measured.
+        Depth every cobra is pushed to; `dotGeometry.BLIND_TARGET_FRACTION`, the dot
+        centre, if None.
     deltaFraction : `float`, optional
         Step each cobra this much deeper than the tracker says it already is, instead of
         aiming at a depth.  The flux scan sweeps this way, which keeps each cobra's depth
@@ -320,14 +354,9 @@ def blindMoveToDots(cc, tracker, dotGlobalIdx, cmd=None, targetFraction=None,
         with np.errstate(invalid='ignore'):
             atFraction = 0.5 + (tracker.phi - phiCenter) / (2 * direction * halfDot)
         fractions = atFraction + deltaFraction
-        measured = np.zeros(nCobras, dtype=bool)
-    elif targetFraction is None:
-        fractions, measured = dotTargets.resolveTargets(
-            nCobras, dotGeometry.BLIND_TARGET_FRACTION, cmd=cmd)
     else:
-        fractions = np.full(nCobras, float(targetFraction))
-        measured = np.zeros(nCobras, dtype=bool)
-    fractions = fractions + targetOffset
+        depth = dotGeometry.BLIND_TARGET_FRACTION if targetFraction is None else targetFraction
+        fractions = np.full(nCobras, float(depth))
     command = fractions
     if gains is not None and deltaFraction is None:
         # Before anything moves: a calibration that cannot be applied leaves the push
@@ -390,8 +419,7 @@ def blindMoveToDots(cc, tracker, dotGlobalIdx, cmd=None, targetFraction=None,
 
     if cmd is not None:
         cmd.inform(f'text="blindMove: commanded {nCommanded}/{len(hidden)} '
-                   f'({int(measured[hidden].sum())} on a measured target, '
-                   f'{nNoEstimate} with no estimate, '
+                   f'({nNoEstimate} with no estimate, '
                    f'{nImplausible} with an estimate outside the dot)"')
     return nCommanded
 

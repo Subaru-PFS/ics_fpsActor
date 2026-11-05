@@ -114,3 +114,12 @@ def test_fluxStepIsNeverAimed(monkeypatch):
     dotMove.blindMoveToDots(fakeCc(nCobras), tracker(nCobras), dotIdx, deltaFraction=0.05,
                             requireHidden=False, gains='calib')
     assert called == []
+
+
+def test_defaultDepthIsTheDotCentre(monkeypatch):
+    nCobras, dotIdx = 6, np.array([1, 4])
+    patchGeometry(monkeypatch, nCobras)
+    t = tracker(nCobras)
+    dotMove.blindMoveToDots(fakeCc(nCobras), t, dotIdx, requireHidden=False)
+    assert dotGeometry.BLIND_TARGET_FRACTION == 0.5
+    assert np.allclose(t.lastPush.dotTarget, 0.5) and np.allclose(t.lastPush.dotCommand, 0.5)

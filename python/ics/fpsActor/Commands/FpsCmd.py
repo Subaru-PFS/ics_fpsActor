@@ -103,7 +103,7 @@ class FpsCmd(object):
             ('setCobraMode', '@(phi|theta|normal)', self.setCobraMode),
             ('setGeometry', '@(phi|theta) <runDir>', self.setGeometry),
             ('moveToPfsDesign',
-             '<designId> [@twoStepsOff] [@shortExpOff] [@goHome] [@noTweak] [@skipFiducialInterferenceCheck] [@allowMaskedCobras] [@noBlindMove] [<visit>] [<expTime>] [<iteration>] [<tolerance>] [<maskFile>] [<dotTarget>] [<dotTargetOffset>] [<dotLanding>] [<dotPhiScaling>] [<dotCalib>]',
+             '<designId> [@twoStepsOff] [@shortExpOff] [@goHome] [@noTweak] [@skipFiducialInterferenceCheck] [@allowMaskedCobras] [@noBlindMove] [<visit>] [<expTime>] [<iteration>] [<tolerance>] [<maskFile>] [<dotTarget>] [<dotLanding>] [<dotCalib>]',
              self.moveToPfsDesign),
             ('measureBlindMove', '', self.measureBlindMove),
             ('calibrateBlindMove', '<visits> [@dryRun]', self.calibrateBlindMove),
@@ -188,15 +188,10 @@ class FpsCmd(object):
                                         keys.Key("dbname", types.String(), help="opdb db name"),
                                         keys.Key("port", types.Int(), help="opdb port"),
                                         keys.Key("designName", types.String(), help="pfsDesign name"),
-                                        keys.Key("dotTarget", types.String(), help="dotTarget"),
-                                        keys.Key("dotTargetOffset", types.Float(),
-                                                 help="shift applied to every dot target"),
+                                        keys.Key("dotTarget", types.Float(), help="dot fraction the blind push aims at"),
                                         keys.Key("nRemaining", types.Int()),
                                         keys.Key("dotLanding", types.Float(),
                                                  help="dot fraction the ramp lands at"),
-                                        keys.Key("dotPhiScaling", types.String(),
-                                                 help="phi on-time scaling of dot cobras: "
-                                                      "resetBeforeBlind or holdThroughRamp"),
                                         keys.Key("dotThetaOffset", types.Float(),
                                                  help="degrees the black dots are turned about "
                                                       "their cobra centres, to measure the blind move"),
@@ -2029,32 +2024,26 @@ class FpsCmd(object):
         tolerance = cmdKeys['tolerance'].values[0] if 'tolerance' in cmdKeys else 0.01
         fastThreshold = cmdKeys['fastThreshold'].values[0] if 'fastThreshold' in cmdKeys else 99.9
 
-        # Dot depth controls.  Unset, every dot cobra goes to its own measured optimum.
-        # noBlindMove leaves the fleet at the ramp landing, which is the common, known
-        # depth a fresh calibration has to start from; dotTarget forces one depth for
-        # every cobra; dotTargetOffset shifts them all while keeping their differences.
+        # Every dot cobra lands at dotLanding, the ramp's last row, and is pushed to
+        # dotTarget.  noBlindMove leaves the fleet at the landing.
         noBlindMove = 'noBlindMove' in cmdKeys
-        dotTarget = cmdKeys['dotTarget'].values[0] if 'dotTarget' in cmdKeys else None
-        dotTargetOffset = (cmdKeys['dotTargetOffset'].values[0]
-                           if 'dotTargetOffset' in cmdKeys else 0.0)
-        # dotLanding moves only the last ramp row, not the run-up before it.
-        dotLanding = (cmdKeys['dotLanding'].values[0] if 'dotLanding' in cmdKeys
-                      else dotGeometry.RAMP_LANDING_FRACTION)
-
         convergenceCfg = self.actor.actorConfig.get('convergence', {})
+        try:
+            dotLanding, dotTarget = dotMove.dotDepths(
+                convergenceCfg,
+                dotLanding=cmdKeys['dotLanding'].values[0] if 'dotLanding' in cmdKeys else None,
+                dotTarget=cmdKeys['dotTarget'].values[0] if 'dotTarget' in cmdKeys else None,
+                noBlindMove=noBlindMove)
+        except ValueError as e:
+            cmd.fail(f'text="{e}"')
+            return
         maxInvalidScienceTargets = convergenceCfg.get('maxInvalidScienceTargets', 25)
         targetFallback = pfsConfigUtils.resolveTargetFallback(convergenceCfg)
         notConvergedDistanceThreshold = convergenceCfg.get('notConvergedDistanceThreshold', 0.05)
         notConvergedDistanceThreshold = max(notConvergedDistanceThreshold, 5 * tolerance)
-        # How dot cobras use the learned phi scale; their two blind moves run at 1.0 either way.
-        dotPhiScaling = (cmdKeys['dotPhiScaling'].values[0] if 'dotPhiScaling' in cmdKeys
-                         else convergenceCfg.get('dotPhiScaling', dotMove.DEFAULT_DOT_PHI_SCALING))
-        if dotPhiScaling not in dotMove.DOT_PHI_SCALING_MODES:
-            cmd.fail(f'text="dotPhiScaling must be one of {dotMove.DOT_PHI_SCALING_MODES}, '
-                     f'not {dotPhiScaling}"')
-            return
         cmd.inform(f'text="useScaling={self.cc.useScaling}, '
-                   f'dotPhiScaling={dotPhiScaling}"')
+                   f'dotPhiScaling={dotMove.DEFAULT_DOT_PHI_SCALING}, dotLanding={dotLanding}, '
+                   f'dotTarget={dotTarget}"')
         dotCalib = cmdKeys['dotCalib'].values[0] if 'dotCalib' in cmdKeys else None
         try:
             dotCalibId, dotGains = self._dotCalibration(cmd, dotCalib,
@@ -2176,7 +2165,7 @@ class FpsCmd(object):
         commandedToDot = toBlackDot[commanded]
         commandedPhiRamp = phiRamp[:, commanded]
         commandedThetaRamp = thetaRamp[:, commanded]
-        commandedUnscaledPhi = dotMove.unscaledPhiRows(commandedToDot, iteration, dotPhiScaling)
+        commandedUnscaledPhi = dotMove.unscaledPhiRows(commandedToDot, iteration)
 
         # Drives FiberStatus in finalize(): a science fiber parked on a black dot is
         # commanded but not good, or the DRP extracts a deliberately dark fiber.
@@ -2386,7 +2375,6 @@ class FpsCmd(object):
                 else:
                     dotMove.blindMoveToDots(self.cc, self.dotTracker, self.dotCobras,
                                             cmd=cmd, targetFraction=dotTarget,
-                                            targetOffset=dotTargetOffset,
                                             requireHidden=not dotThetaOffset,
                                             dotThetaOffset=dotThetaOffset,
                                             gains=dotGains, landingFraction=dotLanding)

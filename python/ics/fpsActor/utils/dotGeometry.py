@@ -27,34 +27,18 @@ from ics.cobraCharmer import targetValidation
 PHI_CAPS_DEG = (30.0, 45.0)
 
 # Dot-hiding depth schedule, in dot fraction (0 = entry edge, 0.5 = dot centre,
-# 1 = exit edge).  The closed-loop phi ramp lands the tip at RAMP_LANDING_FRACTION;
-# a single open-loop slow-map blind move (dotMove.blindMoveToDots) then pushes it
-# deeper, to each cobra's own measured optimum.
+# 1 = exit edge).  The closed-loop phi ramp lands the tip at the landing depth, then a
+# single open-loop slow-map blind move (dotMove.blindMoveToDots) pushes it deeper, to the
+# target depth.  Both are fps config, convergence.dotLanding and convergence.dotTarget
+# (dotMove.dotDepths); RAMP_LANDING_FRACTION and BLIND_TARGET_FRACTION, the dot centre,
+# apply where the config has none.  RAMP_LANDING_FRACTION also anchors where the ramp
+# starts, whatever depth its last row is asked for.
 #
 # Measured on the 2026-07-24 telescope run (good cobras, flux right after
 # moveToPfsDesign): landing at 0.2 with no blind move leaves a median 9.6% residual flux
 # (35% of cobras below 5%); the 0.1 -> 0.3 push reached 0.62% (84% below 5%).
-#
-# The two 13-step across-dot scans give the fraction of cobras below 5% residual flux for
-# a PERFECTLY placed tip as
-#     0.30 -> 89.8%    0.35 -> 96.8%    0.40 -> 98.4%    0.45 -> 98.3%    0.50 -> 96.7%
-# so the obscuration optimum is a broad plateau from about 0.35 to 0.50.
-#
-# BLIND_TARGET_FRACTION is only the fallback.  Each cobra is aimed at its own measured
-# optimum where one exists (dotTargets), because the depth at which a cobra hides best is
-# a property of that cobra: the fitted optima span 0.21 to 0.80 with 158 um of real
-# cobra-to-cobra spread, against 25 um of measurement scatter.  Interpolating the scan
-# curves at each aim point gives the fraction hidden below 1% residual flux as
-#     fixed 0.40  89.8%    fixed 0.445  92.0%    fixed 0.50  89.7%    per-cobra  98.8%
-# so 0.445 is the best single value and is what an uncalibrated cobra gets.
-#
-# Optima beyond 0.5 are real and are not clipped: for the 1108 cobras whose measured
-# optimum is past the dot centre, aiming there hides 98.7% against 83.3% at 0.40.  What
-# the fraction cannot exceed is the range the scan actually covered -- dotTargets rejects
-# anything outside it rather than clamping, since a clamped value still asserts a depth
-# nobody observed.
 RAMP_LANDING_FRACTION = 0.1
-BLIND_TARGET_FRACTION = 0.4
+BLIND_TARGET_FRACTION = 0.5
 
 # Where the closed-loop ramp stops, just outside the entry edge, before the landing jump.
 # A fixed angle is not a fixed standoff -- halfDot varies across the fleet, so 3 degrees
