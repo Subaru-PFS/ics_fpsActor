@@ -2374,7 +2374,8 @@ class FpsCmd(object):
                 if noBlindMove:
                     cmd.inform('text="blindMove: skipped; the fleet stays at the ramp '
                                'landing depth"')
-                else:
+                # Without a tracker (an unreadable run directory) nothing sizes the push.
+                elif self.dotTracker is not None:
                     dotMove.blindMoveToDots(self.cc, self.dotTracker, self.dotCobras,
                                             cmd=cmd, targetFraction=dotTarget,
                                             requireHidden=not dotThetaOffset,
