@@ -903,6 +903,7 @@ class FpsCmd(object):
             cmd.finish('text="calibrateBlindMove: dry run, nothing inserted"')
             return
         calibId = blindMoveCalib.insertCalibration(db, visits, gains, loo)
+        cmd.inform(f'blindMoveCalibId={calibId}')
         cmd.finish(f'text="calibrateBlindMove: inserted calibration {calibId}, the default only '
                    f'once validateBlindMove passes"')
 
@@ -998,18 +999,26 @@ class FpsCmd(object):
             return
         # The frame is taken for this command, in the visit of the convergence.
         self.actor.visitor.cmd = cmd
+        recorded = True
         try:
             positions = self.cc.exposeAndExtractPositions()
             nSeen = int(self.cc.cobraInfo['detected'][self.dotCobras].sum())
             cmd.inform(f'text="measureBlindMove: {nSeen}/{len(self.dotCobras)} dot cobras '
                        f'measured, visit={self.actor.visitor.visit}"')
             if self.dotRun is not None and self.dotRun['dotThetaOffset']:
-                self._recordBlindMoves(cmd, positions)
+                recorded = self._recordBlindMoves(cmd, positions)
         finally:
             restored = self.switchFMethod(cmd, 'target')
 
-        if restored:
-            cmd.finish('text="measureBlindMove done"')
+        if not restored:
+            return
+        # On turned dots the rows are what the frame is for: a calibration counting this
+        # visit would find nothing to fit.
+        if not recorded:
+            cmd.fail(f'text="measureBlindMove: frame taken, but the blind moves of visit '
+                     f'{self.actor.visitor.visit} were not recorded"')
+            return
+        cmd.finish('text="measureBlindMove done"')
 
     def _dotCalibration(self, cmd, requested, enabled):
         """The blind-move calibration a convergence aims its dot cobras through.
@@ -1069,12 +1078,15 @@ class FpsCmd(object):
     def _recordBlindMoves(self, cmd, positions):
         """Insert the measured landing and push of every dot cobra into opdb, once.
 
-        A failure is reported, not raised: the frame is taken either way.
+        Returns
+        -------
+        `bool`
+            Whether the rows were inserted.  A failure is reported, not raised.
         """
         visit = self.actor.visitor.visit
         if self.dotTracker.lastPush is None:
             cmd.warn(f'text="measureBlindMove: no push of visit {visit} to record"')
-            return
+            return False
         try:
             db = self.connectToDB(cmd)
             run = self.dotRun
@@ -1086,9 +1098,11 @@ class FpsCmd(object):
             cmd.inform(f'text="measureBlindMove: {len(records)} rows inserted into '
                        f'{dotMove.BLIND_MOVE_TABLE}, visit={visit}"')
             self.dotRun = None
+            return True
         except Exception as e:
             reason = str(e).replace('"', "'")
             cmd.warn(f'text="measureBlindMove: blind moves of visit {visit} not recorded ({reason})"')
+            return False
 
     def switchFMethod(self, cmd, method):
         """Set the method the MCS identifies fibers by.
