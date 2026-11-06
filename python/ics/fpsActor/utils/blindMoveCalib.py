@@ -10,11 +10,12 @@ default is the calibration of the newest validation row.  Nothing is ever update
 
 Two models.  'gain-lsq' fits each gain by least squares over runs at several depths.
 'operating-point' measures the gains of the moves production makes -- the landing to one
-depth, the push from there to one target -- on runs at that point aimed through a prior
-calibration: each gain is the robust mean of a cobra's runs, so nothing is extrapolated
-and the form of the response does not matter.  The prior aims the runs and is compared
-with them, but does not enter the gains: they wander from run to run and from night to
-night by more than a prior from another time can predict.
+depth, the push from there to one target -- on runs at that point, commanded through the
+motor map alone or aimed through an earlier calibration: each gain is the robust mean of a
+cobra's runs, so nothing is extrapolated and the form of the response does not matter.
+The calibration that aimed the runs is compared with them but does not enter the gains:
+they wander from run to run and from night to night by more than a calibration from
+another time can predict.
 
 A gain is the measured phi travel of a move over the travel its steps were sized for,
 both from the measured start.  Rows record the commanded angles (phi_landing_command,
@@ -36,8 +37,8 @@ MODEL_VERSION = 2
 """Version 2 accepts gains within `dotState.GAIN_BOUNDS`; version 1 accepted (0.5, 2.0)."""
 
 OPERATING_POINT_MODEL = 'operating-point'
-"""Gains measured on runs at the production landing and target, aimed through a prior
-calibration."""
+"""Gains measured on runs at the production landing and target, at the motor map or aimed
+through an earlier calibration."""
 
 OPERATING_POINT_VERSION = 1
 
@@ -55,7 +56,8 @@ regime     standardised step between the earlier and later runs of a cobra that,
 regimeJump that step as a fraction of the gain.  Both are needed: a gain that drifts over a
            session is significant too, but its mean is still the best value it has
 stallGain  landing gain below which a run counts as a stall; two stalls mark the cobra
-minSpan    shortest commanded travel used, as a fraction of the fleet median of its move
+minSpan    shortest travel used, commanded or measured, as a fraction of the fleet median of
+           the move's commanded travel: an aimed fast cobra commands a short move
 noiseFloor smallest per-run noise of a gain, so that identical runs do not weigh infinitely
 """
 
@@ -312,7 +314,7 @@ def _moveRatios(meas, p, cut):
         x, y = x.to_numpy(dtype=float), y.to_numpy(dtype=float)
         finite = np.isfinite(x) & np.isfinite(y) & started
         span = np.median(np.abs(x[finite])) if finite.any() else np.nan
-        valid = finite & (np.abs(x) >= p['minSpan'] * span)
+        valid = finite & (np.maximum(np.abs(x), np.abs(y)) >= p['minSpan'] * span)
         out[move] = (y[valid] / x[valid], meas.cobra_id.to_numpy()[valid],
                      meas.pfs_visit_id.to_numpy()[valid])
     return out
@@ -444,6 +446,22 @@ def operatingPointOf(meas):
     return tuple(point)
 
 
+def aimingCalibOf(meas):
+    """The calibration the rows record as their aim; None if none did.
+
+    Raises
+    ------
+    `ValueError`
+        If the rows were aimed through more than one calibration.
+    """
+    if 'blind_move_calib_id' not in meas:
+        return None
+    ids = np.unique(meas.blind_move_calib_id.dropna().to_numpy(dtype=int))
+    if len(ids) > 1:
+        raise ValueError(f'rows aimed through calibrations {ids.tolist()}')
+    return int(ids[0]) if len(ids) else None
+
+
 def fitOperatingPoint(meas, prior=None, params=None, minRuns=None, cut=RAMP_RESIDUAL_CUT):
     """Landing and push gain per cobra, measured on runs at the operating point.
 
@@ -493,7 +511,7 @@ def fitOperatingPoint(meas, prior=None, params=None, minRuns=None, cut=RAMP_RESI
                              nRejected=int(fit.rejected.sum()), nSplit=int((fit.split > 0).sum()))
 
     landing, push = fits['landing'], fits['push']
-    index = landing.index.union(push.index)
+    index = pd.Index(np.unique(meas.cobra_id), name='cobra_id').union(landing.index).union(push.index)
     landing, push = landing.reindex(index), push.reindex(index)
     out = pd.DataFrame(index=index)
     out['landing_gain'] = landing.gain

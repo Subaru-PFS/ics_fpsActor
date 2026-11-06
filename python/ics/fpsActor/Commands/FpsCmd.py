@@ -205,7 +205,8 @@ class FpsCmd(object):
                                                       "calibrated by an operating-point fit"),
                                         keys.Key("priorCalib", types.Int(),
                                                  help="blind-move calibration the operating-point "
-                                                      "runs were aimed through; the default if absent"),
+                                                      "runs were aimed through; the one their rows "
+                                                      "record if absent"),
                                         keys.Key("calibId", types.Int(),
                                                  help="blind-move calibration identifier"),
                                         keys.Key("dotLandingAim", types.Bool('off', 'on'),
@@ -925,8 +926,9 @@ class FpsCmd(object):
                    f'once validateBlindMove passes"')
 
     def _calibrateOperatingPoint(self, cmd, db, visits, meas):
-        """Measure a calibration on runs at one operating point, aimed through priorCalib or
-        the default, see `blindMoveCalib.fitOperatingPoint`.
+        """Measure a calibration on runs at one operating point, see
+        `blindMoveCalib.fitOperatingPoint`.  The prior it is compared with and recorded against
+        is priorCalib, else the calibration the rows were aimed through, else none.
 
         The parameters are `blindMoveCalib.OPERATING_POINT`, overridden by fps.yaml
         blindMoveOperatingPoint and minRuns by the keyword.
@@ -944,9 +946,9 @@ class FpsCmd(object):
                      f'{unknown}"')
             return
 
-        priorId = (int(cmdKeys['priorCalib'].values[0]) if 'priorCalib' in cmdKeys
-                   else blindMoveCalib.defaultCalibId(db))
         try:
+            priorId = (int(cmdKeys['priorCalib'].values[0]) if 'priorCalib' in cmdKeys
+                       else blindMoveCalib.aimingCalibOf(meas))
             prior = None if priorId is None else blindMoveCalib.loadGains(db, priorId)
         except ValueError as e:
             cmd.fail(f'text="calibrateBlindMove: {e}"')
@@ -959,17 +961,19 @@ class FpsCmd(object):
         if not len(calibrated):
             cmd.fail(f'text="calibrateBlindMove: no cobra calibrated over visits {visits}"')
             return
+        aimed = 'at the motor map' if priorId is None else f'aimed through {priorId}'
         cmd.inform(f'text="calibrateBlindMove: operating point landing {dotLanding} target '
-                   f'{dotTarget}, aimed through {priorId}: {len(calibrated)} of {len(gains)} cobras '
+                   f'{dotTarget}, {aimed}: {len(calibrated)} of {len(gains)} cobras '
                    f'calibrated, median gains {calibrated.landing_gain.median():.3f} / '
                    f'{calibrated.target_gain.median():.3f}"')
         for move in ('landing', 'push'):
             m = summary[move]
-            shift = summary.get('prior', {}).get(move, {})
+            shift = summary.get('prior', {}).get(move)
+            fromPrior = ('' if shift is None else f'; from the prior median {shift["median"]:+.3f} '
+                                                  f'spread {shift["tau"]:.3f}')
             cmd.inform(f'text="calibrateBlindMove: {move} per-run noise {m["noise"]:.3f}, drift '
                        f'{m["drift"]:.3f} and fleet trend {m["trend"]:+.4f} per run, {m["nRejected"]} runs rejected, '
-                       f'{m["nSplit"]} cobras from their later runs; from the prior median '
-                       f'{shift.get("median", np.nan):+.3f} spread {shift.get("tau", np.nan):.3f}"')
+                       f'{m["nSplit"]} cobras from their later runs{fromPrior}"')
         for reason, n in gains.reason.value_counts().items():
             cmd.inform(f'text="calibrateBlindMove: {n} cobras not calibrated: {reason}"')
 
