@@ -67,6 +67,8 @@ class Fps(actorcore.ICC.ICC):
         #
         self.db = None
         self.cc = None
+        # fps.yaml convergence values set by fps dotConfig; empty when fps.yaml applies.
+        self.dotOverride = {}
 
         actorcore.ICC.ICC.__init__(self, name, productName=productName)
 
