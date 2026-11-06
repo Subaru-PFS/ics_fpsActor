@@ -92,8 +92,8 @@ def dotDepths(convergenceCfg, dotLanding=None, dotTarget=None, noBlindMove=False
     Raises
     ------
     `ValueError`
-        Unless 0 < landing < target < 1, the push going deeper into the dot; with
-        `noBlindMove`, unless 0 < landing < 1.
+        Unless 0 < landing < target <= `dotGeometry.DEPTH_CAP`[1], the push going deeper
+        into the dot and no deeper than it may; with `noBlindMove`, unless 0 < landing < 1.
     """
     landing = float(convergenceCfg.get('dotLanding', dotGeometry.RAMP_LANDING_FRACTION)
                     if dotLanding is None else dotLanding)
@@ -104,8 +104,9 @@ def dotDepths(convergenceCfg, dotLanding=None, dotTarget=None, noBlindMove=False
 
     target = float(convergenceCfg.get('dotTarget', dotGeometry.BLIND_TARGET_FRACTION)
                    if dotTarget is None else dotTarget)
-    if not 0 < landing < target < 1:
-        raise ValueError(f'dot depths need 0 < dotLanding < dotTarget < 1, not '
+    deepest = dotGeometry.DEPTH_CAP[1]
+    if not 0 < landing < target <= deepest:
+        raise ValueError(f'dot depths need 0 < dotLanding < dotTarget <= {deepest}, not '
                          f'dotLanding={landing}, dotTarget={target}')
     return landing, target
 
@@ -196,7 +197,7 @@ def loadRunInputs(cc, dataDir=None):
     return rows, rowCobraId, dotGlobalIdx
 
 
-def makeTracker(cc, cmd=None, blindIterations=0):
+def makeTracker(cc, cmd=None, blindIterations=0, gains=None):
     """Seed a position estimate for every cobra from the convergence just run.
 
     Parameters
@@ -208,6 +209,12 @@ def makeTracker(cc, cmd=None, blindIterations=0):
         the last ramp step is not measured, so the push departs from a prediction; on dots
         turned into view (`dotGeometry.dotPositions`) it is measured, and discarding it
         here gives the push the same starting point without altering the run directory.
+    gains : `pandas.DataFrame`, optional
+        Blind-move calibration, `cobra_blind_move_gain` rows indexed by cobra_id.  A
+        calibrated cobra's unmeasured landing is propagated with its landing gain, and the
+        moves commanded after the convergence are sized and propagated with its push gain;
+        every other move and cobra with `dotState.DEFAULT_GAIN`.  Gains that cannot be
+        applied are warned of, and every cobra then takes `dotState.DEFAULT_GAIN`.
 
     Returns
     -------
@@ -230,69 +237,64 @@ def makeTracker(cc, cmd=None, blindIterations=0):
 
     nCobras = len(cc.allCobras)
     armLength, _ = dotGeometry._sgfmArrays()
-    gains = np.full(nCobras, dotState.DEFAULT_GAIN)
-    tracker = dotState.DotTracker.fromMoves(cc.calibModel, rows, rowCobraId, gains,
-                                            armLength, nCobras)
+    landingGain = pushGain = np.full(nCobras, dotState.DEFAULT_GAIN)
+    calibrated = np.zeros(nCobras, dtype=bool)
+    if gains is not None:
+        try:
+            landingGain, pushGain, calibrated = blindMoveCalib.gainsFor(gains, np.arange(1, nCobras + 1))
+        except Exception as e:
+            if cmd is not None:
+                reason = str(e).replace('"', "'")
+                cmd.warn(f'text="blindMove: calibration not applied ({reason}); unaimed"')
+    tracker = dotState.DotTracker.fromMoves(cc.calibModel, rows, rowCobraId, pushGain,
+                                            armLength, nCobras, landingGains=landingGain,
+                                            calibrated=calibrated)
     return tracker, dotGlobalIdx
 
 
-def phiBeforeLanding(cc):
-    """Measured phi, radians, at the start of the convergence's last move, per cobra.
+def landingFractions(landing, gains, nCobras):
+    """Depth to command each cobra's landing to, the last row of its ramp.
 
-    The last move of a dot cobra is the ramp landing, so this is the angle it set off
-    from.  NaN for a cobra the run did not move or did not see at that frame.
-    """
-    rows, rowCobraId, _ = loadRunInputs(cc)
-    phi = np.full(len(cc.allCobras), np.nan)
-    if rows.shape[1] < 2:
-        return phi
-    seen = rows['detected'][:, -2]
-    phi[rowCobraId[seen]] = rows['phiAngle'][seen, -2]
-    return phi
-
-
-def aimThroughCalibration(cc, wanted, gains, landingFraction, phiCenter, direction, halfDot):
-    """Depth to command so that each cobra arrives at the depth `wanted`.
-
-    See `blindMoveCalib.aimedCommand`.  The start of the landing is the measured
-    `phiBeforeLanding`, so a cobra not seen there keeps `wanted`; a cobra the calibration
-    does not calibrate is aimed with gain 1.0, which also keeps it.
+    See `blindMoveCalib.landingCommands`: a calibrated cobra is commanded so that its
+    landing gain brings it to `landing` from the ramp approach; any other to `landing`.
 
     Parameters
     ----------
-    cc : `CobraCoach`
-    wanted : `numpy.ndarray` of `float`, (nCobras,)
-        Dot fraction.
+    landing : `float`
+        Depth the landing is meant to reach, dot fraction.
     gains : `pandas.DataFrame`
         `cobra_blind_move_gain` rows, indexed by cobra_id.
-    landingFraction : `float`
-    phiCenter, direction, halfDot : `numpy.ndarray`, (nCobras,)
-        As `dotGeometry.computeDotAngles`.
+    nCobras : `int`
 
     Returns
     -------
     (`numpy.ndarray`, `numpy.ndarray`)
-        Depth to command, and the mask of cobras aimed through calibrated gains.
+        Commanded depth, (nCobras,), and the mask of cobras aimed.
     """
-    landingGain, targetGain, calibrated = blindMoveCalib.gainsFor(
-        gains, np.arange(1, len(wanted) + 1))
-
-    phiLandingTarget = dotGeometry.computePhiAtFraction(phiCenter, halfDot, direction,
-                                                        landingFraction)
-    command, aimed = blindMoveCalib.aimedCommand(wanted, landingFraction, phiBeforeLanding(cc),
-                                                 phiLandingTarget, 2 * direction * halfDot,
-                                                 landingGain, targetGain)
-    return command, aimed & calibrated
+    landingGain, _, calibrated = blindMoveCalib.gainsFor(gains, np.arange(1, nCobras + 1))
+    command = blindMoveCalib.landingCommands(landing, dotGeometry.RAMP_APPROACH_FRACTION,
+                                             landingGain, calibrated)
+    return command, calibrated
 
 
 def blindMoveToDots(cc, tracker, dotGlobalIdx, cmd=None, targetFraction=None,
-                    deltaFraction=None, stillLit=None, requireHidden=True,
-                    dotThetaOffset=0.0, gains=None, landingFraction=dotGeometry.RAMP_LANDING_FRACTION):
+                    deltaFraction=None, stillLit=None, requireHidden=True, dotThetaOffset=0.0):
     """Step every hidden dot cobra to its target depth, open loop.
 
     The tracker is advanced by whatever is commanded, so calling this repeatedly -- as
     the flux scan does -- steps the cobra on from where the previous call left it rather
     than from where the convergence ended.
+
+    The move is sized from the tracker's estimate to the target through the motor map and
+    divided by the tracker's gain: for a cobra calibrated by `makeTracker`, the estimate
+    carries the landing gain of an unmeasured landing and the gain is its push gain, so
+    the push is aimed whatever the landing did -- measured, predicted, or never made by a
+    cobra frozen before it.
+
+    No move may take a cobra outside `dotGeometry.DEPTH_CAP` had it gone the map's travel:
+    a move deeper counts from the deeper of its estimate and tracker.phiAtGainOne, a move
+    back from the shallower.  A cobra whose landing was commanded to the shallow cap is so
+    never pulled back, however deep the estimate.
 
     Parameters
     ----------
@@ -310,7 +312,9 @@ def blindMoveToDots(cc, tracker, dotGlobalIdx, cmd=None, targetFraction=None,
     deltaFraction : `float`, optional
         Step each cobra this much deeper than the tracker says it already is, instead of
         aiming at a depth.  The flux scan sweeps this way, which keeps each cobra's depth
-        known individually rather than assuming they share one.
+        known individually rather than assuming they share one.  Like a push, a step stops
+        at `dotGeometry.DEPTH_CAP`: a cobra of push gain g from depth d goes no deeper
+        than about d + (0.9 - d) * g.
     stillLit : `numpy.ndarray` of `bool`, optional
         Per-cobra, over all cobras.  When given, only these are moved.  A sequence whose
         job is to hide rather than to map the curve leaves a cobra alone once its flux
@@ -323,11 +327,6 @@ def blindMoveToDots(cc, tracker, dotGlobalIdx, cmd=None, targetFraction=None,
         so the measurement of the push needs this off.
     dotThetaOffset : `float`
         Degrees the dots are turned about their cobra centres, see `dotGeometry.dotPositions`.
-    gains : `pandas.DataFrame`, optional
-        Blind-move calibration to aim through, see `aimThroughCalibration`.  Ignored with
-        `deltaFraction`.
-    landingFraction : `float`
-        Depth the ramp landed at.
 
     Returns
     -------
@@ -357,26 +356,19 @@ def blindMoveToDots(cc, tracker, dotGlobalIdx, cmd=None, targetFraction=None,
     else:
         depth = dotGeometry.BLIND_TARGET_FRACTION if targetFraction is None else targetFraction
         fractions = np.full(nCobras, float(depth))
-    command = fractions
-    if gains is not None and deltaFraction is None:
-        # Before anything moves: a calibration that cannot be applied leaves the push
-        # unaimed rather than the convergence failed.
-        try:
-            command, aimed = aimThroughCalibration(cc, fractions, gains, landingFraction,
-                                                   phiCenter, direction, halfDot)
-        except Exception as e:
-            command = fractions
-            if cmd is not None:
-                reason = str(e).replace('"', "'")
-                cmd.warn(f'text="blindMove: calibration not applied ({reason}); unaimed"')
-        else:
-            if cmd is not None:
-                cmd.inform(f'text="blindMove: {int(aimed[hidden].sum())}/{len(hidden)} cobras '
-                           f'aimed through the calibration, the others at their wanted depth"')
-    phiTarget = dotGeometry.computePhiAtFraction(phiCenter, halfDot, direction, command)
+        if cmd is not None and tracker.calibrated.any():
+            cmd.inform(f'text="blindMove: {int(tracker.calibrated[hidden].sum())}/{len(hidden)} '
+                       f'cobras aimed through the calibration, the others at gain '
+                       f'{dotState.DEFAULT_GAIN}"')
+    with np.errstate(invalid='ignore'):
+        atGainOne = 0.5 + (tracker.phiAtGainOne - phiCenter) / (2 * direction * halfDot)
+    phiTarget = dotGeometry.computePhiAtFraction(phiCenter, halfDot, direction, fractions)
+    phiCap = [dotGeometry.computePhiAtFraction(phiCenter, halfDot, direction, depth)
+              for depth in dotGeometry.DEPTH_CAP]
+    phiFrom = tracker.phi.copy()
 
     movable, cobras, phiSteps = [], [], []
-    nNoEstimate = nImplausible = 0
+    nNoEstimate = nImplausible = nCapped = 0
     for cobraId in hidden:
         phiNow = tracker.phi[cobraId]
         if not np.isfinite(phiNow):
@@ -394,6 +386,15 @@ def blindMoveToDots(cc, tracker, dotGlobalIdx, cmd=None, targetFraction=None,
         steps = dotState.stepsToTarget(cc.calibModel, cobraId, phiNow,
                                        phiTarget[cobraId], tracker.gain[cobraId],
                                        maxSteps=dotGeometry.MAX_BLIND_STEPS)
+        deeper = np.sign(steps) == direction[cobraId]
+        worst = (np.nanargmax if deeper else np.nanargmin)([atFraction, atGainOne[cobraId]])
+        capSteps = dotState.stepsToTarget(cc.calibModel, cobraId,
+                                          (phiNow, tracker.phiAtGainOne[cobraId])[worst],
+                                          phiCap[int(deeper)][cobraId], dotState.DEFAULT_GAIN)
+        if np.sign(capSteps) != np.sign(steps):
+            capSteps = 0
+        if abs(steps) > abs(capSteps):
+            steps, nCapped = capSteps, nCapped + 1
         if steps == 0:
             continue
         movable.append(cobraId)
@@ -413,14 +414,22 @@ def blindMoveToDots(cc, tracker, dotGlobalIdx, cmd=None, targetFraction=None,
                              np.asarray(phiSteps, dtype=int), phiFast=False)
         # Only now is the cobra where the estimate should say it is.
         tracker.applied(movable, phiSteps)
-    tracker.lastPush = pd.DataFrame(dict(cobraIdx=movable, dotTarget=fractions[movable],
-                                         dotCommand=command[movable],
-                                         phiPushTarget=phiTarget[movable]))
+    if deltaFraction is None:
+        # Where the steps sent would take each cobra at gain 1: with phiFrom, what the
+        # push was commanded, which is what its gain is measured against.
+        phiCommand = np.array([dotState.mapSpan(cc.calibModel, c, s, phiFrom[c])
+                               for c, s in zip(movable, phiSteps)], dtype=float)
+        tracker.lastPush = pd.DataFrame(dict(cobraIdx=movable, dotTarget=fractions[movable],
+                                             phiPushTarget=phiTarget[movable],
+                                             phiPushStart=phiFrom[movable],
+                                             phiPushCommand=phiCommand,
+                                             calibrated=tracker.calibrated[movable]))
 
     if cmd is not None:
         cmd.inform(f'text="blindMove: commanded {nCommanded}/{len(hidden)} '
                    f'({nNoEstimate} with no estimate, '
-                   f'{nImplausible} with an estimate outside the dot)"')
+                   f'{nImplausible} with an estimate outside the dot, '
+                   f'{nCapped} capped within depths {dotGeometry.DEPTH_CAP} for gain 1)"')
     return nCommanded
 
 
@@ -535,7 +544,7 @@ def rampResidual(db, visit, iteration, nCobras):
 
 
 def blindMoveRecords(cc, tracker, dotGlobalIdx, visit, db, positions, landingFraction, *,
-                     goHome, dataDir, theta):
+                     goHome, dataDir, theta, phiLandingCommand, calibId):
     """The landing and the push of every dot cobra, as rows of `BLIND_MOVE_TABLE`.
 
     `positions` is the frame after the push; the run directory holds the angles before and
@@ -563,12 +572,17 @@ def blindMoveRecords(cc, tracker, dotGlobalIdx, visit, db, positions, landingFra
         Run data directory of the convergence.
     theta : `numpy.ndarray` of `float`, (nCobras,)
         Local theta, radians, the dot cobras were sent to; picks the IK branch.
+    phiLandingCommand : `numpy.ndarray` of `float`, (nCobras,)
+        Phi, radians, the last row of each cobra's ramp was commanded to.
+    calibId : `int` or None
+        Blind-move calibration the convergence was aimed through.
 
     Returns
     -------
     `pandas.DataFrame`
         One row per cobra of `dotGlobalIdx`.  Angles are radians, NaN where the cobra was
-        not seen; push columns are NaN for a cobra not pushed.
+        not seen; push columns are NaN for a cobra not pushed.  blind_move_calib_id is set
+        on the rows of cobras that calibration calibrates.
     """
     rows, rowCobraId, _ = loadRunInputs(cc, dataDir=dataDir)
     if rows.shape[1] < 2:
@@ -591,20 +605,27 @@ def blindMoveRecords(cc, tracker, dotGlobalIdx, visit, db, positions, landingFra
     _, phiCenter, _, _, _, direction, halfDot = dotGeometry.computeDotAngles(cc)
     phiLandingTarget = dotGeometry.computePhiAtFraction(phiCenter, halfDot, direction,
                                                         landingFraction)
-    columns = ['dotTarget', 'dotCommand', 'phiPushTarget']
+    columns = ['dotTarget', 'phiPushTarget', 'phiPushStart', 'phiPushCommand', 'calibrated']
     push = (pd.DataFrame(columns=['cobraIdx'] + columns) if tracker.lastPush is None
             else tracker.lastPush).set_index('cobraIdx').reindex(idx)
+    aimedBy = pd.Series(pd.NA, index=range(len(idx)), dtype='Int64')
+    if calibId is not None:
+        aimedBy[tracker.calibrated[idx]] = int(calibId)
 
     # The landing starts after move nIter - 2, which is cobra_target iteration nIter - 1
     # when a move home took iteration 0.
     nIter = rows.shape[1]
     residual = rampResidual(db, visit, nIter - 1 if goHome else nIter - 2, nCobras)
 
+    dotTarget = push.dotTarget.to_numpy(dtype=float)
     return pd.DataFrame(dict(
         pfs_visit_id=int(visit), cobra_id=idx + 1, dot_landing=float(landingFraction),
-        dot_target=push.dotTarget.to_numpy(dtype=float),
-        dot_command=push.dotCommand.to_numpy(dtype=float),
+        dot_target=dotTarget, dot_command=dotTarget,
         phi_landing_target=phiLandingTarget[idx],
         phi_push_target=push.phiPushTarget.to_numpy(dtype=float),
         phi_start=phiStart[idx], phi_landed=phiLanded[idx], phi_pushed=phiPushed,
-        ramp_residual=residual[idx]))
+        ramp_residual=residual[idx],
+        phi_landing_command=np.asarray(phiLandingCommand, dtype=float)[idx],
+        phi_push_start=push.phiPushStart.to_numpy(dtype=float),
+        phi_push_command=push.phiPushCommand.to_numpy(dtype=float),
+        blind_move_calib_id=aimedBy.to_numpy()))

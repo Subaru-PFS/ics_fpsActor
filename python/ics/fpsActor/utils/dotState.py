@@ -13,7 +13,8 @@ Three quantities, at three timescales:
 
 `g` appears twice and must be the same number in both: inside the estimate it propagates
 the state, outside it converts a desired angle into steps.  If they disagree the filter
-and the command describe different cobras.
+and the command describe different cobras.  The landing, the last move of a dot
+convergence, is a different move with its own gain: it only ever propagates the state.
 
 Two things the caller must respect.  Rows of `moves` are positions within the commanded
 set, not cobra ids -- both indices are required and they are not interchangeable.  And a
@@ -29,8 +30,9 @@ PROCESS_NOISE_UM = 18.0
 MEASURE_NOISE_UM = 3.7
 """MCS centroid scatter, micrometres, measured per cobra about its own median."""
 
-GAIN_BOUNDS = (0.5, 2.0)
-"""Gains outside this are not believed: dividing by one would size an unbounded move."""
+GAIN_BOUNDS = (0.25, 4.0)
+"""Gains outside this are not believed: dividing by one would size an unbounded move.
+Within it, steady slow and fast cobras are aimed."""
 
 DEFAULT_GAIN = 1.0
 
@@ -87,7 +89,7 @@ def usableGain(gain):
     return float(gain)
 
 
-def estimatePhi(rowMoves, calibModel, cobraId, gain, armLength):
+def estimatePhi(rowMoves, calibModel, cobraId, gain, armLength, landingGain=None):
     """Phi at the end of the ramp, and how well it is known.
 
     Predict through the map and scale by the gain; correct on every iteration the camera
@@ -104,6 +106,9 @@ def estimatePhi(rowMoves, calibModel, cobraId, gain, armLength):
     gain : `float`
     armLength : `float`
         Phi arm length, millimetres, to convert the noise terms into radians.
+    landingGain : `float`, optional
+        Gain of the last move, the landing, instead of `gain`; a landing the camera saw is
+        corrected by its measurement whatever its gain.
 
     Returns
     -------
@@ -126,12 +131,14 @@ def estimatePhi(rowMoves, calibModel, cobraId, gain, armLength):
     variance = measureVar
     blind = 0
 
+    last = len(phi) - 1
     for i in range(visible[0] + 1, len(phi)):
         if steps[i] != 0:
             predicted = mapSpan(calibModel, cobraId, steps[i], estimate)
             if not np.isfinite(predicted):
                 return np.nan, np.nan, blind
-            estimate += gain * (predicted - estimate)
+            g = landingGain if (i == last and landingGain is not None) else gain
+            estimate += g * (predicted - estimate)
             variance += processVar
             if not detected[i]:
                 blind += 1
@@ -201,19 +208,28 @@ class DotTracker:
     assuming each of them landed.
 
     Every array is indexed by global cobra id and NaN where the cobra was never seen.
+    `calibrated` says which cobras move with a measured gain rather than `DEFAULT_GAIN`.
+    `phiAtGainOne` is where each cobra would be had every move since the last look gone
+    the map's travel: what bounds a move sized from a gain that is no longer true.
     """
 
-    def __init__(self, calibModel, phi, variance, gain, armLength):
+    def __init__(self, calibModel, phi, variance, gain, armLength, calibrated=None,
+                 phiAtGainOne=None):
         self.calibModel = calibModel
         self.phi = np.asarray(phi, dtype=float)
         self.variance = np.asarray(variance, dtype=float)
         self.gain = np.asarray(gain, dtype=float)
         self.armLength = np.asarray(armLength, dtype=float)
+        self.calibrated = (np.zeros(len(self.phi), dtype=bool) if calibrated is None
+                           else np.asarray(calibrated, dtype=bool))
+        self.phiAtGainOne = (self.phi.copy() if phiAtGainOne is None
+                             else np.asarray(phiAtGainOne, dtype=float))
         # The last push of `dotMove.blindMoveToDots`, one row per cobra commanded.
         self.lastPush = None
 
     @classmethod
-    def fromMoves(cls, calibModel, rows, rowCobraId, gains, armLength, nCobras):
+    def fromMoves(cls, calibModel, rows, rowCobraId, gains, armLength, nCobras,
+                  landingGains=None, calibrated=None):
         """Seed the estimate by replaying a convergence.
 
         Parameters
@@ -224,8 +240,14 @@ class DotTracker:
         rowCobraId : `numpy.ndarray` of `int`
             Global cobra id of each row.
         gains : `numpy.ndarray` of `float`, (nCobras,)
+            Gain of the moves commanded after the convergence; without `landingGains`, of
+            the convergence's moves too.
         armLength : `numpy.ndarray` of `float`, (nCobras,)
         nCobras : `int`
+        landingGains : `numpy.ndarray` of `float`, (nCobras,), optional
+            Gain of the convergence's last move, the landing; its other moves, closed loop,
+            are then replayed with `DEFAULT_GAIN`.
+        calibrated : `numpy.ndarray` of `bool`, (nCobras,), optional
 
         Returns
         -------
@@ -233,15 +255,22 @@ class DotTracker:
         """
         phi = np.full(nCobras, np.nan)
         variance = np.full(nCobras, np.nan)
+        atGainOne = np.full(nCobras, np.nan)
         gain = np.array([usableGain(g) for g in gains])
+        landing = None if landingGains is None else np.array([usableGain(g) for g in landingGains])
 
         for row, cobraId in enumerate(np.asarray(rowCobraId, dtype=int)):
             if not (0 <= cobraId < nCobras):
                 continue
+            rampGain = gain[cobraId] if landing is None else DEFAULT_GAIN
             phi[cobraId], variance[cobraId], _ = estimatePhi(
-                rows[row], calibModel, cobraId, gain[cobraId], armLength[cobraId])
+                rows[row], calibModel, cobraId, rampGain, armLength[cobraId],
+                landingGain=None if landing is None else landing[cobraId])
+            atGainOne[cobraId], _, _ = estimatePhi(rows[row], calibModel, cobraId, DEFAULT_GAIN,
+                                                   armLength[cobraId])
 
-        return cls(calibModel, phi, variance, gain, armLength)
+        return cls(calibModel, phi, variance, gain, armLength, calibrated=calibrated,
+                   phiAtGainOne=atGainOne)
 
     def known(self, cobraIds):
         """Which of `cobraIds` have a usable estimate."""
@@ -281,6 +310,9 @@ class DotTracker:
         for cobraId, step in zip(cobraIds, np.asarray(steps, dtype=int)):
             if step == 0 or not np.isfinite(self.phi[cobraId]):
                 continue
+            if np.isfinite(self.phiAtGainOne[cobraId]):
+                self.phiAtGainOne[cobraId] = mapSpan(self.calibModel, cobraId, step,
+                                                     self.phiAtGainOne[cobraId])
             predicted = mapSpan(self.calibModel, cobraId, step, self.phi[cobraId])
             if not np.isfinite(predicted):
                 self.phi[cobraId] = np.nan
@@ -307,6 +339,7 @@ class DotTracker:
 
         for cobraId in np.flatnonzero(detected & np.isfinite(phiMeasured)):
             measureVar = (MEASURE_NOISE_UM / 1000.0 / self.armLength[cobraId]) ** 2
+            self.phiAtGainOne[cobraId] = phiMeasured[cobraId]
             if not np.isfinite(self.phi[cobraId]):
                 self.phi[cobraId] = phiMeasured[cobraId]
                 self.variance[cobraId] = measureVar

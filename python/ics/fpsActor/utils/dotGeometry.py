@@ -64,6 +64,12 @@ RAMP_APPROACH_FRACTION = -0.075
 # pfi.moveSteps silently clipped that to 6000 (~316 deg of phi) and drove it out
 # of its dot, fully lit, for the remaining 11 scan steps.
 MAX_BLIND_STEPS = 3000
+
+DEPTH_CAP = (0.1, 0.9)
+"""Shallowest and deepest depth a move may reach if the cobra has gone the map's travel on
+every move since it was last seen, whatever its gain: moves sized for a low gain that has
+since recovered then still end inside the dot."""
+
 BLIND_SPEED_SLACK = 3.0
 
 
@@ -229,9 +235,10 @@ def buildDotRamp(cc, dotCobras, nIter, capIters=2, motorMarginMm=0.2,
         still fits between the theta hard stops for every cobra (sign=0 count
         stays 0 up to 0.5 mm).  Effect to be confirmed on the next run alongside
         the fast-map-on-first-iteration fix.
-    landingFraction : float
-        Dot fraction the last ramp row lands at.  The run-up before it is unchanged,
-        so only the length of the final jump across the edge varies.
+    landingFraction : float or ndarray (nCobras,)
+        Dot fraction the last ramp row is commanded to, for all cobras or per cobra.  The
+        run-up before it is unchanged, so only the length of the final jump across the edge
+        varies.
     dotThetaOffset : float
         Degrees the dots are turned about their cobra centres, see `dotPositions`.
 
