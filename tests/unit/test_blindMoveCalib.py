@@ -503,3 +503,29 @@ def test_theUnaimedComparisonCatchesAWorseLandingGain():
                                                  alsoUnaimed=True)
     assert 'regressionUnaimed' in stats
     assert any(f.startswith('counterfactual final rms with the landing unaimed') for f in failures)
+
+
+def test_thePriorIsTheCalibrationTheRowsWereAimedThrough():
+    g = [0.8, 0.9]
+    assert blindMoveCalib.aimingCalibOf(aimedRows(g, g, g, g, calibId=7)) == 7
+    unaimed = aimedRows(g, g, g, g).assign(blind_move_calib_id=pd.array([pd.NA, pd.NA], dtype='Int64'))
+    assert blindMoveCalib.aimingCalibOf(unaimed) is None
+    with pytest.raises(ValueError):
+        blindMoveCalib.aimingCalibOf(pd.concat([aimedRows(g, g, g, g, calibId=7),
+                                                aimedRows(g, g, g, g, visit=2, calibId=8)]))
+
+
+def test_anAimedFastCobraIsKept():
+    """Aimed through its gain of 3, a fast cobra commands a short landing and push."""
+    g = [1.0] * 29 + [3.0]
+    meas = pd.concat([aimedRows(g, g, g, g, visit=v) for v in range(1, 5)], ignore_index=True)
+    gains, _ = blindMoveCalib.fitOperatingPoint(meas)
+    assert gains.calibrated[30] and gains.landing_gain[30] == pytest.approx(3.0)
+    assert gains.target_gain[30] == pytest.approx(3.0)
+
+
+def test_aCobraWithNoUsableRunHasARow():
+    meas = opRows([1.0] * 5, [1.0] * 5, 4, noise=0.02)
+    meas.loc[meas.cobra_id == 5, 'ramp_residual'] = 0.5
+    gains, _ = blindMoveCalib.fitOperatingPoint(meas)
+    assert 5 in gains.index and not gains.calibrated[5] and gains.reason[5] == 'fewer than 3 runs'
