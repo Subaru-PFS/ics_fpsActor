@@ -121,7 +121,7 @@ class FpsCmd(object):
             ('angleConverge', '@(phi|theta) <angleTargets> [<visit>]', self.angleConverge),
             ('targetConverge', '@(ontime|speed) <totalTargets> <maxsteps> [<visit>]', self.targetConverge),
             ('motorOntimeSearch', '@(phi|theta) [<visit>]', self.motorOntimeSearch),
-            ('calculateBoresight', '[<startFrame>] [<endFrame>] [@writeToDB]', self.calculateBoresight),
+            ('calculateBoresight', '<frameIds> [@writeToDB]', self.calculateBoresight),
             ('testCamera', '[<visit>]', self.testCamera),
             ('testIteration', '[<visit>] [<expTime>] [<cnt>]', self.testIteration),
             ('expose', '[<visit>] [<expTime>] [<cnt>]', self.testIteration),  # New alias
@@ -159,10 +159,8 @@ class FpsCmd(object):
                                         keys.Key("datapath", types.String(),
                                                  help="Mock data for simulation mode"),
                                         keys.Key("runDir", types.String(), help="Directory of run data"),
-                                        keys.Key("startFrame", types.Int(),
-                                                 help="starting frame for boresight calculating"),
-                                        keys.Key("endFrame", types.Int(),
-                                                 help="ending frame for boresight calculating"),
+                                        keys.Key("frameIds", types.Int() * (1,),
+                                                 help="MCS frames to calculate the boresight from"),
                                         keys.Key("visit", types.Int(), help="PFS visit to use"),
                                         keys.Key("frameId", types.Int(), help="PFS Frame ID"),
                                         keys.Key("iteration", types.Int(), help="Interation number"),
@@ -2783,15 +2781,19 @@ class FpsCmd(object):
         cmd.finish(f'text="dot move done"')
 
     def calculateBoresight(self, cmd):
+        """Measure the rotation centre from MCS frames taken at different rotator angles.
 
+        `frameIds` lists the frames, from any visits. The measurement is recorded under the
+        visit of the first frame, with the frames it used.
         """
-        function for calculating the rotation centre
-        """
-
         cmdKeys = cmd.cmd.keywords
+        frameIds = [int(frameId) for frameId in cmdKeys['frameIds'].values]
 
-        startFrame = cmdKeys['startFrame'].values[0]
-        endFrame = cmdKeys['endFrame'].values[0]
+        if len(frameIds) < 2:
+            raise ValueError(f'the boresight needs two frames, got {frameIds}')
+        elif len(frameIds) > 2:
+            raise ValueError(f'measuring the boresight from more than two frames is INSTRM-3100, '
+                             f'got {len(frameIds)}')
 
         if 'writeToDB' in cmdKeys:
             writeToDB = True
@@ -2800,15 +2802,7 @@ class FpsCmd(object):
 
         cmd.inform(f'text="Write to DB is set to {writeToDB}."')
 
-        # get a list of frameIds
-        # two cases, for a single visitId, or multiple
-        if (endFrame // 100 == startFrame // 100):
-            frameIds = np.arange(startFrame, endFrame + 1)
-        else:
-            frameIds = np.arange(startFrame, endFrame + 100, 100)
-
-        # use the pfsvisit id from the first frame for the database write
-        pfsVisitId = startFrame // 100
+        pfsVisitId = frameIds[0] // 100
 
         # the routine will calculate the value and write to db
         db = self.connectToDB(cmd)
