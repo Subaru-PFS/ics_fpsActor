@@ -2,8 +2,12 @@ import numpy as np
 import pandas as pd
 from scipy import optimize
 from datetime import datetime, timezone
+from itertools import combinations
 from scipy.spatial import cKDTree
 import cv2
+
+MIN_ROTATION = 5
+"""Smallest rotator angle, in degrees, between two frames a boresight is measured from."""
 
 
 def nearestNeighbourMatchingBore(points, targets, unrot):
@@ -215,17 +219,38 @@ def calcBoresight(cmd, db, frameIds, pfsVisitId, writeToDB=True):
 
     """
 
+    checkRotation(db, frameIds)
+
     boresightEstimate = initialBoresight(db, frameIds)
     boresight = refineBoresight(db, frameIds[0], frameIds[1], boresightEstimate)
     
-    cmd.inform(f'text="Boresight values {boresight}."')
+    cmd.inform(f'text="Boresight values {boresight[0]:.3f}, {boresight[1]:.3f}."')
     
     if writeToDB is True:
-        writeBoresightToDB(db, pfsVisitId, boresight)
+        writeBoresightToDB(db, pfsVisitId, boresight, frameIds)
     else:
         cmd.inform(f'text="Not writing to DB."')
 
     return boresight
+
+def checkRotation(db, frameIds):
+    """Refuse frames that do not span two rotator angles at least MIN_ROTATION apart.
+
+    Frames at a single angle carry no rotation to find the centre of.
+
+    Raises
+    ------
+    ValueError
+        No two frames are MIN_ROTATION degrees apart in insrot.
+    """
+    insRots = [float(loadTelescopeParametersFromDB(db, frameId)[1]) for frameId in frameIds]
+    # angles wrap: -179 and 179 are 2 degrees apart.
+    spread = max(abs((a - b + 180) % 360 - 180) for a, b in combinations(insRots, 2))
+    # not >=, so that a NaN insrot is refused too.
+    if not spread >= MIN_ROTATION:
+        raise ValueError(f'frames {list(frameIds)} span {spread:.1f} deg of rotator angle (insrot {insRots}), '
+                         f'the boresight needs two angles at least {MIN_ROTATION} deg apart')
+
 
 def loadCentroidsFromDB(db, mcsFrameId):
     """ retrieve a set of centroids from database and return as a numpy array"""
@@ -248,13 +273,18 @@ def loadTelescopeParametersFromDB(db, frameId):
 
     return zenithAngle, insRot
 
-def writeBoresightToDB(db, pfsVisitId, boresight):
-    """ write a measured boresight to mcs_boresight_meas with the current timestamp """
-    
+def writeBoresightToDB(db, pfsVisitId, boresight, frameIds):
+    """ write a measured boresight to mcs_boresight_meas with the current timestamp,
+    and the frames it was measured from to mcs_boresight_frame_set """
+
+    frameSetId = db.query_scalar("SELECT nextval('mcs_boresight_frame_set_id_seq')")
+    db.insert('mcs_boresight_frame_set', pd.DataFrame({'mcs_boresight_frame_set_id': frameSetId,
+                                                       'mcs_frame_id': frameIds}))
+
     dt = datetime.now(timezone.utc)
-   
+
     df = pd.DataFrame({'pfs_visit_id': [pfsVisitId], 'mcs_boresight_x_pix': [boresight[0]], 'mcs_boresight_y_pix': [boresight[1]],
-                       'calculated_at': [dt]})
+                       'calculated_at': [dt], 'mcs_boresight_frame_set_id': [frameSetId]})
 
     db.insert('mcs_boresight_meas', df)
 
