@@ -2806,17 +2806,14 @@ class FpsCmd(object):
     def calculateBoresight(self, cmd):
         """Measure the rotation centre from MCS frames taken at different rotator angles.
 
-        `frameIds` lists the frames, from any visits. The measurement is recorded under the
-        visit of the first frame, with the frames it used.
+        `frameIds` lists the frames, two or more from any visits. The measurement is recorded
+        under the visit of the first frame, with the frames it used.
         """
         cmdKeys = cmd.cmd.keywords
         frameIds = [int(frameId) for frameId in cmdKeys['frameIds'].values]
 
         if len(frameIds) < 2:
             raise ValueError(f'the boresight needs two frames, got {frameIds}')
-        elif len(frameIds) > 2:
-            raise ValueError(f'measuring the boresight from more than two frames is INSTRM-3100, '
-                             f'got {len(frameIds)}')
 
         if 'writeToDB' in cmdKeys:
             writeToDB = True
