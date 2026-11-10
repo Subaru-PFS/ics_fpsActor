@@ -144,3 +144,26 @@ def test_dotDepthsTargetTheLandingWithoutABlindMove():
     assert dotMove.dotDepths(config, dotTarget=0.4, noBlindMove=True) == (0.1, 0.1)
     with pytest.raises(ValueError, match='dotLanding'):
         dotMove.dotDepths(config, dotLanding=1.0, noBlindMove=True)
+
+
+def test_dotApproachTakesTheConfigThenTheDefaults():
+    assert dotMove.dotApproach({}) == (dotGeometry.RAMP_APPROACH_FRACTION, 0.05)
+    assert dotMove.dotApproach(dict(dotApproach=-0.1, dotApproachTolerance=0.03)) == (-0.1, 0.03)
+    assert dotMove.dotApproach(dict(dotApproach=dotGeometry.APPROACH_RANGE[0]))[0] == dotGeometry.APPROACH_RANGE[0]
+
+
+@pytest.mark.parametrize('config', [dict(dotApproach=0.0), dict(dotApproach=-0.03), dict(dotApproach=-0.6),
+                                    dict(dotApproach=0.05), dict(dotApproachTolerance=0.0),
+                                    dict(dotApproachTolerance=-0.025)])
+def test_dotApproachRefusesAnApproachOutsideItsRangeOrNoTolerance(config):
+    with pytest.raises(ValueError):
+        dotMove.dotApproach(config)
+
+
+def test_landingFractionsAimFromTheApproach():
+    """A calibrated cobra with landing gain 2 travels twice its command from the approach."""
+    gains = pd.DataFrame(dict(landing_gain=[2.0], target_gain=[1.0], calibrated=[True]),
+                         index=pd.Index([1], name='cobra_id'))
+    for approach in (-0.075, -0.1):
+        command, aimed = dotMove.landingFractions(0.2, gains, 1, approach=approach)
+        assert aimed[0] and command[0] == pytest.approx(approach + (0.2 - approach) / 2)

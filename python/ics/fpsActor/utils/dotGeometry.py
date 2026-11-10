@@ -40,15 +40,21 @@ PHI_CAPS_DEG = (30.0, 45.0)
 RAMP_LANDING_FRACTION = 0.1
 BLIND_TARGET_FRACTION = 0.5
 
-# Where the closed-loop ramp stops, just outside the entry edge, before the landing jump.
-# A fixed angle is not a fixed standoff -- halfDot varies across the fleet, so 3 degrees
-# spans 0.076 to 0.087 of a dot -- and every other depth in this module is a fraction.
+# Where the closed-loop ramp stops, just outside the entry edge, before the landing jump;
+# the default of fps.yaml convergence dotApproach.  A fixed angle is not a fixed
+# standoff -- halfDot varies across the fleet, so 3 degrees spans 0.076 to 0.087 of a
+# dot -- and every other depth in this module is a fraction.
 # Measured against the detection boundary on the 2026-07-24 scans, -0.075 leaves a median
 # margin of 168 um (p5 51 um) and keeps 98.1% of cobras outside it, which matches the
 # 99.7% actually still detected at that iteration.  Do not shrink it further: the last
 # measured iteration is what the blind move departs from, and below about -0.05 it lands
 # inside the scatter of where the edge really is.
 RAMP_APPROACH_FRACTION = -0.075
+
+# Range dotApproach may take.  Closer to the edge than -0.05 the approach lands inside the
+# scatter of where the edge is; the ramp starts about 0.8 of a dot before the landing, so
+# past -0.5 it would leave little closed-loop run-up and the landing would jump blind.
+APPROACH_RANGE = (-0.5, -0.05)
 
 # Bounds on the open-loop blind move.  fitPhiSpeed stays the step estimator — it
 # tracks real behaviour better than the calibrated map — but it measures achieved
@@ -210,7 +216,8 @@ def thetaOffsetForPhi(L1, L2, rDot, phi_rad, motorMarginMm=0.05):
 
 
 def buildDotRamp(cc, dotCobras, nIter, capIters=2, motorMarginMm=0.2,
-                 landingFraction=RAMP_LANDING_FRACTION, dotThetaOffset=0.0):
+                 landingFraction=RAMP_LANDING_FRACTION, dotThetaOffset=0.0,
+                 approachFraction=RAMP_APPROACH_FRACTION):
     """Build theta/phi starts and phi/theta ramp arrays for dot cobras.
 
     One-call wrapper used by moveToPfsDesign.  All heavy geometry stays here.
@@ -241,6 +248,9 @@ def buildDotRamp(cc, dotCobras, nIter, capIters=2, motorMarginMm=0.2,
         varies.
     dotThetaOffset : float
         Degrees the dots are turned about their cobra centres, see `dotPositions`.
+    approachFraction : float
+        Dot fraction the closed-loop ramp is commanded to stop at before the last row, just
+        outside the entry edge.
 
     Returns
     -------
@@ -292,7 +302,7 @@ def buildDotRamp(cc, dotCobras, nIter, capIters=2, motorMarginMm=0.2,
 
     # Stop the closed-loop ramp just outside the entry edge, as a fraction of each
     # cobra's own dot rather than a fixed angle.
-    phiRampEnd = computePhiAtFraction(phiCenter, halfDot, direction, RAMP_APPROACH_FRACTION)
+    phiRampEnd = computePhiAtFraction(phiCenter, halfDot, direction, approachFraction)
 
     ramp = computePhiRamp(
         phiStartAll[dotCobras], phiRampEnd[dotCobras],
@@ -366,9 +376,11 @@ def capCommandedAngle(thetaStart, phiStart, phiRamp, thetaRamp, iterPhiCapsDeg=(
     return thetaStart, phiStart, phiRamp, thetaRamp
 
 
-def buildSafeRamp(cc, dotCobras, nIter, landingFraction=RAMP_LANDING_FRACTION, dotThetaOffset=0.0):
+def buildSafeRamp(cc, dotCobras, nIter, landingFraction=RAMP_LANDING_FRACTION, dotThetaOffset=0.0,
+                  approachFraction=RAMP_APPROACH_FRACTION):
     thetaStart, phiStart, phiRamp, thetaRamp, dotGeom = buildDotRamp(
-        cc, dotCobras, nIter, landingFraction=landingFraction, dotThetaOffset=dotThetaOffset)
+        cc, dotCobras, nIter, landingFraction=landingFraction, dotThetaOffset=dotThetaOffset,
+        approachFraction=approachFraction)
     thetaStart, phiStart, phiRamp, thetaRamp = capCommandedAngle(thetaStart, phiStart, phiRamp, thetaRamp)
     return thetaStart, phiStart, phiRamp, thetaRamp, dotGeom
 

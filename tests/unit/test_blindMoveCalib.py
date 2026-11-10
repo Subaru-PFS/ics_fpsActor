@@ -14,11 +14,15 @@ from ics.fpsActor.utils import blindMoveCalib, dotGeometry, dotMove, dotState
 
 CHORD = 0.30            # rad per unit dot fraction
 LANDING = 0.1
+APPROACH = -0.075
+PHI_LT = 1.2            # phi at the landing depth
+PHI_APPROACH = PHI_LT + (APPROACH - LANDING) * CHORD
 
 
-def rows(nCobras, g1, g2, wanted, visit=1, phiStart=1.0):
-    """cobra_blind_move rows of cobras that respond with exactly `g1` and `g2`."""
-    phiLT = 1.2
+def rows(nCobras, g1, g2, wanted, visit=1, phiStart=PHI_APPROACH):
+    """cobra_blind_move rows of cobras that respond with exactly `g1` and `g2`, started at
+    the approach unless told otherwise."""
+    phiLT = PHI_LT
     phiPT = phiLT + (wanted - LANDING) * CHORD
     phiLanded = phiStart + g1 * (phiLT - phiStart)
     phiPushed = phiLanded + g2 * (phiPT - phiLT)
@@ -131,8 +135,8 @@ def test_legacyRowsMeasureAgainstTheTargets():
 
 
 def test_recordedCommandsReplaceTheTargets():
-    meas = rows(2, 1.0, 1.0, 0.5).assign(phi_landing_command=[1.3, np.nan], phi_push_start=1.25,
-                                         phi_push_command=1.4)
+    meas = rows(2, 1.0, 1.0, 0.5, phiStart=1.0).assign(phi_landing_command=[1.3, np.nan], phi_push_start=1.25,
+                                                       phi_push_command=1.4)
     travels = blindMoveCalib.moveTravels(meas)
     # A row recording its push but not its landing command is not legacy: no landing.
     assert travels.x1[0] == pytest.approx(0.3) and np.isnan(travels.x1[1])
@@ -327,9 +331,6 @@ def test_unknownParameterIsRefused():
         blindMoveCalib.fitOperatingPoint(opRows([1.0], [1.0], 3), params=dict(huberr=2))
 
 
-APPROACH = -0.075
-
-
 def gainsOf(g1, g2, **attrs):
     gains = pd.DataFrame(dict(landing_gain=g1, target_gain=g2, calibrated=True),
                          index=pd.Index(np.arange(1, len(g1) + 1), name='cobra_id'))
@@ -441,8 +442,7 @@ def test_counterfactualOfTheRunsOwnGainsIsExact():
                                          phi_push_command=np.nan)
     own = pd.DataFrame(dict(landing_gain=1.2, target_gain=0.8, calibrated=True),
                        index=pd.Index(np.arange(1, 5), name='cobra_id'))
-    landed, final = blindMoveCalib.counterfactualErrors(meas, own, aimLanding=True,
-                                                        approach=-0.075 - 0.1 * 0)
+    landed, final = blindMoveCalib.counterfactualErrors(meas, own, aimLanding=True)
     # Aimed with the cobra's own gains: the push reaches the target exactly.
     assert np.allclose(final, 0.0, atol=1e-9)
 
@@ -526,6 +526,117 @@ def test_anAimedFastCobraIsKept():
 
 def test_aCobraWithNoUsableRunHasARow():
     meas = opRows([1.0] * 5, [1.0] * 5, 4, noise=0.02)
-    meas.loc[meas.cobra_id == 5, 'ramp_residual'] = 0.5
+    meas.loc[meas.cobra_id == 5, 'phi_landed'] = np.nan
     gains, _ = blindMoveCalib.fitOperatingPoint(meas)
     assert 5 in gains.index and not gains.calibrated[5] and gains.reason[5] == 'fewer than 3 runs'
+
+
+def depthStart(depth):
+    """phi_start of a run that started at `depth`, in the fixture's dot."""
+    return PHI_LT + (depth - LANDING) * CHORD
+
+
+def test_startDepthOfTheApproachIsTheApproach():
+    meas = pd.concat([rows(1, 1.0, 1.0, 0.5, phiStart=depthStart(d)) for d in (-0.075, -0.2, 0.0)])
+    assert np.allclose(blindMoveCalib.startDepth(meas), [-0.075, -0.2, 0.0])
+
+
+def test_aRunOffOnlyInThetaIsFitted():
+    """A large ramp_residual, the 2D miss theta dominates, does not keep a run out: the
+    gains depend on its phi start."""
+    meas = pd.concat([rows(1, 1.1, 0.9, 0.5, visit=v) for v in (1, 2, 3)]).assign(ramp_residual=0.5)
+    gains = blindMoveCalib.fitGains(meas)
+    assert gains.n_runs[1] == 3 and gains.calibrated[1] and not gains.fromAllRows[1]
+    assert gains.landing_gain[1] == pytest.approx(1.1)
+
+
+def test_runsStartedOutsideTheBandAreLeftOut():
+    inBand = [rows(1, 1.1, 0.9, 0.5, visit=v, phiStart=depthStart(d))
+              for v, d in ((1, -0.075), (2, -0.12), (3, -0.03))]
+    outside = [rows(1, 2.0, 2.0, 0.5, visit=v, phiStart=depthStart(d)) for v, d in ((4, -0.2), (5, 0.0))]
+    gains = blindMoveCalib.fitGains(pd.concat(inBand + outside))
+    assert gains.n_runs[1] == 3 and not gains.fromAllRows[1]
+    assert gains.landing_gain[1] == pytest.approx(1.1) and gains.target_gain[1] == pytest.approx(0.9)
+
+
+def test_aCobraWithTooFewRunsInTheBandIsFittedWithAllItsRuns():
+    """Too few runs within the tolerance: all its measured runs rather than gain 1."""
+    meas = pd.concat([rows(1, 1.1, 0.9, 0.5, visit=v, phiStart=depthStart(d))
+                      for v, d in ((1, -0.075), (2, -0.075), (3, -0.2), (4, 0.0))])
+    meas.loc[meas.pfs_visit_id == 4, 'phi_landed'] = np.nan
+    gains = blindMoveCalib.fitGains(meas)
+    assert gains.n_runs[1] == 3 and gains.calibrated[1] and gains.fromAllRows[1]
+    assert blindMoveCalib.fitRows(meas)[1] == [1]
+
+
+def test_theToleranceIsAnArgument():
+    meas = pd.concat([rows(1, 1.1, 0.9, 0.5, visit=v, phiStart=depthStart(-0.12)) for v in (1, 2, 3)])
+    assert blindMoveCalib.fitRows(meas, tolerance=0.05)[0].all()
+    assert not blindMoveCalib.fitRows(meas, tolerance=0.03, minRuns=0)[0].any()
+
+
+def test_theApproachIsReadFromTheRow():
+    """A run that started where its own ramp stopped is in the band; a row from before
+    dot_approach was recorded is judged against the default approach."""
+    deep = rows(1, 1.1, 0.9, 0.5, phiStart=depthStart(-0.2)).assign(dot_approach=-0.2)
+    old = rows(1, 1.1, 0.9, 0.5, phiStart=depthStart(-0.2)).assign(dot_approach=np.nan)
+    assert blindMoveCalib.approachOf(old)[0] == dotGeometry.RAMP_APPROACH_FRACTION
+    assert blindMoveCalib.fitRows(deep, minRuns=0)[0].all()
+    assert not blindMoveCalib.fitRows(old, minRuns=0)[0].any()
+
+
+def test_validationJudgesEveryMeasuredRow():
+    """The tolerance decides what a fit learns from, not what a validation judges."""
+    g1, g2 = [1.0, 1.0, 1.0], [1.0, 1.0, 1.0]
+    meas = aimedRows(g1, g2, g1, g2)
+    meas.loc[meas.cobra_id == 3, 'phi_start'] = depthStart(-0.3)
+    _, stats, _ = blindMoveCalib.validate(meas, gainsOf(g1, g2), 7)
+    assert stats['n'] == 3 and stats['coverage'] == 1.0
+
+
+def test_theOperatingPointFitLeavesOutRunsOutsideTheBand():
+    meas = opRows([1.0] * 5, [1.0] * 5, 4, noise=0.0)
+    outside = opRows([2.0] * 5, [2.0] * 5, 2, noise=0.0).assign(phi_start=depthStart(-0.3))
+    outside['pfs_visit_id'] += 10
+    gains, summary = blindMoveCalib.fitOperatingPoint(pd.concat([meas, outside], ignore_index=True))
+    assert np.allclose(gains.landing_gain, 1.0) and summary['fromAllRows'] == []
+    assert summary['approachTolerance'] == blindMoveCalib.APPROACH_TOLERANCE
+
+
+def test_startDepthOfAClockwiseApproach():
+    """A CW approach runs phi down: the chord is negative and the depths are the same."""
+    meas = rows(1, 1.0, 1.0, 0.5)
+    mirrored = meas.assign(phi_landing_target=-meas.phi_landing_target, phi_push_target=-meas.phi_push_target,
+                           phi_start=-meas.phi_start)
+    assert blindMoveCalib.chordOf(mirrored)[0] < 0
+    assert blindMoveCalib.startDepth(mirrored)[0] == pytest.approx(APPROACH)
+    assert blindMoveCalib.fitRows(pd.concat([mirrored] * 3).assign(pfs_visit_id=[1, 2, 3]))[0].all()
+
+
+def test_theFallbackLeavesOutRunsStartedPastTheLanding():
+    """A run that started past the landing depth moved backwards to land."""
+    meas = pd.concat([rows(1, 1.1, 0.9, 0.5, visit=v, phiStart=depthStart(d))
+                      for v, d in ((1, -0.075), (2, -0.2), (3, 0.15))])
+    use, fromAll = blindMoveCalib.fitRows(meas)
+    assert use.tolist() == [True, True, False] and fromAll == [1]
+
+
+def test_theOperatingPointFallsBackAfterItsSpanFilter():
+    """Runs in the band that are too short to judge do not count towards minRuns: the cobra
+    is then calibrated from its runs outside the band."""
+    def commanded(r):
+        return r.assign(phi_landing_command=r.phi_landing_target, phi_push_start=r.phi_landing_target,
+                        phi_push_command=r.phi_push_target)
+
+    meas = commanded(opRows([1.0] * 5, [1.0] * 5, 3, noise=0.0))
+    short = (meas.cobra_id == 5) & (meas.pfs_visit_id == 100)
+    meas.loc[short, 'phi_landing_command'] = meas.phi_start + 1e-4
+    meas.loc[short, 'phi_landed'] = meas.phi_start + 1e-4
+    meas.loc[short, 'phi_pushed'] = meas.phi_landed + (meas.phi_push_command - meas.phi_push_start)
+    outside = commanded(opRows([1.0] * 5, [1.0] * 5, 2, noise=0.0).assign(phi_start=depthStart(-0.2)))
+    outside['pfs_visit_id'] += 10
+    meas = pd.concat([meas, outside], ignore_index=True)
+    assert blindMoveCalib.inApproachBand(meas)[(meas.cobra_id == 5).to_numpy()].sum() == 3
+    gains, summary = blindMoveCalib.fitOperatingPoint(meas)
+    assert gains.calibrated[5] and 5 in summary['fromAllRows']
+    assert not set(summary['fromAllRows']) - {5}

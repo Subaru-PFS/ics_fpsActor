@@ -111,6 +111,36 @@ def dotDepths(convergenceCfg, dotLanding=None, dotTarget=None, noBlindMove=False
     return landing, target
 
 
+def dotApproach(convergenceCfg):
+    """Depth the closed-loop ramp is commanded to stop at before the landing, and how far a
+    blind-move run's measured start may be from it for its moves to be fitted, in dot fraction.
+
+    Parameters
+    ----------
+    convergenceCfg : `dict`
+        The fps `convergence` config section: dotApproach and dotApproachTolerance, else
+        `dotGeometry.RAMP_APPROACH_FRACTION` and `blindMoveCalib.APPROACH_TOLERANCE`.
+
+    Returns
+    -------
+    (`float`, `float`)
+        The approach and the tolerance.
+
+    Raises
+    ------
+    `ValueError`
+        Unless approach is within `dotGeometry.APPROACH_RANGE` and tolerance > 0.
+    """
+    approach = float(convergenceCfg.get('dotApproach', dotGeometry.RAMP_APPROACH_FRACTION))
+    tolerance = float(convergenceCfg.get('dotApproachTolerance', blindMoveCalib.APPROACH_TOLERANCE))
+    lo, hi = dotGeometry.APPROACH_RANGE
+    if not lo <= approach <= hi:
+        raise ValueError(f'dotApproach needs {lo} <= dotApproach <= {hi}, not {approach}')
+    if not tolerance > 0:
+        raise ValueError(f'dotApproachTolerance needs to be positive, not {tolerance}')
+    return approach, tolerance
+
+
 def unscaledPhiRows(toDot, nIter, mode=DEFAULT_DOT_PHI_SCALING):
     """Which phi moves of a convergence run at scale 1.0, per iteration and cobra.
 
@@ -252,7 +282,7 @@ def makeTracker(cc, cmd=None, blindIterations=0, gains=None):
     return tracker, dotGlobalIdx
 
 
-def landingFractions(landing, gains, nCobras):
+def landingFractions(landing, gains, nCobras, approach=dotGeometry.RAMP_APPROACH_FRACTION):
     """Depth to command each cobra's landing to, the last row of its ramp.
 
     See `blindMoveCalib.landingCommands`: a calibrated cobra is commanded so that its
@@ -265,6 +295,8 @@ def landingFractions(landing, gains, nCobras):
     gains : `pandas.DataFrame`
         `cobra_blind_move_gain` rows, indexed by cobra_id.
     nCobras : `int`
+    approach : `float`
+        Depth the ramp is commanded to stop at before the landing, dot fraction.
 
     Returns
     -------
@@ -272,8 +304,7 @@ def landingFractions(landing, gains, nCobras):
         Commanded depth, (nCobras,), and the mask of cobras aimed.
     """
     landingGain, _, calibrated = blindMoveCalib.gainsFor(gains, np.arange(1, nCobras + 1))
-    command = blindMoveCalib.landingCommands(landing, dotGeometry.RAMP_APPROACH_FRACTION,
-                                             landingGain, calibrated)
+    command = blindMoveCalib.landingCommands(landing, approach, landingGain, calibrated)
     return command, calibrated
 
 
@@ -544,7 +575,8 @@ def rampResidual(db, visit, iteration, nCobras):
 
 
 def blindMoveRecords(cc, tracker, dotGlobalIdx, visit, db, positions, landingFraction, *,
-                     goHome, dataDir, theta, phiLandingCommand, calibId):
+                     goHome, dataDir, theta, phiLandingCommand, calibId,
+                     approachFraction=dotGeometry.RAMP_APPROACH_FRACTION):
     """The landing and the push of every dot cobra, as rows of `BLIND_MOVE_TABLE`.
 
     `positions` is the frame after the push; the run directory holds the angles before and
@@ -576,6 +608,9 @@ def blindMoveRecords(cc, tracker, dotGlobalIdx, visit, db, positions, landingFra
         Phi, radians, the last row of each cobra's ramp was commanded to.
     calibId : `int` or None
         Blind-move calibration the convergence was aimed through.
+    approachFraction : `float`
+        Depth the ramp was commanded to stop at before the landing, dot fraction; the
+        measured start is in the run directory.
 
     Returns
     -------
@@ -620,7 +655,7 @@ def blindMoveRecords(cc, tracker, dotGlobalIdx, visit, db, positions, landingFra
     dotTarget = push.dotTarget.to_numpy(dtype=float)
     return pd.DataFrame(dict(
         pfs_visit_id=int(visit), cobra_id=idx + 1, dot_landing=float(landingFraction),
-        dot_target=dotTarget, dot_command=dotTarget,
+        dot_target=dotTarget, dot_command=dotTarget, dot_approach=float(approachFraction),
         phi_landing_target=phiLandingTarget[idx],
         phi_push_target=push.phiPushTarget.to_numpy(dtype=float),
         phi_start=phiStart[idx], phi_landed=phiLanded[idx], phi_pushed=phiPushed,

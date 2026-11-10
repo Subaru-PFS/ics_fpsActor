@@ -892,23 +892,30 @@ class FpsCmd(object):
         except ValueError as e:
             cmd.fail(f'text="calibrateBlindMove: {e}"')
             return
+        try:
+            _, tolerance = dotMove.dotApproach(self._convergenceConfig())
+        except ValueError as e:
+            cmd.fail(f'text="calibrateBlindMove: {e}"')
+            return
         if 'operatingPoint' in cmdKeys:
-            self._calibrateOperatingPoint(cmd, db, visits, meas)
+            self._calibrateOperatingPoint(cmd, db, visits, meas, tolerance)
             return
         given = [key for key in ('priorCalib', 'minRuns') if key in cmdKeys]
         if given:
             cmd.fail(f'text="calibrateBlindMove: {", ".join(given)} only apply with operatingPoint"')
             return
 
-        gains = blindMoveCalib.fitGains(meas)
+        gains = blindMoveCalib.fitGains(meas, tolerance=tolerance)
         calibrated = gains[gains.calibrated]
         if not len(calibrated):
             cmd.fail(f'text="calibrateBlindMove: no cobra calibrated over visits {visits}"')
             return
-        loo = blindMoveCalib.depthStatistics(blindMoveCalib.leaveOneOut(meas))
+        loo = blindMoveCalib.depthStatistics(blindMoveCalib.leaveOneOut(meas, tolerance=tolerance))
+        fromAllRows = gains.index[gains.fromAllRows].tolist()
         cmd.inform(f'text="calibrateBlindMove: {len(calibrated)} of {len(gains)} cobras '
                    f'calibrated over {len(visits)} visits, median gains '
                    f'{calibrated.landing_gain.median():.3f} / {calibrated.target_gain.median():.3f}"')
+        self._informFromAllRows(cmd, fromAllRows, tolerance)
         if loo['n']:
             cmd.inform(f'text="calibrateBlindMove: leave-one-out {self._depthText(loo)}"')
         else:
@@ -918,15 +925,17 @@ class FpsCmd(object):
         if 'dryRun' in cmdKeys:
             cmd.finish('text="calibrateBlindMove: dry run, nothing inserted"')
             return
-        calibId = blindMoveCalib.insertCalibration(db, visits, gains, loo)
+        calibId = blindMoveCalib.insertCalibration(
+            db, visits, gains, loo, parameters=dict(approachTolerance=tolerance, fromAllRows=fromAllRows))
         cmd.inform(f'blindMoveCalibId={calibId}')
         cmd.finish(f'text="calibrateBlindMove: inserted calibration {calibId}, the default only '
                    f'once validateBlindMove passes"')
 
-    def _calibrateOperatingPoint(self, cmd, db, visits, meas):
+    def _calibrateOperatingPoint(self, cmd, db, visits, meas, tolerance):
         """Measure a calibration on runs at one operating point, see
-        `blindMoveCalib.fitOperatingPoint`.  The prior it is compared with and recorded against
-        is priorCalib, else the calibration the rows were aimed through, else none.
+        `blindMoveCalib.fitOperatingPoint`, fitting the runs within `tolerance` of their
+        approach.  The prior it is compared with and recorded against is priorCalib, else the
+        calibration the rows were aimed through, else none.
 
         The parameters are `blindMoveCalib.OPERATING_POINT`, overridden by fps.yaml
         blindMoveOperatingPoint and minRuns by the keyword.
@@ -953,7 +962,7 @@ class FpsCmd(object):
             return
         minRuns = int(cmdKeys['minRuns'].values[0]) if 'minRuns' in cmdKeys else None
         gains, summary = blindMoveCalib.fitOperatingPoint(meas, prior=prior, params=params,
-                                                         minRuns=minRuns)
+                                                         minRuns=minRuns, tolerance=tolerance)
 
         calibrated = gains[gains.calibrated]
         if not len(calibrated):
@@ -974,6 +983,7 @@ class FpsCmd(object):
                        f'{m["nSplit"]} cobras from their later runs{fromPrior}"')
         for reason, n in gains.reason.value_counts().items():
             cmd.inform(f'text="calibrateBlindMove: {n} cobras not calibrated: {reason}"')
+        self._informFromAllRows(cmd, summary['fromAllRows'], tolerance)
 
         if 'dryRun' in cmdKeys:
             cmd.finish('text="calibrateBlindMove: dry run, nothing inserted"')
@@ -986,6 +996,15 @@ class FpsCmd(object):
         cmd.inform(f'blindMoveCalibId={calibId}')
         cmd.finish(f'text="calibrateBlindMove: inserted calibration {calibId}, the default only '
                    f'once validateBlindMove passes"')
+
+    @staticmethod
+    def _informFromAllRows(cmd, cobraIds, tolerance):
+        """Report the cobras a calibration fitted with all their measured runs, too few of
+        them having started within `tolerance` of the approach."""
+        if cobraIds:
+            shown = ', '.join(str(c) for c in cobraIds[:20]) + (', ...' if len(cobraIds) > 20 else '')
+            cmd.inform(f'text="calibrateBlindMove: {len(cobraIds)} cobras fitted with all their runs, '
+                       f'too few starting within {tolerance} of the approach: {shown}"')
 
     def validateBlindMove(self, cmd):
         """Make a blind-move calibration the default, if the visits aimed through it pass."""
@@ -1250,7 +1269,8 @@ class FpsCmd(object):
                                                goHome=run['goHome'], dataDir=run['dataDir'],
                                                theta=run['theta'],
                                                phiLandingCommand=run['phiLandingCommand'],
-                                               calibId=run['calibId'])
+                                               calibId=run['calibId'],
+                                               approachFraction=run['approachFraction'])
             db.insert_dataframe(dotMove.BLIND_MOVE_TABLE, records)
             cmd.inform(f'text="measureBlindMove: {len(records)} rows inserted into '
                        f'{dotMove.BLIND_MOVE_TABLE}, visit={visit}"')
@@ -2197,6 +2217,7 @@ class FpsCmd(object):
                 dotLanding=cmdKeys['dotLanding'].values[0] if 'dotLanding' in cmdKeys else None,
                 dotTarget=cmdKeys['dotTarget'].values[0] if 'dotTarget' in cmdKeys else None,
                 noBlindMove=noBlindMove)
+            dotApproach, _ = dotMove.dotApproach(convergenceCfg)
         except ValueError as e:
             cmd.fail(f'text="{e}"')
             return
@@ -2205,8 +2226,8 @@ class FpsCmd(object):
         notConvergedDistanceThreshold = convergenceCfg.get('notConvergedDistanceThreshold', 0.05)
         notConvergedDistanceThreshold = max(notConvergedDistanceThreshold, 5 * tolerance)
         cmd.inform(f'text="useScaling={self.cc.useScaling}, '
-                   f'dotPhiScaling={dotMove.DEFAULT_DOT_PHI_SCALING}, dotLanding={dotLanding}, '
-                   f'dotTarget={dotTarget}"')
+                   f'dotPhiScaling={dotMove.DEFAULT_DOT_PHI_SCALING}, dotApproach={dotApproach}, '
+                   f'dotLanding={dotLanding}, dotTarget={dotTarget}"')
         dotCalib = cmdKeys['dotCalib'].values[0] if 'dotCalib' in cmdKeys else None
         try:
             dotCalibId, dotGains = self._dotCalibration(cmd, dotCalib,
@@ -2328,7 +2349,8 @@ class FpsCmd(object):
         if aimLanding and dotGains is not None and len(dotGlobalIdx):
             try:
                 landingCommand, landingAimed = dotMove.landingFractions(dotLanding, dotGains,
-                                                                        self.cc.nCobras)
+                                                                        self.cc.nCobras,
+                                                                        approach=dotApproach)
             except Exception as e:
                 reason = str(e).replace('"', "'")
                 cmd.warn(f'text="dotLanding: calibration not applied ({reason}); unaimed"')
@@ -2338,7 +2360,7 @@ class FpsCmd(object):
                        f'through calibration {dotCalibId}, commanded depth median {commanded:.3f}"')
         thetaDot, phiStart, phiRamp, thetaRamp, dotGeom = dotGeometry.buildSafeRamp(
             self.cc, dotGlobalIdx, iteration, landingFraction=landingCommand,
-            dotThetaOffset=dotThetaOffset)
+            dotThetaOffset=dotThetaOffset, approachFraction=dotApproach)
         thetas[toBlackDot] = thetaDot[toBlackDot]
         phis[toBlackDot] = phiStart[toBlackDot]
         # Phi each ramp's last row, the landing, is commanded to.
@@ -2556,7 +2578,8 @@ class FpsCmd(object):
             if len(dotGlobalIdx):
                 # On turned dots the fibre stays in view: read the last iteration as unseen, as
                 # behind a real dot, and push every dot cobra rather than only the lost ones.
-                self.dotRun = dict(landingFraction=dotLanding, dotThetaOffset=dotThetaOffset,
+                self.dotRun = dict(landingFraction=dotLanding, approachFraction=dotApproach,
+                                   dotThetaOffset=dotThetaOffset,
                                    goHome=goHome, dataDir=self.cc.runManager.dataDir,
                                    theta=thetaDot.copy(), phiLandingCommand=phiLandingCommand,
                                    calibId=dotCalibId)
