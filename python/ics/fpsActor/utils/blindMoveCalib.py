@@ -66,9 +66,11 @@ LANDING_COMMAND_RANGE = (0.05, 0.7)
 0.05 to 0.7.  The upper end keeps a cobra whose low landing gain has gone stale, and which
 moves the map's travel instead, well short of the exit edge."""
 
-RAMP_RESIDUAL_CUT = 0.100
-"""Largest distance from target before the landing, mm, a move is fitted with.  Past it
-the cobra did not start the landing where the ramp put it."""
+APPROACH_TOLERANCE = 0.05
+"""Largest distance, in dot fraction, of a run's measured start from the ramp approach for
+its moves to be fitted, fps.yaml convergence dotApproachTolerance overriding it.  It is
+judged in phi alone, where the gains are: a start off in theta still lands and pushes
+along phi.  0.05 is three times the scatter of the approach (0.0165 over 56000 runs)."""
 
 MIN_RUNS = 3
 """Passing runs a cobra needs before its gains are used."""
@@ -103,9 +105,9 @@ calibrations are compared: a few cobras far from any gain would otherwise decide
 comparison, and the common mode of the night is judged by maxBias."""
 
 MEASUREMENT_COLUMNS = ['pfs_visit_id', 'cobra_id', 'dot_landing', 'dot_target', 'dot_command',
-                       'phi_landing_target', 'phi_push_target', 'phi_start', 'phi_landed',
-                       'phi_pushed', 'ramp_residual', 'phi_landing_command', 'phi_push_start',
-                       'phi_push_command', 'blind_move_calib_id']
+                       'dot_approach', 'phi_landing_target', 'phi_push_target', 'phi_start',
+                       'phi_landed', 'phi_pushed', 'ramp_residual', 'phi_landing_command',
+                       'phi_push_start', 'phi_push_command', 'blind_move_calib_id']
 
 
 def chordOf(meas):
@@ -155,11 +157,63 @@ def moveTravels(meas):
                              x2=pushCommand - pushStart, y2=pushed - landed), index=meas.index)
 
 
-def usable(meas, cut=RAMP_RESIDUAL_CUT):
-    """Rows whose two moves were measured and started where the ramp put them."""
-    travels = moveTravels(meas)
-    measured = travels.notna().all(axis=1)
-    return (measured & (meas.ramp_residual <= cut)).to_numpy()
+def approachOf(meas):
+    """Depth, in dot fraction, each row's ramp was commanded to stop at before the landing,
+    which `startDepth` is compared with: dot_approach, or `dotGeometry.RAMP_APPROACH_FRACTION`
+    on rows from before it was recorded."""
+    recorded = (meas.dot_approach.to_numpy(dtype=float) if 'dot_approach' in meas
+                else np.full(len(meas), np.nan))
+    return np.where(np.isfinite(recorded), recorded, dotGeometry.RAMP_APPROACH_FRACTION)
+
+
+def startDepth(meas):
+    """Depth, in dot fraction, each row's measured phi_start is at."""
+    with np.errstate(invalid='ignore', divide='ignore'):
+        return (meas.dot_landing.to_numpy(dtype=float)
+                + (meas.phi_start.to_numpy(dtype=float)
+                   - meas.phi_landing_target.to_numpy(dtype=float)) / chordOf(meas))
+
+
+def measured(meas):
+    """Rows whose two moves were measured."""
+    return moveTravels(meas).notna().all(axis=1).to_numpy()
+
+
+def inApproachBand(meas, tolerance=APPROACH_TOLERANCE):
+    """Rows whose measured start is within `tolerance` of their approach, in dot fraction."""
+    with np.errstate(invalid='ignore'):
+        return np.abs(startDepth(meas) - approachOf(meas)) <= tolerance
+
+
+def fitRows(meas, tolerance=APPROACH_TOLERANCE, minRuns=MIN_RUNS, valid=None):
+    """Rows a fit uses: the measured rows that started within `tolerance` of their approach.
+
+    A cobra with fewer than `minRuns` such rows is fitted with all its measured rows that
+    started before the landing depth, rather than left uncalibrated: a gain from runs
+    that started off the approach is closer than no gain, which the tracker replaces by
+    `dotState.DEFAULT_GAIN`.  A run that started past the landing depth moved backwards.
+
+    Parameters
+    ----------
+    valid : `numpy.ndarray` of `bool`, optional
+        Rows a fit could use at all; the band and the count are taken among them.
+
+    Returns
+    -------
+    (`numpy.ndarray`, `list` of `int`)
+        The rows' mask, and the cobras fitted with runs outside the band.
+    """
+    ok = measured(meas) if valid is None else measured(meas) & np.asarray(valid, dtype=bool)
+    inBand = ok & inApproachBand(meas, tolerance)
+    depth = startDepth(meas)
+    with np.errstate(invalid='ignore'):
+        forward = np.isfinite(depth) & (depth < meas.dot_landing.to_numpy(dtype=float))
+    cobraIds = meas.cobra_id.to_numpy()
+    nInBand = pd.Series(inBand).groupby(cobraIds).sum()
+    short = nInBand.index[(nInBand < minRuns).to_numpy()]
+    fallback = ok & ~inBand & forward & np.isin(cobraIds, short)
+    fromAll = sorted(int(c) for c in np.unique(cobraIds[fallback]))
+    return inBand | fallback, fromAll
 
 
 def boundedGains(gains):
@@ -219,7 +273,7 @@ def aimedCommand(wanted, landing, phiStart, phiLandingTarget, chord, landingGain
     return np.where(aimed, command, wanted), aimed
 
 
-def fitGains(meas, exclude=None, cut=RAMP_RESIDUAL_CUT, minRuns=MIN_RUNS):
+def fitGains(meas, exclude=None, tolerance=APPROACH_TOLERANCE, minRuns=MIN_RUNS):
     """Landing and push gain per cobra.
 
     Each gain is the measured phi change over the commanded one, see `moveTravels`.  The
@@ -233,16 +287,20 @@ def fitGains(meas, exclude=None, cut=RAMP_RESIDUAL_CUT, minRuns=MIN_RUNS):
         `cobra_blind_move` rows, any number of visits.
     exclude : `int`, optional
         Visit left out of the fit.
-    cut : `float`
+    tolerance : `float`
+        `fitRows`.
     minRuns : `int`
 
     Returns
     -------
     `pandas.DataFrame`
         Indexed by cobra_id: landing_gain, target_gain, n_runs, landing_scatter,
-        target_scatter, calibrated.
+        target_scatter, calibrated, fromAllRows (fitted with all its measured rows, see
+        `fitRows`).
     """
-    use = meas[usable(meas, cut=cut) & (meas.pfs_visit_id != exclude).to_numpy()]
+    kept = meas[(meas.pfs_visit_id != exclude).to_numpy()]
+    rows, fromAll = fitRows(kept, tolerance=tolerance, minRuns=minRuns)
+    use = kept[rows]
     travels = moveTravels(use)
     x1, y1, x2, y2 = travels.x1, travels.y1, travels.x2, travels.y2
     with np.errstate(invalid='ignore', divide='ignore'):
@@ -260,6 +318,7 @@ def fitGains(meas, exclude=None, cut=RAMP_RESIDUAL_CUT, minRuns=MIN_RUNS):
     out['calibrated'] = ((out.n_runs >= minRuns)
                          & out.landing_gain.between(*dotState.GAIN_BOUNDS)
                          & out.target_gain.between(*dotState.GAIN_BOUNDS))
+    out['fromAllRows'] = out.index.isin(fromAll)
     return out
 
 
@@ -298,26 +357,31 @@ def _regimeSplit(y, noiseVar):
     return best
 
 
-def _moveRatios(meas, p, cut):
-    """Measured over commanded travel of the usable runs of each move, in time order.
+def _moveRatios(meas, p, tolerance, minRuns):
+    """Measured over commanded travel of each move's runs, in time order: the measured runs
+    of a span the move can be judged on, then `fitRows` among them.
 
     Returns
     -------
-    `dict`
-        'landing' and 'push': (ratios, cobra ids, visits).
+    (`dict`, `list` of `int`)
+        'landing' and 'push': (ratios, cobra ids, visits); and the cobras fitted with runs
+        outside the band in either move.
     """
     meas = meas.sort_values(['pfs_visit_id', 'cobra_id'])
     travels = moveTravels(meas)
-    started = (meas.ramp_residual <= cut).to_numpy()
-    out = {}
+    ok = measured(meas)
+    inBand = ok & inApproachBand(meas, tolerance)
+    out, fromAll = {}, set()
     for move, x, y in (('landing', travels.x1, travels.y1), ('push', travels.x2, travels.y2)):
         x, y = x.to_numpy(dtype=float), y.to_numpy(dtype=float)
-        finite = np.isfinite(x) & np.isfinite(y) & started
-        span = np.median(np.abs(x[finite])) if finite.any() else np.nan
-        valid = finite & (np.maximum(np.abs(x), np.abs(y)) >= p['minSpan'] * span)
-        out[move] = (y[valid] / x[valid], meas.cobra_id.to_numpy()[valid],
-                     meas.pfs_visit_id.to_numpy()[valid])
-    return out
+        finite = np.isfinite(x) & np.isfinite(y) & ok
+        span = np.median(np.abs(x[finite & inBand])) if (finite & inBand).any() else np.nan
+        spanOk = finite & (np.maximum(np.abs(x), np.abs(y)) >= p['minSpan'] * span)
+        rows, moveFromAll = fitRows(meas, tolerance=tolerance, minRuns=minRuns, valid=spanOk)
+        fromAll.update(moveFromAll)
+        out[move] = (y[rows] / x[rows], meas.cobra_id.to_numpy()[rows],
+                     meas.pfs_visit_id.to_numpy()[rows])
+    return out, sorted(fromAll)
 
 
 def _fitMove(ratio, cobraIds, p):
@@ -462,7 +526,7 @@ def aimingCalibOf(meas):
     return int(ids[0]) if len(ids) else None
 
 
-def fitOperatingPoint(meas, prior=None, params=None, minRuns=None, cut=RAMP_RESIDUAL_CUT):
+def fitOperatingPoint(meas, prior=None, params=None, minRuns=None, tolerance=APPROACH_TOLERANCE):
     """Landing and push gain per cobra, measured on runs at the operating point.
 
     Each gain is the robust mean of the cobra's runs (see `_fitMove`).  The prior is only
@@ -480,8 +544,8 @@ def fitOperatingPoint(meas, prior=None, params=None, minRuns=None, cut=RAMP_RESI
         Overrides of `OPERATING_POINT`; an unknown key raises `KeyError`.
     minRuns : `int`, optional
         Overrides OPERATING_POINT minRuns.
-    cut : `float`
-        `RAMP_RESIDUAL_CUT`.
+    tolerance : `float`
+        `fitRows`.
 
     Returns
     -------
@@ -491,8 +555,9 @@ def fitOperatingPoint(meas, prior=None, params=None, minRuns=None, cut=RAMP_RESI
         landing_scatter, target_scatter (per-run noise, as gains), calibrated, reason (why
         not, else None).  And a summary: the parameters, per move the fleet's
         per-run noise, the drift rate of a cobra, the trend of the fleet median, runs
-        rejected and cobras whose earlier runs were dropped at a change of regime, and the
-        shifts from the prior.
+        rejected and cobras whose earlier runs were dropped at a change of regime, the
+        tolerance on the start and the cobras fitted with all their measured rows
+        (`fitRows`), and the shifts from the prior.
     """
     unknown = set(params or {}) - set(OPERATING_POINT)
     if unknown:
@@ -500,8 +565,9 @@ def fitOperatingPoint(meas, prior=None, params=None, minRuns=None, cut=RAMP_RESI
     p = {**OPERATING_POINT, **(params or {})}
     minRuns = p['minRuns'] if minRuns is None else int(minRuns)
 
-    ratios = _moveRatios(meas, p, cut)
-    fits, summary = {}, dict(parameters=p, minRuns=minRuns)
+    ratios, fromAll = _moveRatios(meas, p, tolerance, minRuns)
+    fits, summary = {}, dict(parameters=p, minRuns=minRuns, approachTolerance=float(tolerance),
+                             fromAllRows=fromAll)
     for move in ('landing', 'push'):
         ratio, cobraIds, visits = ratios[move]
         fits[move], noise = _fitMove(ratio, cobraIds, p)
@@ -569,27 +635,29 @@ def depthStatistics(error):
                 within_10=float(np.mean(np.abs(error) < 0.10)))
 
 
-def leaveOneOut(meas, cut=RAMP_RESIDUAL_CUT, minRuns=MIN_RUNS):
+def leaveOneOut(meas, tolerance=APPROACH_TOLERANCE, minRuns=MIN_RUNS):
     """Depth error of each visit aimed from the gains of the others.
 
     Each held-out visit is scored by `counterfactualErrors`: its own landing and push gains,
     with the moves commanded as the other visits' gains would command them, the landing
     aimed where the visit aimed it.
 
-    A cobra counts only where the other visits calibrate it, so a cobra with exactly
-    `minRuns` usable runs is never scored, and fewer than `minRuns` + 1 visits score none.
+    The gains are fitted on `fitRows` and every measured row of the held-out visit is
+    scored.  A cobra counts only where the other visits calibrate it, so a cobra with
+    exactly `minRuns` fitted runs is never scored, and fewer than `minRuns` + 1 visits score
+    none.
 
     Returns
     -------
     `numpy.ndarray` of `float`
-        Reached minus wanted depth, one value per usable, calibrated cobra and visit.
+        Reached minus wanted depth, one value per measured, calibrated cobra and visit.
     """
     errors = []
     for visit in np.unique(meas.pfs_visit_id):
-        gains = fitGains(meas, exclude=visit, cut=cut, minRuns=minRuns)
+        gains = fitGains(meas, exclude=visit, tolerance=tolerance, minRuns=minRuns)
         held = meas[(meas.pfs_visit_id == visit).to_numpy()]
-        _, final = counterfactualErrors(held, gains, aimLanding=landingAimed(held), cut=cut)
-        _, _, calibrated = gainsFor(gains, held[usable(held, cut=cut)].cobra_id.to_numpy())
+        _, final = counterfactualErrors(held, gains, aimLanding=landingAimed(held))
+        _, _, calibrated = gainsFor(gains, held[measured(held)].cobra_id.to_numpy())
         errors.append(final[calibrated])
     return np.concatenate(errors) if errors else np.array([])
 
@@ -626,7 +694,7 @@ def landingAimed(meas, tolerance=AIM_TOLERANCE):
     return pd.Series(moved, index=meas.index).groupby(meas.pfs_visit_id.to_numpy()).transform('any').to_numpy()
 
 
-def checkAimedBy(meas, gains, calibId, approach=dotGeometry.RAMP_APPROACH_FRACTION):
+def checkAimedBy(meas, gains, calibId):
     """Rows not aimed through calibration `calibId`, whose gains are `gains`, as a mask.
 
     A row records the calibration that aimed it, set on the cobras that calibration
@@ -634,6 +702,7 @@ def checkAimedBy(meas, gains, calibId, approach=dotGeometry.RAMP_APPROACH_FRACTI
     `landingCommands` gives.  Rows from before those columns are checked by recomputing
     their command: a cobra without calibrated gains is aimed with gain 1.0, so its command
     is its wanted depth.  A row that was not pushed has no chord to check its landing with.
+    The landing command is recomputed from the row's own approach, `approachOf`.
     """
     g1, g2, calibrated = gainsFor(gains, meas.cobra_id.to_numpy())
     legacy = _legacy(meas)
@@ -645,7 +714,7 @@ def checkAimedBy(meas, gains, calibId, approach=dotGeometry.RAMP_APPROACH_FRACTI
         chord = chordOf(meas)
         landing = meas.dot_landing.to_numpy(dtype=float)
         expected = (meas.phi_landing_target.to_numpy(dtype=float)
-                    + (landingCommands(landing, approach, g1, calibrated) - landing) * chord)
+                    + (landingCommands(landing, approachOf(meas), g1, calibrated) - landing) * chord)
         with np.errstate(invalid='ignore', divide='ignore'):
             wrong = np.abs(meas.phi_landing_command.to_numpy(dtype=float) - expected) / np.abs(chord)
         notAimed |= landingAimed(meas) & calibrated & np.isfinite(chord) & ~(wrong <= AIM_TOLERANCE)
@@ -658,15 +727,15 @@ def checkAimedBy(meas, gains, calibId, approach=dotGeometry.RAMP_APPROACH_FRACTI
     return np.where(legacy, legacyNotAimed, notAimed)
 
 
-def counterfactualErrors(meas, gains, *, aimLanding, approach=dotGeometry.RAMP_APPROACH_FRACTION,
-                         cut=RAMP_RESIDUAL_CUT):
-    """Landing and final depth errors each usable row would have had with `gains`.
+def counterfactualErrors(meas, gains, *, aimLanding):
+    """Landing and final depth errors each measured row would have had with `gains`.
 
     Each row keeps its own measured start and its own response -- its landing and push
     gains in that run -- and the moves are commanded as `gains` would command them: the
-    landing to `landingCommands`, or to dot_landing where aimLanding (a `bool`, or one per
-    row of `meas`) is False, and the push sized from the landing the gains predict and
-    capped at `dotGeometry.DEPTH_CAP` as `dotMove.blindMoveToDots` caps it.  Comparing
+    landing to `landingCommands` from the row's approach (`approachOf`), or to dot_landing
+    where aimLanding (a `bool`, or one per row of `meas`) is False, and the push sized from
+    the landing the gains predict and capped at `dotGeometry.DEPTH_CAP` as
+    `dotMove.blindMoveToDots` caps it.  Comparing
     two calibrations on the same rows so removes the scatter of the runs from the
     comparison.
 
@@ -674,9 +743,9 @@ def counterfactualErrors(meas, gains, *, aimLanding, approach=dotGeometry.RAMP_A
     -------
     (`numpy.ndarray`, `numpy.ndarray`)
         Landing depth less dot_landing, and final depth less dot_target, in dot fraction,
-        of the rows `usable` keeps.
+        of the rows `measured` keeps.
     """
-    ok = usable(meas, cut=cut)
+    ok = measured(meas)
     aimLanding = np.broadcast_to(np.asarray(aimLanding, dtype=bool), ok.shape)[ok]
     use = meas[ok]
     travels = moveTravels(use)
@@ -691,7 +760,7 @@ def counterfactualErrors(meas, gains, *, aimLanding, approach=dotGeometry.RAMP_A
 
     g1, g2, calibrated = gainsFor(gains, use.cobra_id.to_numpy())
     g1, g2 = boundedGains(g1), boundedGains(g2)
-    command = np.where(aimLanding, landingCommands(landing, approach, g1, calibrated), landing)
+    command = np.where(aimLanding, landingCommands(landing, approachOf(use), g1, calibrated), landing)
     phiCommand = phiTarget + (command - landing) * chord
     landed = start + ownLanding * (phiCommand - start)
     predicted = start + g1 * (phiCommand - start)
@@ -720,8 +789,7 @@ def _rms(errors, clip=None):
     return float(np.sqrt(np.mean(errors ** 2))) if len(errors) else np.nan
 
 
-def validate(meas, gains, calibId, criteria=None, cut=RAMP_RESIDUAL_CUT, reference=None,
-             alsoUnaimed=False):
+def validate(meas, gains, calibId, criteria=None, reference=None, alsoUnaimed=False):
     """Judge a calibration on visits aimed through it.
 
     Parameters
@@ -734,7 +802,6 @@ def validate(meas, gains, calibId, criteria=None, cut=RAMP_RESIDUAL_CUT, referen
         The calibration's id, which the rows must record as their aim.
     criteria : `dict`, optional
         Overrides of `VALIDATION_CRITERIA`; an unknown key raises `KeyError`.
-    cut : `float`
     reference : `pandas.DataFrame`, optional
         Gains of the calibration it would replace: the calibration must not do worse on
         the same rows, by `counterfactualErrors`.
@@ -769,7 +836,7 @@ def validate(meas, gains, calibId, criteria=None, cut=RAMP_RESIDUAL_CUT, referen
         visits = sorted(set(meas.pfs_visit_id.to_numpy()[~aimed].tolist()))
         failures.append(f'the landing of visits {visits} was not aimed')
 
-    ok = usable(meas, cut=cut)
+    ok = measured(meas)
     error = reachedDepth(meas[ok]) - meas.dot_target.to_numpy()[ok]
     stats = depthStatistics(error)
     stats['coverage'] = float(np.isfinite(error).sum() / len(meas)) if len(meas) else np.nan
@@ -790,12 +857,12 @@ def validate(meas, gains, calibId, criteria=None, cut=RAMP_RESIDUAL_CUT, referen
 
     g1, _, calibrated = gainsFor(gains, meas.cobra_id.to_numpy()[ok])
     aimedRow = aimed[ok]
-    measured = aimedRow & np.isfinite(landingError)
+    landingSeen = aimedRow & np.isfinite(landingError)
     stats['landing'] = landing = depthStatistics(landingError[calibrated & aimedRow])
     stats['landingSlow'] = depthStatistics(landingError[calibrated & aimedRow & (g1 < SLOW_LANDING_GAIN)])
     if landing['n']:
-        landing['short'] = float(np.mean(landingError[measured] < -0.08))
-        landing['shortCalibrated'] = float(np.mean(landingError[measured & calibrated] < -0.08))
+        landing['short'] = float(np.mean(landingError[landingSeen] < -0.08))
+        landing['shortCalibrated'] = float(np.mean(landingError[landingSeen & calibrated] < -0.08))
         if not abs(landing['bias']) <= criteria['maxLandingBias']:
             failures.append(f'landing bias {landing["bias"]:+.3f} beyond {criteria["maxLandingBias"]}')
         if not landing['spread'] <= criteria['maxLandingSpread']:
@@ -814,7 +881,7 @@ def validate(meas, gains, calibId, criteria=None, cut=RAMP_RESIDUAL_CUT, referen
     for key, aim in comparisons.items():
         rms = {}
         for name, g in (('calibration', gains), ('reference', reference)):
-            errors = counterfactualErrors(meas, g, aimLanding=aim, cut=cut)
+            errors = counterfactualErrors(meas, g, aimLanding=aim)
             rms[name] = {}
             for move, e in zip(('landing', 'final'), errors):
                 rms[name][move] = _rms(e, clip=REGRESSION_CLIP)
@@ -926,7 +993,7 @@ def _nullable(value):
     return value.item() if isinstance(value, np.generic) else value
 
 
-def insertCalibration(db, visits, gains, looStats, cut=RAMP_RESIDUAL_CUT, minRuns=MIN_RUNS,
+def insertCalibration(db, visits, gains, looStats, minRuns=MIN_RUNS,
                       model=MODEL, modelVersion=MODEL_VERSION, priorCalibId=None,
                       dotLanding=None, dotTarget=None, parameters=None):
     """Write a calibration and its gains in one transaction.
@@ -946,13 +1013,13 @@ def insertCalibration(db, visits, gains, looStats, cut=RAMP_RESIDUAL_CUT, minRun
     loo = looStats or {}
     with db.connection() as conn:
         calibId = conn.execute(text(
-            'INSERT INTO blind_move_calib (created_at, visits, ramp_residual_cut, min_runs, '
+            'INSERT INTO blind_move_calib (created_at, visits, min_runs, '
             'model, model_version, n_calibrated, loo_bias, loo_spread, loo_within_05, '
             'prior_calib_id, dot_landing, dot_target, parameters) '
-            'VALUES (now(), :visits, :cut, :minRuns, :model, :version, :nCalibrated, '
+            'VALUES (now(), :visits, :minRuns, :model, :version, :nCalibrated, '
             ':bias, :spread, :within05, :prior, :dotLanding, :dotTarget, :parameters) '
             'RETURNING blind_move_calib_id'),
-            dict(visits=[int(v) for v in visits], cut=float(cut), minRuns=int(minRuns),
+            dict(visits=[int(v) for v in visits], minRuns=int(minRuns),
                  model=model, version=int(modelVersion), nCalibrated=int(gains.calibrated.sum()),
                  bias=_nullable(loo.get('bias')), spread=_nullable(loo.get('spread')),
                  within05=_nullable(loo.get('within_05')), prior=_nullable(priorCalibId),
