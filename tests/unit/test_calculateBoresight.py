@@ -41,19 +41,23 @@ def run(**keywords):
     return cmd
 
 
-def test_twoFrames(measured):
-    """Two frames from different visits are recorded under the visit of the first."""
+def test_framesAcrossVisits(measured):
+    """Frames from different visits are recorded under the visit of the first."""
     cmd = run(frameIds=(15255101, 15255000), writeToDB=())
     assert measured == [([15255101, 15255000], 152551, True)]
     assert cmd.finished
 
 
-@pytest.mark.parametrize('frameIds,match', [
-    ((15255000,), 'needs two frames'),
-    ((15255000, 15255001, 15255002), 'INSTRM-3100'),
-])
-def test_refused(measured, frameIds, match):
-    """Anything but two frames is refused before measuring."""
-    with pytest.raises(ValueError, match=match):
-        run(frameIds=frameIds)
+def test_loop(measured):
+    """A whole boresight loop is measured at once."""
+    frameIds = tuple(15395100 + i for i in range(12))
+    cmd = run(frameIds=frameIds)
+    assert measured == [(list(frameIds), 153951, False)]
+    assert cmd.finished
+
+
+def test_oneFrameRefused(measured):
+    """A single frame is refused before measuring."""
+    with pytest.raises(ValueError, match='needs two frames'):
+        run(frameIds=(15255000,))
     assert measured == []

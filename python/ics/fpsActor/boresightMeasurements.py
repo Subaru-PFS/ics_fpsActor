@@ -1,343 +1,158 @@
+"""Measure the MCS boresight from opdb frames, with pfs.utils.coordinates.boresight, and record it."""
+
+from datetime import datetime, timezone
+
 import numpy as np
 import pandas as pd
-from scipy import optimize
-from datetime import datetime, timezone
-from itertools import combinations
-from scipy.spatial import cKDTree
-import cv2
+from pfs.utils.coordinates.boresight import measureBoresight
 
-MIN_ROTATION = 5
-"""Smallest rotator angle, in degrees, between two frames a boresight is measured from."""
+MAX_UNCERTAINTY = 0.25
+"""Largest uncertainty of a boresight, pixels per axis, written to opdb."""
 
-
-def nearestNeighbourMatchingBore(points, targets, unrot):
-    
-    """
-    simple matching for fiducial fibres, for use in home position
-
-    input
-       points: set to match (nx3)
-       targets: set to match to (nx3)
-       nTarg: length of targets
-
-    """
-
-    nTarg = points.shape[0]
-
-    # use cKDTree for speed
-    pointTree = cKDTree(points[:, 1:3])
-    matchPoint = np.zeros((len(targets), 3))
-    
-    for i in range(len(targets)):
-        dd, ii = pointTree.query(targets[i, 1:3], k = 1)
-        matchPoint[i] = unrot[ii]
-
-    return matchPoint
-
-def distancePointLine(p1, p2, p):
-    """ get closest distance from a line between two points and another point """
-
-    y1 = p1[1]
-    x1 = p1[0]
-    y2 = p2[1]
-    x2 = p2[0]
-    x = p[0]
-    y = p[1]
-
-    d = abs((y2-y1)*x+(x2-x1)*y+x2*y1-y2*x1)/np.sqrt((y2-y1)**2+(x2-x1)**2)
-
-    return p
+POINTS_SQL = """
+SELECT m.mcs_frame_id, 'cobra' AS kind, m.cobra_id AS id, d.mcs_center_x_pix AS x, d.mcs_center_y_pix AS y
+FROM cobra_match m JOIN mcs_data d ON d.mcs_frame_id = m.mcs_frame_id AND d.spot_id = m.spot_id
+WHERE m.mcs_frame_id = ANY(:frameIds) AND m.spot_id >= 0
+UNION ALL
+SELECT m.mcs_frame_id, 'fiducial' AS kind, m.fiducial_fiber_id AS id, d.mcs_center_x_pix, d.mcs_center_y_pix
+FROM fiducial_fiber_match m JOIN mcs_data d ON d.mcs_frame_id = m.mcs_frame_id AND d.spot_id = m.spot_id
+WHERE m.mcs_frame_id = ANY(:frameIds) AND m.spot_id >= 0
+"""
 
 
-def extractRotCent(afCoeff):    
-    """extract centre of rotation from affine matrix"""
-        
-    #affine matrix is of the form
-    #alpha   beta   (1-alpha)*xc-beta*yc
-    #-beta   alpha  beta*xc-(1-alpha)*yc 
-    #so we solve for xc and yc
-    
-    A = 1-afCoeff[0, 0]
-    B = afCoeff[0, 1]
+def loadFrames(db, frameIds):
+    """Load the frames' telescope state and the spots fibre identification named.
 
-    xd = afCoeff[0, 2]
-    yd = afCoeff[1, 2]
+    Parameters
+    ----------
+    db : `pfs.utils.database.db.DB`
+    frameIds : sequence of `int`
+        mcs_frame_id of the frames, distinct.
 
-    yc = (yd-B/A*xd)/(B**2/A+A)
-    xc = (xd+B*yc)/A
-
-    return xc, yc
-
-def f(c, x, y):
-    """
-    calculate the algebraic distance between the data points
-    and the mean circle centered at c=(xc, yc)
-    """
-    Ri = calc_R(x, y, *c)
-    return Ri - Ri.mean()
-
-
-def least_squares_circle(x, y):
-    """
-    Circle fit using least-squares solver.
-    Inputs:
-
-        - coords, list or numpy array with len>2 of the form:
-        [
-    [x_coord, y_coord],
-    ...,
-    [x_coord, y_coord]
-    ]
-
-    Outputs:
-
-        - xc : x-coordinate of solution center (float)
-        - yc : y-coordinate of solution center (float)
-        - R : Radius of solution (float)
-        - residu : MSE of solution against training data (float)
-    """
-
-    x_m = np.mean(x)
-    y_m = np.mean(y)
-    center_estimate = x_m, y_m
-    center, ier = optimize.leastsq(f, center_estimate, args=(x, y))
-    xc, yc = center
-    Ri = calc_R(x, y, *center)
-    R = Ri.mean()
-    residu = np.sum((Ri - R)**2)
-    return xc, yc, R, residu
-
-def calc_R(x, y, xc, yc):
-    
-    """
-    calculate the distance of each 2D points from the center (xc, yc)
-    """
-    return np.sqrt((x-xc)**2 + (y-yc)**2)
-
-def initialBoresight(db, frameIDs):
-
-    """ 
-    An initial approximation of the boresight from a sequence of spot measurements 
-
-    We calculate the mean position of the spots for each frame, and then fit a circle
-    to the sequence of means. As the rotation centre is slightly offset from the image centre,
-    the mean positions will trace a circle around the centre of rotation.
-
-    """
-    
-    xC = []
-    yC = []
-    #for each frame, pull the spots from database, and calculate mean position
-    for frameId in frameIDs:
-        # retrieve all spots
-        points = loadCentroidsFromDB(db, frameId)
-
-        # get means
-        xC.append(np.nanmean(points[:, 1]))
-        yC.append(np.nanmean(points[:, 2]))
-
-    # do the fit
-    xCentre, yCentre, radius, residuals = least_squares_circle(xC, yC)
-    
-    return [xCentre, yCentre]
-
-def refineBoresight(db, frameId1, frameId2, boresightEstimate):
-    """
-    Refine the boresight measurement to subpixel accuracy.
-
-    - take two frames at different angles, 
-    - rotate using the estimated centre and angle,
-    - do nearest neighbour matching
-    - calculate the affine transform
-    - extract the centre of rotation
-
-    Input: 
-    frameId1, frameId2: mcs_frame_id for the two sets of points
-    boresightEstimate: [xC,yC] returned by initialBoresight
-    
-    """
-
-    # retrieve two sets of points
-    points = loadCentroidsFromDB(db, frameId1)
-    points1 = loadCentroidsFromDB(db, frameId2)
-
-    points=points[~np.isnan(points).any(axis=1)]
-    points1=points1[~np.isnan(points1).any(axis=1)]
-    
-    # and their instrumetn rotation
-    zenithAngle1, insRot1 = loadTelescopeParametersFromDB(db, frameId1)
-    zenithAngle2, insRot2 = loadTelescopeParametersFromDB(db, frameId2)
-
-    thetaDiff = (insRot1 - insRot2) * np.pi/180
-
-    x1 = points[:, 1]
-    y1 = points[:, 2]
-
-    # the estimated centre
-    x0 = boresightEstimate[0]
-    y0 = boresightEstimate[1]
-
-    # rotate to match the second set of point, using theta differnce
-    
-    x2 = (x1-x0) * np.cos(thetaDiff) - (y1-y0) * np.sin(thetaDiff) + x0
-    y2 = (x1-x0) * np.sin(thetaDiff) + (y1-y0) * np.cos(thetaDiff) + y0
-
-    # some bookkeeping for the format expected by nearestNeighbourMatching
-
-    #three sets of poitns, rotated, unrotated and target
-
-    unRot = points[:, 0:3]
-    source = np.array([x2, x2, y2]).T
-    target = points1[:, 0:3]
-
-    # do nearest neighbour matching on *transformed* values,
-    # and return the *untransformed* values matched to the first set
-
-    matchPoint = nearestNeighbourMatchingBore(source, target, unRot)
- 
-    #gethe affine transform
-    afCoeff, xd, yd, sx, sy, rotation = calcAffineTransform(target[:, 0:3], matchPoint[:, 0:3])
-
-    #and extract the centre of rotation from the matrix
-    xc, yc = extractRotCent(afCoeff)
-        
-    return [xc, yc]
-
-
-def calcBoresight(cmd, db, frameIds, pfsVisitId, writeToDB=True):
-
-    """
-    wrapper for boresight calculationg.
-
-    Input: 
-       db: database connection
-       frameIds: list of mcs_frame_ids for the data set
-
-    Output: 
-       returns boresight
-       write updated value to database
-
-    """
-
-    checkRotation(db, frameIds)
-
-    boresightEstimate = initialBoresight(db, frameIds)
-    boresight = refineBoresight(db, frameIds[0], frameIds[1], boresightEstimate)
-    
-    cmd.inform(f'text="Boresight values {boresight[0]:.3f}, {boresight[1]:.3f}."')
-    
-    if writeToDB is True:
-        writeBoresightToDB(db, pfsVisitId, boresight, frameIds)
-    else:
-        cmd.inform(f'text="Not writing to DB."')
-
-    return boresight
-
-def checkRotation(db, frameIds):
-    """Refuse frames that do not span two rotator angles at least MIN_ROTATION apart.
-
-    Frames at a single angle carry no rotation to find the centre of.
+    Returns
+    -------
+    frames : `pandas.DataFrame`
+        mcs_frame_id, insrot, altitude, in the order of frameIds.
+    points : `pandas.DataFrame`
+        mcs_frame_id, kind ('cobra' or 'fiducial'), id, x, y (MCS pixels), finite only.
 
     Raises
     ------
     ValueError
-        No two frames are MIN_ROTATION degrees apart in insrot.
+        A frame is given twice, or has no mcs_exposure row.
     """
-    insRots = [float(loadTelescopeParametersFromDB(db, frameId)[1]) for frameId in frameIds]
-    # angles wrap: -179 and 179 are 2 degrees apart.
-    spread = max(abs((a - b + 180) % 360 - 180) for a, b in combinations(insRots, 2))
-    # not >=, so that a NaN insrot is refused too.
-    if not spread >= MIN_ROTATION:
-        raise ValueError(f'frames {list(frameIds)} span {spread:.1f} deg of rotator angle (insrot {insRots}), '
-                         f'the boresight needs two angles at least {MIN_ROTATION} deg apart')
+    frameIds = [int(frameId) for frameId in frameIds]
+    if len(set(frameIds)) != len(frameIds):
+        raise ValueError(f'frames given more than once: {frameIds}')
+
+    params = dict(frameIds=frameIds)
+    frames = db.query_dataframe(
+        'SELECT mcs_frame_id, insrot, altitude FROM mcs_exposure ' 'WHERE mcs_frame_id = ANY(:frameIds)',
+        params=params,
+    )
+    missing = sorted(set(frameIds) - set(frames.mcs_frame_id))
+    if missing:
+        raise ValueError(f'no mcs_exposure for frames {missing}')
+
+    frames = frames.set_index('mcs_frame_id').loc[frameIds].reset_index()
+    points = db.query_dataframe(POINTS_SQL, params=params)
+    # a NULL centroid can make the column object.
+    points[['x', 'y']] = points[['x', 'y']].astype(float)
+    points = points[np.isfinite(points.x) & np.isfinite(points.y)].reset_index(drop=True)
+    return frames, points
 
 
-def loadCentroidsFromDB(db, mcsFrameId):
-    """ retrieve a set of centroids from database and return as a numpy array"""
-    
-    sql = f'select mcs_data.spot_id, mcs_data.mcs_center_x_pix, mcs_data.mcs_center_y_pix from mcs_data where mcs_data.mcs_frame_id={mcsFrameId}'
-    df = db.query_dataframe(sql)
-    return df.to_numpy()
+def calcBoresight(cmd, db, frameIds, pfsVisitId, writeToDB=True):
+    """Measure the boresight from frameIds and report it; write it to opdb if writeToDB.
 
-def loadTelescopeParametersFromDB(db, frameId):
+    Parameters
+    ----------
+    cmd : `actorcore.Command`
+        Receives the report, frame by frame.
+    db : `pfs.utils.database.db.DB`
+    frameIds : sequence of `int`
+        mcs_frame_id of the frames.
+    pfsVisitId : `int`
+        Visit the measurement is recorded under.
+    writeToDB : `bool`
+        Write the measurement to mcs_boresight_meas and its frames to mcs_boresight_frame_set.
 
-    sql = f'SELECT mcs_exposure.insrot,mcs_exposure.altitude FROM mcs_exposure WHERE mcs_exposure.mcs_frame_id={frameId}'
-    df = db.query_dataframe(sql)
+    Returns
+    -------
+    `pfs.utils.coordinates.boresight.BoresightResult`
 
-    if df['altitude'][0] < -99:
-        zenithAngle = 90
-    else:
-        zenithAngle = 90-df['altitude'][0]
+    Raises
+    ------
+    ValueError
+        The frames cannot be measured; or writeToDB, and a frame is still displaced from the
+        others or the uncertainty exceeds MAX_UNCERTAINTY.
+    """
+    frames, points = loadFrames(db, frameIds)
+    result = measureBoresight(frames, points)
 
-    insRot = df['insrot'][0]
+    for row in result.frames.itertuples():
+        status = 'used' if row.used else f'left out: {row.reason}'
+        rotation = (row.rotation + 180) % 360 - 180
+        cmd.inform(
+            f'text="frame {row.mcs_frame_id}: insrot={row.insrot:.2f} rotation={rotation:.3f} '
+            f'offset={row.rotationOffset:+.3f} deg, {row.nPoints} spots ({row.nLeftOut} left out), '
+            f'median residual {row.residual:.3f} pix, displacement {row.displacement:.3f} pix, {status}"'
+        )
 
-    return zenithAngle, insRot
+    sigmaF = 'measured' if result.sigmaFMeasured else 'assumed'
+    cmd.inform(
+        f'text="Boresight {result.x:.3f}, {result.y:.3f} +- {result.xErr:.3f}, {result.yErr:.3f} pix '
+        f'from {len(result.framesUsed)} frames at {result.nPositions} rotator positions, altitude '
+        f'{result.altitude:.2f}; frame displacement {result.sigmaF:.3f} pix ({sigmaF}); {result.nPoints} '
+        f'spots, {result.nLeftOut} left out."'
+    )
+    for warning in result.warnings:
+        cmd.warn(f'text="{warning}"')
 
-def writeBoresightToDB(db, pfsVisitId, boresight, frameIds):
-    """ write a measured boresight to mcs_boresight_meas with the current timestamp,
-    and the frames it was measured from to mcs_boresight_frame_set """
+    if writeToDB is not True:
+        cmd.inform('text="Not writing to DB."')
+        return result
+
+    if result.standingOut is not None:
+        raise ValueError(f'frame {result.standingOut} is still displaced from the other frames: not written')
+    if max(result.xErr, result.yErr) > MAX_UNCERTAINTY:
+        why = (
+            f'its {result.nPositions} rotator positions span too little rotation'
+            if not result.sigmaFMeasured
+            else f'its frames are displaced by {result.sigmaF:.3f} pix rms'
+        )
+        raise ValueError(
+            f'boresight uncertainty {result.xErr:.3f}, {result.yErr:.3f} pix exceeds '
+            f'{MAX_UNCERTAINTY} pix because {why}: not written'
+        )
+
+    writeBoresightToDB(db, pfsVisitId, result)
+    return result
+
+
+def writeBoresightToDB(db, pfsVisitId, result):
+    """write a measured boresight to mcs_boresight_meas with the current timestamp,
+    and the frames it was measured from to mcs_boresight_frame_set"""
 
     frameSetId = db.query_scalar("SELECT nextval('mcs_boresight_frame_set_id_seq')")
-    db.insert('mcs_boresight_frame_set', pd.DataFrame({'mcs_boresight_frame_set_id': frameSetId,
-                                                       'mcs_frame_id': frameIds}))
+    db.insert(
+        'mcs_boresight_frame_set',
+        pd.DataFrame({'mcs_boresight_frame_set_id': frameSetId, 'mcs_frame_id': result.framesUsed}),
+    )
 
     dt = datetime.now(timezone.utc)
 
-    df = pd.DataFrame({'pfs_visit_id': [pfsVisitId], 'mcs_boresight_x_pix': [boresight[0]], 'mcs_boresight_y_pix': [boresight[1]],
-                       'calculated_at': [dt], 'mcs_boresight_frame_set_id': [frameSetId]})
+    df = pd.DataFrame(
+        {
+            'pfs_visit_id': [pfsVisitId],
+            'mcs_boresight_x_pix': [result.x],
+            'mcs_boresight_y_pix': [result.y],
+            'mcs_boresight_x_err_pix': [result.xErr],
+            'mcs_boresight_y_err_pix': [result.yErr],
+            'altitude': [result.altitude],
+            'calculated_at': [dt],
+            'mcs_boresight_frame_set_id': [frameSetId],
+        }
+    )
 
     db.insert('mcs_boresight_meas', df)
-
-def calcAffineTransform(pos1, pos2):
-    """
-
-    given two sets of registered points, estimate the rigid transformation
-    this is a wrapper for the cv2 routine
-    Returns transformation matrix and extracted parameters (rotation, translation, scale)
-
-    input:
-    pos1 input positions in nx3 shape, first column is an id number, next two coordinates
-    xx, yy: transformed positions
-    getVales: if == 1, return parameters too
-
-    output: 
-    transformation: matrix 
-    xd, yd: translations
-    sx, sy: scalings
-    rotation: rotation (radians)
-
-    """
-
-    sz = pos1.shape[0]
-    # turn data into right form
-    pts1 = np.zeros((1, sz, 2))
-    pts2 = np.zeros((1, sz, 2))
-
-    pts1[0, :, 0] = pos1[:, 1]
-    pts1[0, :, 1] = pos1[:, 2]
-
-    pts2[0, :, 0] = pos2[:, 1]
-    pts2[0, :, 1] = pos2[:, 2]
-
-    #float32 is needed
-    pts1 = np.float32(pts1)
-    pts2 = np.float32(pts2)
-
-    # calculate the transformation
-    #transformation = cv2.estimateRigidTransform(pts1, pts2, False)
-
-    afCoeff, inlier = cv2.estimateAffinePartial2D(pts1, pts2)
-
-    # extract the parameters
-
-    sx = np.sqrt(afCoeff[0, 0]**2+afCoeff[0, 1]**2)
-    sy = np.sqrt(afCoeff[1, 0]**2+afCoeff[1, 1]**2)
-
-    xd = afCoeff[0, 2]
-    yd = afCoeff[1, 2]
-
-    rotation = np.arctan2(afCoeff[1, 0]/np.sqrt(afCoeff[0, 0]**2+afCoeff[0, 1]**2), 
-                          afCoeff[1, 1]/np.sqrt(afCoeff[1, 0]**2+afCoeff[1, 1]**2))
-
-    return afCoeff, xd, yd, sx, sy, rotation
-
