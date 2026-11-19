@@ -103,7 +103,7 @@ class FpsCmd(object):
             ('setCobraMode', '@(phi|theta|normal)', self.setCobraMode),
             ('setGeometry', '@(phi|theta) <runDir>', self.setGeometry),
             ('moveToPfsDesign',
-             '<designId> [@twoStepsOff] [@shortExpOff] [@goHome] [@noTweak] [@skipFiducialInterferenceCheck] [@allowMaskedCobras] [@noBlindMove] [@aimLanding] [<visit>] [<expTime>] [<iteration>] [<tolerance>] [<maskFile>] [<dotTarget>] [<dotLanding>] [<dotCalib>]',
+             '<designId> [@twoStepsOff] [@shortExpOff] [@goHome] [@noTweak] [@skipFiducialInterferenceCheck] [@allowMaskedCobras] [@noBlindMove] [@aimLanding] [<visit>] [<expTime>] [<iteration>] [<tolerance>] [<maskFile>] [<targetMaskFile>] [<dotTarget>] [<dotLanding>] [<dotCalib>]',
              self.moveToPfsDesign),
             ('dotConfig', '[<dotLanding>] [<dotTarget>] [<dotLandingAim>] [@reset]', self.dotConfig),
             ('measureBlindMove', '', self.measureBlindMove),
@@ -170,6 +170,9 @@ class FpsCmd(object):
                                         keys.Key("id", types.Long(),
                                                  help="pfsDesignId, to define the target fiber positions"),
                                         keys.Key("maskFile", types.String(), help="mask filename for cobra"),
+                                        keys.Key("targetMaskFile", types.String(),
+                                                 help="mask filename of the cobras sent to their design target, "
+                                                      "the other working cobras going to their black dot"),
                                         keys.Key("mask", types.Int(), help="mask for power and/or reset"),
                                         keys.Key("expTime", types.Float(), help="Seconds for exposure"),
                                         keys.Key("theta", types.Float(), help="Distance to move theta"),
@@ -2202,6 +2205,10 @@ class FpsCmd(object):
         designId = cmdKeys['designId'].values[0]
         expTime = cmdKeys['expTime'].values[0] if 'expTime' in cmdKeys else None
         maskFile = cmdKeys['maskFile'].values[0] if 'maskFile' in cmdKeys else None
+        targetMaskFile = cmdKeys['targetMaskFile'].values[0] if 'targetMaskFile' in cmdKeys else None
+        if targetMaskFile is not None and not os.path.isfile(targetMaskFile):
+            cmd.fail(f'text="targetMaskFile {targetMaskFile} does not exist"')
+            return
         iteration = cmdKeys['iteration'].values[0] if 'iteration' in cmdKeys else 12
         tolerance = cmdKeys['tolerance'].values[0] if 'tolerance' in cmdKeys else 0.01
         fastThreshold = cmdKeys['fastThreshold'].values[0] if 'fastThreshold' in cmdKeys else 99.9
@@ -2309,21 +2316,30 @@ class FpsCmd(object):
         mayMove = np.isin(np.arange(self.cc.nCobras), self.loadGoodIdx(maskFile))
         isBroken = np.zeros(self.cc.nCobras, dtype=bool)
         isBroken[self.cc.badIdx] = True
+        # Only the cobras of targetMaskFile go to their design target; the others are parked.
+        onTarget = np.ones(self.cc.nCobras, dtype=bool)
+        if targetMaskFile is not None:
+            onTarget = np.isin(np.arange(self.cc.nCobras), self.loadGoodIdx(targetMaskFile))
+            if not (onTarget & mayMove).any():
+                cmd.fail(f'text="targetMaskFile={targetMaskFile} selects no cobra that may move"')
+                return
+            cmd.inform(f'text="targetMaskFile={targetMaskFile}: {int((onTarget & mayMove).sum())} working '
+                       f'cobras in it, {int((~onTarget & mayMove).sum())} others parked on their black dot"')
 
         # An isInvalid target is parked on its black dot rather than left wherever it
         # happens to be.  Drop `| isInvalid` here to go back to only explicit BLACKSPOT.
-        toBlackDot = (isBlackDot | isUnassigned | isInvalid) & mayMove
+        toBlackDot = (isBlackDot | isUnassigned | isInvalid | ~onTarget) & mayMove
         toBlackDot, unsafe = dotMove.withoutInvalidTurnedDots(toBlackDot, isInvalid, dotThetaOffset)
         if unsafe.any():
             cmd.warn(f'text="{int(unsafe.sum())} cobras left out: their turned dot fails validation"')
-        converge = isScience & ~toBlackDot & mayMove
+        converge = isScience & onTarget & ~toBlackDot & mayMove
 
         # Before the gate, so a refused design still reports why it was refused.
         for diag in pfsConfigUtils.summariseByTargetType(pfsConfig, flags, converge, toBlackDot,
                                                          isBroken, ~mayMove & ~isBroken):
             cmd.inform(f'text="{diag}"')
 
-        nBad = int((isInvalid & isScience & mayMove).sum())
+        nBad = int((isInvalid & isScience & mayMove & onTarget).sum())
         if nBad > maxInvalidScienceTargets and not allowMaskedCobras:
             cmd.fail(f'text="{nBad} invalid science targets, above '
                      f'maxInvalidScienceTargets={maxInvalidScienceTargets}; design is out of spec"')
@@ -2452,7 +2468,7 @@ class FpsCmd(object):
                                       'reason': 'excluded_by_mask_or_broken'})
         for idx in np.flatnonzero(toBlackDot):
             filtering_records.append({'cobra_id': idx, 'step': 'dot_cobra',
-                                      'reason': 'blackspot_target'})
+                                      'reason': 'blackspot_target' if onTarget[idx] else 'not_in_targetMaskFile'})
         logged = isInvalid | isUnassigned
         for bit, name in targetValidation.FLAG_NAMES.items():
             if bit == targetValidation.IN_OVERLAPPING_REGION:
