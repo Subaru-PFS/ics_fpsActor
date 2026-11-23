@@ -165,7 +165,11 @@ def computeDotAngles(cc, phiFloor=np.radians(15.0), minRangeDeg=30.0, dotThetaOf
     L2, rDot = _sgfmArrays()
     nCobras = len(cc.allCobras)
 
-    dotPos = dotPositions(cc.calibModel.centers, dotThetaOffset)
+    # The dots are in the frame of the XML centres: carried by the plate, like the centres.
+    dotPos = cc.plate.apply(dotPositions(cc.xmlCenters))
+    if dotThetaOffset:
+        centers = cc.calibModel.centers
+        dotPos = centers + (dotPos - centers) * np.exp(1j * np.deg2rad(dotThetaOffset))
 
     # IK: theta that places the elbow so phi sweeps through the dot center
     thetaSol, phiSol, _ = cc.pfi.positionsToAngles(cc.allCobras, dotPos)

@@ -29,6 +29,7 @@ from ics.fpsActor.utils import display as vis
 from ics.fpsActor.utils import dotGeometry
 from ics.fpsActor.utils import dotMove
 from ics.fpsActor.utils import motorScales
+from ics.fpsActor.utils import plateTracker
 from ics.cobraCharmer import targetValidation
 from ics.fpsActor.utils.cobraCenters import updateCobraCenters
 from pfs.utils.database import opdb
@@ -391,6 +392,15 @@ class FpsCmd(object):
         cc = cobraCoach.CobraCoach(self.fpgaHost, loadModel=False, simDataPath=self.simDataPath,
                                    actor=self.actor, cmd=cmd)
         cc.loadModel(file=pathlib.Path(self.xml))
+
+        convergence = self.actor.actorConfig.get('convergence', {})
+        cc.plateSource = plateTracker.PlateTracker(cc, enabled=convergence.get('anchorCentres', False),
+                                                   plateFrames=convergence.get('plateFrames',
+                                                                               plateTracker.PLATE_FRAMES),
+                                                   connectToDB=self.connectToDB, logger=self.logger)
+        nAnchors = int(np.isfinite(cc.calibModel.fiberReference).sum())
+        cmd.inform(f'text="anchorCentres={cc.plateSource.enabled} after {cc.plateSource.plateFrames} frames: '
+                   f'{nAnchors} anchor cobras in the XML"')
 
         self.cc = cc
         eng.setCobraCoach(cc)
@@ -2392,6 +2402,7 @@ class FpsCmd(object):
         commandedPhis = phis[commanded]
         commandedTargets = targets[commanded]
         commandedToDot = toBlackDot[commanded]
+        commandedSkyTargets = np.where(converge[commanded], commandedTargets, np.nan + np.nan * 1j)
         commandedPhiRamp = phiRamp[:, commanded]
         commandedThetaRamp = thetaRamp[:, commanded]
         commandedUnscaledPhi = dotMove.unscaledPhiRows(commandedToDot, iteration)
@@ -2567,6 +2578,7 @@ class FpsCmd(object):
                                      thetaMargin=np.deg2rad(thetaMarginDeg),
                                      phiRamp=commandedPhiRamp[2:], thetaRamp=commandedThetaRamp[2:],
                                      unscaledPhi=commandedUnscaledPhi[2:],
+                                     skyTargets=commandedSkyTargets,
                                      )
 
             else:
@@ -2579,6 +2591,7 @@ class FpsCmd(object):
                                                                      phiRamp=commandedPhiRamp,
                                                                      thetaRamp=commandedThetaRamp,
                                                                      unscaledPhi=commandedUnscaledPhi,
+                                                                     skyTargets=commandedSkyTargets,
                                                                      )
             self.atThetas = atThetas
             self.atPhis = atPhis
